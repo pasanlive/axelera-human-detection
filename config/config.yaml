@@ -5,6 +5,12 @@ hardware:
   chip_id: 0               # Metis device index
   voyager_sdk: true
 
+performance:
+  pose_interval: 2         # Run pose estimation every N frames for maximum FPS
+  face_interval: 3         # Run face recognition every N frames per track ID
+  rtsp_transport: "tcp"    # Low-latency TCP stream transport
+  buffer_size: 1           # Drop stale software frames (0 latency buffer)
+
 cameras:
   - id: "cam_01"
     name: "Front Entrance"
