@@ -1,0 +1,63 @@
+# System Configuration for Axelera Metis Multi-Camera Pipeline
+
+hardware:
+  device: "axelera"        # Options: "axelera" (NPU Metis 111C), "onnx" (CPU/GPU ONNXRuntime fallback), "pytorch"
+  chip_id: 0               # Metis device index
+  voyager_sdk: true
+
+cameras:
+  - id: "cam_01"
+    name: "Front Entrance"
+    source: "0"            # Webcam index or RTSP URL e.g. "rtsp://admin:pass@192.168.1.100:554/stream1"
+    enabled: true
+    fps_limit: 30
+  - id: "cam_02"
+    name: "Lobby East"
+    source: "1"            # Synthetic stream, video file, or camera index
+    enabled: false
+    fps_limit: 30
+
+models:
+  human_detector:
+    model_name: "yolov8n.pt"
+    axm_path: "models/axm/yolov8n.axm"
+    onnx_path: "models/onnx/yolov8n.onnx"
+    conf_threshold: 0.45
+    iou_threshold: 0.45
+    input_size: [640, 640]
+    person_class_id: 0     # COCO person class ID
+
+  pose_estimator:
+    model_name: "yolov8n-pose.pt"
+    axm_path: "models/axm/yolov8n-pose.axm"
+    onnx_path: "models/onnx/yolov8n-pose.onnx"
+    conf_threshold: 0.50
+    input_size: [640, 640]
+    num_keypoints: 17
+
+  face_recognizer:
+    detector_axm: "models/axm/yolov8n-face.axm"
+    detector_onnx: "models/onnx/yolov8n-face.onnx"
+    embedder_axm: "models/axm/arcface_mobilefacenet.axm"
+    embedder_onnx: "models/onnx/arcface_mobilefacenet.onnx"
+    conf_threshold: 0.50
+    input_size: [112, 112]
+    match_threshold: 0.60  # Cosine similarity threshold for face recognition match
+
+tracking:
+  enabled: true
+  tracker_type: "bytetrack"
+  track_thresh: 0.5
+  track_buffer: 30
+  match_thresh: 0.8
+
+face_db:
+  path: "data/face_db.json"
+
+visualization:
+  draw_boxes: true
+  draw_pose: true
+  draw_faces: true
+  draw_fps: true
+  draw_tracks: true
+  window_name: "Axelera Metis Multi-Camera Detection System"
