@@ -92,9 +92,9 @@ def main():
     print("==========================================================")
 
     for model_name, imgsz in models_to_export:
-        onnx_file = export_yolo_to_onnx(model_name, args.onnx-dir if hasattr(args, 'onnx_dir') else "models/onnx", imgsz=imgsz)
+        onnx_file = export_yolo_to_onnx(model_name, getattr(args, 'onnx_dir', 'models/onnx'), imgsz=imgsz)
         if onnx_file:
-            compile_axm_with_voyager(onnx_file, args.axm-dir if hasattr(args, 'axm_dir') else "models/axm", target_chip=args.target)
+            compile_axm_with_voyager(onnx_file, getattr(args, 'axm_dir', 'models/axm'), target_chip=args.target)
 
     print("\n[COMPLETE] Model conversion workflow finished.")
 
