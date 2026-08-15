@@ -8,8 +8,8 @@ import cv2
 import numpy as np
 from typing import Tuple, Optional
 
-# Set low-latency FFmpeg RTSP streaming flags
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
+# Set low-latency FFmpeg RTSP streaming flags (forcing TCP transport to avoid HEVC packet corruption)
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;500000"
 
 class BaseCamera:
     """Abstract Base Class for Camera Streams."""
@@ -63,15 +63,21 @@ class OpenCVCamera(BaseCamera):
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         if not self.cap or not self.cap.isOpened():
-            # If standard RTSP failed, attempt GStreamer hardware decoding pipeline
+            # Attempt GStreamer H.265 / H.264 hardware decoding pipelines if standard fails
             if is_rtsp:
-                gst_pipeline = (
-                    f"rtspsrc location={src} latency=0 ! "
-                    "rtph264depay ! h264parse ! avdec_h264 ! "
-                    "videoconvert ! appsink drop=1"
-                )
-                print(f"[CAMERA HW ACCEL] Attempting GStreamer RTSP pipeline for {self.camera_id}...")
-                self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+                for depay, parse, decoder in [
+                    ("rtph265depay", "h265parse", "avdec_h265"),
+                    ("rtph264depay", "h264parse", "avdec_h264")
+                ]:
+                    gst_pipeline = (
+                        f"rtspsrc location={src} latency=0 protocols=tcp ! "
+                        f"{depay} ! {parse} ! {decoder} ! "
+                        "videoconvert ! appsink drop=1"
+                    )
+                    print(f"[CAMERA HW ACCEL] Attempting GStreamer {decoder} pipeline for {self.camera_id}...")
+                    self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+                    if self.cap and self.cap.isOpened():
+                        break
 
         if not self.cap or not self.cap.isOpened():
             print(f"[CAMERA ERROR] Failed to open camera stream {self.camera_id} ({self.source})")

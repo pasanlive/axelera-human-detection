@@ -34,14 +34,14 @@ class StreamManager:
             # Instantiation logic
             if source.lower() == "synthetic" or source == "-1":
                 cam = SyntheticCamera(cam_id, name, source, fps_limit)
+                cam.open()
             else:
                 cam = OpenCVCamera(cam_id, name, source, fps_limit)
-                # Fallback to SyntheticCamera if source fails to open initially
                 if not cam.open():
                     print(f"[STREAM MANAGER] Camera {cam_id} ({source}) unavailable. Falling back to Synthetic Camera.")
                     cam = SyntheticCamera(cam_id, name, "synthetic", fps_limit)
+                    cam.open()
 
-            cam.open()
             self.cameras[cam_id] = cam
             self.latest_frames[cam_id] = None
 

@@ -46,8 +46,8 @@ class VoyagerEngine:
         if self.onnx_path and os.path.exists(self.onnx_path):
             try:
                 import onnxruntime as ort
-                print(f"[ENGINE FALLBACK] Loading ONNX model {self.onnx_path} on ONNXRuntime...")
-                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                available_providers = ort.get_available_providers()
+                providers = [p for p in ['CUDAExecutionProvider', 'CPUExecutionProvider'] if p in available_providers]
                 self.session = ort.InferenceSession(self.onnx_path, providers=providers)
                 self.input_name = self.session.get_inputs()[0].name
                 self.output_names = [output.name for output in self.session.get_outputs()]
