@@ -8,13 +8,13 @@ hardware:
 cameras:
   - id: "cam_01"
     name: "Front Entrance"
-    source: "0"            # Webcam index or RTSP URL e.g. "rtsp://admin:pass@192.168.1.100:554/stream1"
+    source: "rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream"            # Webcam index or RTSP URL e.g. "rtsp://admin:pass@192.168.1.100:554/stream1"
     enabled: true
     fps_limit: 30
   - id: "cam_02"
     name: "Lobby East"
-    source: "1"            # Synthetic stream, video file, or camera index
-    enabled: false
+    source: "rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream"            # Synthetic stream, video file, or camera index
+    enabled: true
     fps_limit: 30
 
 models:
