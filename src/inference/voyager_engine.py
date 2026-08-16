@@ -49,7 +49,8 @@ class VoyagerEngine:
                                 ctx = ctx_fn()
                                 if ctx is not None:
                                     break
-                            except Exception:
+                            except Exception as e:
+                                print(f"[AXELERA RUNTIME DEBUG] Context(devices) error: {e}")
                                 continue
                 except Exception as e:
                     print(f"[AXELERA RUNTIME NOTICE] select_devices: {e}")
@@ -64,7 +65,8 @@ class VoyagerEngine:
                         ctx = ctx_fn()
                         if ctx is not None:
                             break
-                    except Exception:
+                    except Exception as e:
+                        print(f"[AXELERA RUNTIME DEBUG] Context fallback error: {e}")
                         continue
 
             if ctx is None:
@@ -89,7 +91,7 @@ class VoyagerEngine:
                     if model_obj is not None:
                         break
                 except Exception as e:
-                    last_e = e
+                    print(f"[AXELERA RUNTIME DEBUG] Model load error: {type(e).__name__}: {e}")
                     continue
 
             if model_obj is None:
@@ -100,12 +102,14 @@ class VoyagerEngine:
             if hasattr(model_obj, "create_instance"):
                 try:
                     self.session = model_obj.create_instance()
-                except Exception:
+                except Exception as e:
+                    print(f"[AXELERA RUNTIME DEBUG] create_instance failed: {e}")
                     self.session = model_obj
             elif hasattr(model_obj, "create_model_instance"):
                 try:
                     self.session = model_obj.create_model_instance()
-                except Exception:
+                except Exception as e:
+                    print(f"[AXELERA RUNTIME DEBUG] create_model_instance failed: {e}")
                     self.session = model_obj
             else:
                 self.session = model_obj
@@ -198,7 +202,6 @@ class VoyagerEngine:
             try:
                 mod = importlib.import_module(m_name)
 
-                # If select_devices is available
                 devices = None
                 if hasattr(mod, "select_devices"):
                     try:
@@ -271,16 +274,16 @@ class VoyagerEngine:
                             lambda: engine_cls(path_bytes, context=context_obj),
                             lambda: engine_cls(path_bytes, context_obj),
                         ])
-
-                    attempts.extend([
-                        lambda: engine_cls(path_str, chip_id=self.chip_id, num_cores=self.num_cores),
-                        lambda: engine_cls(path_bytes, chip_id=self.chip_id, num_cores=self.num_cores),
-                        lambda: engine_cls(path_str, chip_id=self.chip_id),
-                        lambda: engine_cls(path_bytes, chip_id=self.chip_id),
-                        lambda: engine_cls(path_str),
-                        lambda: engine_cls(path_bytes),
-                        lambda: engine_cls(path_obj)
-                    ])
+                    else:
+                        attempts.extend([
+                            lambda: engine_cls(path_str, chip_id=self.chip_id, num_cores=self.num_cores),
+                            lambda: engine_cls(path_bytes, chip_id=self.chip_id, num_cores=self.num_cores),
+                            lambda: engine_cls(path_str, chip_id=self.chip_id),
+                            lambda: engine_cls(path_bytes, chip_id=self.chip_id),
+                            lambda: engine_cls(path_str),
+                            lambda: engine_cls(path_bytes),
+                            lambda: engine_cls(path_obj)
+                        ])
 
                     last_err = None
                     for attempt_fn in attempts:
