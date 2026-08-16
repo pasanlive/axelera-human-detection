@@ -4,6 +4,7 @@ VoyagerEngine: Inference Abstraction Layer for Axelera Metis 111C NPU and Fallba
 
 import os
 import time
+import importlib
 import numpy as np
 from typing import List, Dict, Union, Optional, Tuple
 
@@ -26,66 +27,79 @@ class VoyagerEngine:
         
         self._initialize_backend()
 
+    def _find_axelera_engine_class(self) -> Tuple[Optional[type], Optional[str]]:
+        """Discovers Axelera NPU model loader class across all module variations and submodules."""
+        possible_imports = [
+            "axelera.voyager",
+            "axelera.runtime",
+            "axelera.inference",
+            "axelera.pipeline",
+            "axelera.npu",
+            "axelera_voyager",
+            "voyager_sdk",
+            "metis",
+            "axelera"
+        ]
+
+        target_attrs = [
+            "Model", "Pipeline", "Session", "InferenceSession", "Engine", 
+            "Runtime", "AxeleraModel", "AxeleraPipeline", "Runner", "load_model", "load"
+        ]
+
+        for mod_path in possible_imports:
+            try:
+                mod = importlib.import_module(mod_path)
+                # Skip Spotify's unrelated 'voyager' ANN library
+                if hasattr(mod, "Float8Index") and not any(hasattr(mod, a) for a in target_attrs):
+                    continue
+
+                for attr_name in target_attrs:
+                    if hasattr(mod, attr_name):
+                        cls_obj = getattr(mod, attr_name)
+                        return cls_obj, mod_path
+
+                # Check sub-attributes of the imported module
+                for sub_attr in dir(mod):
+                    if not sub_attr.startswith('_'):
+                        try:
+                            sub_obj = getattr(mod, sub_attr)
+                            for attr_name in target_attrs:
+                                if hasattr(sub_obj, attr_name):
+                                    cls_obj = getattr(sub_obj, attr_name)
+                                    return cls_obj, f"{mod_path}.{sub_attr}"
+                        except Exception:
+                            pass
+            except (ImportError, AttributeError):
+                continue
+            except Exception:
+                continue
+
+        return None, None
+
     def _initialize_backend(self):
         """Attempts to load Axelera Voyager SDK engine, falling back to ONNXRuntime if unavailable."""
         # 1. Attempt Axelera Voyager / Metis SDK load
         if self.axm_path and os.path.exists(self.axm_path):
-            ax_module = None
-            module_name_used = None
+            engine_cls, mod_path = self._find_axelera_engine_class()
 
-            # Try importing official Axelera Python SDK packages first
-            for mod_name in ["axelera", "axelera_voyager", "voyager_sdk", "metis", "voyager"]:
+            if engine_cls is not None:
                 try:
-                    mod = __import__(mod_name)
-                    # Skip Spotify's unrelated 'voyager' ANN vector library (which exposes 'Float8Index' / 'Space')
-                    if mod_name == "voyager" and hasattr(mod, "Float8Index") and not hasattr(mod, "Engine") and not hasattr(mod, "Model"):
-                        continue
-                    ax_module = mod
-                    module_name_used = mod_name
-                    break
-                except ImportError:
-                    continue
-
-            if ax_module is not None:
-                try:
-                    print(f"[AXELERA SDK] Loading model {self.axm_path} via '{module_name_used}' (Chip {self.chip_id}, {self.num_cores} cores)...")
-                    
-                    engine_cls = None
-                    for attr_name in ["Model", "Session", "InferenceSession", "Engine", "Pipeline", "Runtime", "load_model", "load"]:
-                        if hasattr(ax_module, attr_name):
-                            engine_cls = getattr(ax_module, attr_name)
-                            break
-
-                    if engine_cls is None:
-                        for submod_name in ["api", "runtime", "npu", "engine", "inference"]:
-                            if hasattr(ax_module, submod_name):
-                                submod = getattr(ax_module, submod_name)
-                                for attr_name in ["Model", "Session", "InferenceSession", "Engine", "Pipeline", "Runtime"]:
-                                    if hasattr(submod, attr_name):
-                                        engine_cls = getattr(submod, attr_name)
-                                        break
-                            if engine_cls:
-                                break
-
-                    if engine_cls is not None:
+                    print(f"[AXELERA SDK] Loading model {self.axm_path} via '{mod_path}.{getattr(engine_cls, '__name__', 'Engine')}' (Chip {self.chip_id}, {self.num_cores} cores)...")
+                    try:
+                        self.session = engine_cls(self.axm_path, chip_id=self.chip_id, num_cores=self.num_cores)
+                    except TypeError:
                         try:
-                            self.session = engine_cls(self.axm_path, chip_id=self.chip_id, num_cores=self.num_cores)
+                            self.session = engine_cls(self.axm_path, chip_id=self.chip_id)
                         except TypeError:
-                            try:
-                                self.session = engine_cls(self.axm_path, chip_id=self.chip_id)
-                            except TypeError:
-                                self.session = engine_cls(self.axm_path)
+                            self.session = engine_cls(self.axm_path)
 
-                        self.backend = "axelera_voyager"
-                        print(f"[AXELERA SDK SUCCESS] Model loaded on Metis AIPU via '{module_name_used}.{getattr(engine_cls, '__name__', 'Engine')}'.")
-                        return
-                    else:
-                        exposed_attrs = [a for a in dir(ax_module) if not a.startswith('_')]
-                        print(f"[AXELERA SDK WARNING] Could not find Engine/Model class in '{module_name_used}'. Exposed attributes: {exposed_attrs}")
+                    self.backend = "axelera_voyager"
+                    print(f"[AXELERA SDK SUCCESS] Model loaded on Metis AIPU via '{mod_path}'.")
+                    return
                 except Exception as e:
                     print(f"[AXELERA SDK WARNING] Could not load .axm model on Metis AIPU: {e}")
             else:
-                print(f"[AXELERA SDK NOTICE] Axelera NPU Python SDK ('axelera' / 'axelera_voyager') not found in environment.")
+                print(f"[AXELERA SDK NOTICE] Axelera NPU model loader class not found in imported module paths.")
 
         # 2. Fallback to ONNXRuntime
         if self.onnx_path and os.path.exists(self.onnx_path):
