@@ -76,14 +76,18 @@ class VoyagerEngine:
 
             print("[AXELERA RUNTIME SUCCESS] Created axelera.runtime.Context handle.")
 
-            # 2. Load Model object (axr.Model inherits from Path and takes single filepath argument)
+            # 2. Load Model object (axr.Model requires context as 1st positional argument)
             path_str = str(self.axm_path)
             model_obj = None
 
             for m_fn in [
-                lambda: axr.Model(path_str),
-                lambda: axr.Model(Path(path_str)),
-                lambda: axr.Model(path_str.encode('utf-8')),
+                lambda: axr.Model(ctx, path_str),
+                lambda: axr.Model(ctx, Path(path_str)),
+                lambda: axr.Model(ctx, path_str.encode('utf-8')),
+                lambda: axr.Model(ctx),
+                lambda: axr.Model(context=ctx, path=path_str),
+                lambda: axr.Model(context=ctx, model_path=path_str),
+                lambda: axr.Model(context=ctx, file_path=path_str),
             ]:
                 try:
                     model_obj = m_fn()
