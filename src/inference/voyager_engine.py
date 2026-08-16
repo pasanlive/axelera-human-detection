@@ -7,7 +7,7 @@ import time
 import importlib
 from pathlib import Path
 import numpy as np
-from typing import List, Dict, Union, Optional, Tuple
+from typing import List, Dict, Union, Optional, Tuple, Any
 
 class VoyagerEngine:
     """
@@ -77,6 +77,60 @@ class VoyagerEngine:
 
         return None, None
 
+    def _get_or_create_context(self, mod_path: Optional[str]) -> Optional[Any]:
+        """Searches across Axelera modules to instantiate an NPU Context / Device handle."""
+        search_modules = []
+        if mod_path:
+            search_modules.append(mod_path)
+            root_mod = mod_path.split('.')[0]
+            if root_mod not in search_modules:
+                search_modules.append(root_mod)
+
+        search_modules.extend([
+            "axelera",
+            "axelera.voyager",
+            "axelera.runtime",
+            "axelera.npu",
+            "axelera.api",
+            "axelera.inference",
+            "axelera_voyager",
+            "voyager_sdk",
+            "metis"
+        ])
+
+        target_ctx_names = [
+            "Context", "Device", "RuntimeContext", "EngineContext", 
+            "create_context", "context", "get_context", "npu_context"
+        ]
+
+        for m_name in search_modules:
+            try:
+                mod = importlib.import_module(m_name)
+                for ctx_name in target_ctx_names:
+                    if hasattr(mod, ctx_name):
+                        factory = getattr(mod, ctx_name)
+                        ctx_attempts = [
+                            lambda f=factory: f(chip_id=self.chip_id),
+                            lambda f=factory: f(self.chip_id),
+                            lambda f=factory: f(device=self.chip_id),
+                            lambda f=factory: f(chip=self.chip_id),
+                            lambda f=factory: f(num_cores=self.num_cores),
+                            lambda f=factory: f("metis-111c"),
+                            lambda f=factory: f(),
+                        ]
+                        for fn in ctx_attempts:
+                            try:
+                                ctx = fn()
+                                if ctx is not None:
+                                    print(f"[AXELERA SDK] Created NPU Context via '{m_name}.{ctx_name}'")
+                                    return ctx
+                            except Exception:
+                                continue
+            except Exception:
+                continue
+
+        return None
+
     def _initialize_backend(self):
         """Attempts to load Axelera Voyager SDK engine, falling back to ONNXRuntime if unavailable."""
         # 1. Attempt Axelera Voyager / Metis SDK load
@@ -87,21 +141,7 @@ class VoyagerEngine:
                 try:
                     print(f"[AXELERA SDK] Loading model {self.axm_path} via '{mod_path}.{getattr(engine_cls, '__name__', 'Engine')}' (Chip {self.chip_id}, {self.num_cores} cores)...")
                     
-                    # Try creating Context object if Model requires 'context'
-                    context_obj = None
-                    mod = importlib.import_module(mod_path)
-                    for ctx_name in ["Context", "Device", "RuntimeContext", "create_context", "context"]:
-                        if hasattr(mod, ctx_name):
-                            ctx_factory = getattr(mod, ctx_name)
-                            try:
-                                context_obj = ctx_factory(chip_id=self.chip_id)
-                            except Exception:
-                                try:
-                                    context_obj = ctx_factory()
-                                except Exception:
-                                    pass
-                        if context_obj:
-                            break
+                    context_obj = self._get_or_create_context(mod_path)
 
                     path_str = str(self.axm_path)
                     path_bytes = str(self.axm_path).encode('utf-8')
@@ -144,6 +184,12 @@ class VoyagerEngine:
                         print(f"[AXELERA SDK SUCCESS] Model loaded on Metis AIPU via '{mod_path}'.")
                         return
                     else:
+                        if mod_path:
+                            try:
+                                m = importlib.import_module(mod_path)
+                                print(f"[AXELERA SDK DIAGNOSTIC] Module '{mod_path}' attributes: {[a for a in dir(m) if not a.startswith('_')]}")
+                            except Exception:
+                                pass
                         raise last_err if last_err else RuntimeError("Model initialization failed across all parameter signatures")
 
                 except Exception as e:
