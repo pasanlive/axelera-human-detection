@@ -61,12 +61,18 @@ def main():
     parser.add_argument("--enroll", type=str, help="Enroll face identity name")
     parser.add_argument("--image", type=str, help="Image filepath for face enrollment")
     parser.add_argument("--list-faces", action="store_true", help="List enrolled face identities")
-    no_display = sys.platform.startswith('linux') and not os.environ.get('DISPLAY') and not os.environ.get('WAYLAND_DISPLAY')
-    parser.add_argument("--headless", action="store_true", default=no_display, help="Run without GUI window")
+    parser.add_argument("--gui", action="store_true", help="Enable desktop OpenCV window display (default: False)")
+    parser.add_argument("--headless", action="store_true", default=True, help="Run without GUI window")
     parser.add_argument("--web", action="store_true", default=True, help="Enable local network web dashboard interface")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Web server host IP address")
     parser.add_argument("--port", type=int, default=8000, help="Web server port")
     args = parser.parse_args()
+
+    # Headless mode is default unless --gui is explicitly requested
+    if args.gui:
+        args.headless = False
+    else:
+        args.headless = True
 
     config = load_config(args.config)
 
