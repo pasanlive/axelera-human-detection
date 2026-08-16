@@ -322,16 +322,67 @@ class VoyagerEngine:
         if self.backend == "axelera_voyager":
             # Axelera Metis NPU GraphExecutor / Voyager SDK inference execution
             if hasattr(self.session, "set_input") and hasattr(self.session, "run"):
-                self.session.set_input(0, input_tensor)
+                # Proactively inspect expected input dtype from graph executor (_input_infos)
+                target_dtype = None
+                if hasattr(self.session, "_input_infos"):
+                    try:
+                        infos = getattr(self.session, "_input_infos")
+                        if isinstance(infos, dict) and 0 in infos:
+                            target_dtype = getattr(infos[0], "dtype", None)
+                        elif isinstance(infos, (list, tuple)) and len(infos) > 0:
+                            target_dtype = getattr(infos[0], "dtype", None)
+                    except Exception:
+                        pass
+
+                if target_dtype is not None and input_tensor.dtype != target_dtype:
+                    if target_dtype == np.int8:
+                        if input_tensor.max() <= 1.0:
+                            input_tensor = (input_tensor * 255.0 - 128.0).clip(-128, 127).astype(np.int8)
+                        else:
+                            input_tensor = (input_tensor - 128.0).clip(-128, 127).astype(np.int8)
+                    elif target_dtype == np.uint8:
+                        if input_tensor.max() <= 1.0:
+                            input_tensor = (input_tensor * 255.0).clip(0, 255).astype(np.uint8)
+                        else:
+                            input_tensor = input_tensor.clip(0, 255).astype(np.uint8)
+                    else:
+                        input_tensor = input_tensor.astype(target_dtype)
+
+                try:
+                    self.session.set_input(0, input_tensor)
+                except (AssertionError, TypeError) as ae:
+                    err_msg = str(ae).lower()
+                    if "int8" in err_msg:
+                        input_tensor = (input_tensor * 255.0 - 128.0).clip(-128, 127).astype(np.int8) if input_tensor.max() <= 1.0 else (input_tensor - 128.0).clip(-128, 127).astype(np.int8)
+                        self.session.set_input(0, input_tensor)
+                    elif "uint8" in err_msg:
+                        input_tensor = (input_tensor * 255.0).clip(0, 255).astype(np.uint8) if input_tensor.max() <= 1.0 else input_tensor.clip(0, 255).astype(np.uint8)
+                        self.session.set_input(0, input_tensor)
+                    else:
+                        raise ae
+
                 self.session.run()
-                num_outputs = getattr(self.session, "get_num_outputs", lambda: 1)()
+
+                num_outputs = 1
+                if hasattr(self.session, "get_num_outputs"):
+                    try:
+                        num_outputs = self.session.get_num_outputs()
+                    except Exception:
+                        num_outputs = 1
+
                 outputs = []
                 for i in range(num_outputs):
-                    out = self.session.get_output(i)
-                    if hasattr(out, "asnumpy"):
-                        out = out.asnumpy()
-                    outputs.append(out)
-                return outputs
+                    try:
+                        out = self.session.get_output(i)
+                        if hasattr(out, "asnumpy"):
+                            out = out.asnumpy()
+                        elif hasattr(out, "numpy"):
+                            out = out.numpy()
+                        outputs.append(np.array(out))
+                    except Exception:
+                        pass
+                if outputs:
+                    return outputs
             elif hasattr(self.session, "run"):
                 outputs = self.session.run(input_tensor)
             elif hasattr(self.session, "forward"):
