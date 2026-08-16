@@ -62,8 +62,13 @@ The system enables simultaneous processing of multiple camera feeds (RTSP stream
 git clone https://github.com/your-username/axelera-human-detection.git
 cd axelera-human-detection
 
-# Install Python dependencies
+# Install standard dependencies
 pip install -r requirements.txt
+
+# Install Axelera Voyager Python SDK into your virtual environment (enables NPU acceleration)
+pip install /path/to/axelera/sdk/wheels/voyager*.whl
+# Or if Voyager SDK is installed in system python, link system site-packages:
+# python -m venv venv --system-site-packages
 ```
 
 ---

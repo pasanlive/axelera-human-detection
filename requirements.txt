@@ -1,3 +1,4 @@
+# Core Computer Vision & Deep Learning Dependencies
 numpy>=1.23.0
 opencv-python>=4.8.0
 pyyaml>=6.0
@@ -6,3 +7,6 @@ ultralytics>=8.0.0
 onnxruntime>=1.15.0
 scipy>=1.10.0
 Pillow>=9.5.0
+
+# Axelera Metis NPU Hardware SDK (Install from Axelera SDK package / wheels directory)
+# Example: pip install voyager-*.whl  (or install via Axelera Voyager SDK installer)
