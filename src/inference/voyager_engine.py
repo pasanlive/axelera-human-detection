@@ -85,13 +85,39 @@ class VoyagerEngine:
             if engine_cls is not None:
                 try:
                     print(f"[AXELERA SDK] Loading model {self.axm_path} via '{mod_path}.{getattr(engine_cls, '__name__', 'Engine')}' (Chip {self.chip_id}, {self.num_cores} cores)...")
-                    try:
-                        self.session = engine_cls(self.axm_path, chip_id=self.chip_id, num_cores=self.num_cores)
-                    except TypeError:
+                    
+                    # Try creating Context object if Model requires 'context'
+                    context_obj = None
+                    mod = importlib.import_module(mod_path)
+                    for ctx_name in ["Context", "Device", "RuntimeContext", "create_context", "context"]:
+                        if hasattr(mod, ctx_name):
+                            ctx_factory = getattr(mod, ctx_name)
+                            try:
+                                context_obj = ctx_factory(chip_id=self.chip_id)
+                            except Exception:
+                                try:
+                                    context_obj = ctx_factory()
+                                except Exception:
+                                    pass
+                        if context_obj:
+                            break
+
+                    if context_obj is not None:
                         try:
-                            self.session = engine_cls(self.axm_path, chip_id=self.chip_id)
+                            self.session = engine_cls(self.axm_path, context=context_obj)
                         except TypeError:
-                            self.session = engine_cls(self.axm_path)
+                            try:
+                                self.session = engine_cls(self.axm_path, context_obj)
+                            except TypeError:
+                                self.session = engine_cls(context_obj, self.axm_path)
+                    else:
+                        try:
+                            self.session = engine_cls(self.axm_path, chip_id=self.chip_id, num_cores=self.num_cores)
+                        except TypeError:
+                            try:
+                                self.session = engine_cls(self.axm_path, chip_id=self.chip_id)
+                            except TypeError:
+                                self.session = engine_cls(self.axm_path)
 
                     self.backend = "axelera_voyager"
                     print(f"[AXELERA SDK SUCCESS] Model loaded on Metis AIPU via '{mod_path}'.")
