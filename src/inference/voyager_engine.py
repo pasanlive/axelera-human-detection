@@ -11,7 +11,7 @@ from typing import List, Dict, Union, Optional, Tuple, Any
 
 class VoyagerEngine:
     """
-    Axelera Metis AIPU Inference Engine using Voyager SDK.
+    Axelera Metis AIPU Inference Engine using Voyager SDK / axelera.runtime.
     Supports seamless fallback to ONNXRuntime / PyTorch for CPU testing.
     """
 
@@ -27,6 +27,98 @@ class VoyagerEngine:
         self.output_names = []
         
         self._initialize_backend()
+
+    def _try_load_axelera_runtime(self) -> bool:
+        """Dedicated loader for official axelera.runtime package."""
+        try:
+            import axelera.runtime as axr
+            print(f"[AXELERA RUNTIME] Initializing Axelera Metis NPU via axelera.runtime...")
+
+            # 1. Discover Context / Devices
+            ctx = None
+            if hasattr(axr, "select_devices"):
+                try:
+                    devices = axr.select_devices()
+                    if devices:
+                        for ctx_fn in [
+                            lambda: axr.Context(devices),
+                            lambda: axr.Context(devices[0]),
+                            lambda: axr.Context(devices=devices),
+                        ]:
+                            try:
+                                ctx = ctx_fn()
+                                if ctx is not None:
+                                    break
+                            except Exception:
+                                continue
+                except Exception as e:
+                    print(f"[AXELERA RUNTIME NOTICE] select_devices: {e}")
+
+            if ctx is None:
+                for ctx_fn in [
+                    lambda: axr.Context(),
+                    lambda: axr.Context(self.chip_id),
+                    lambda: axr.Context(device_id=self.chip_id)
+                ]:
+                    try:
+                        ctx = ctx_fn()
+                        if ctx is not None:
+                            break
+                    except Exception:
+                        continue
+
+            if ctx is None:
+                print("[AXELERA RUNTIME WARNING] Could not instantiate axelera.runtime.Context")
+                return False
+
+            print("[AXELERA RUNTIME SUCCESS] Created axelera.runtime.Context handle.")
+
+            # 2. Load Model
+            path_str = str(self.axm_path)
+            model_obj = None
+
+            for load_fn in [
+                lambda: axr.Model(path_str, ctx),
+                lambda: axr.Model(ctx, path_str),
+                lambda: axr.axelera_load_model(path_str, ctx),
+                lambda: axr.graph_exec_load_model(path_str, ctx),
+                lambda: axr.Model(path_str, context=ctx),
+            ]:
+                try:
+                    model_obj = load_fn()
+                    if model_obj is not None:
+                        break
+                except Exception as e:
+                    last_e = e
+                    continue
+
+            if model_obj is None:
+                print(f"[AXELERA RUNTIME WARNING] Could not load model '{path_str}' into axelera.runtime.Model")
+                return False
+
+            # 3. Create ModelInstance if required
+            if hasattr(model_obj, "create_instance"):
+                try:
+                    self.session = model_obj.create_instance()
+                except Exception:
+                    self.session = model_obj
+            elif hasattr(model_obj, "create_model_instance"):
+                try:
+                    self.session = model_obj.create_model_instance()
+                except Exception:
+                    self.session = model_obj
+            else:
+                self.session = model_obj
+
+            self.backend = "axelera_voyager"
+            print(f"[AXELERA RUNTIME SUCCESS] Model '{Path(self.axm_path).name}' successfully loaded on Metis AIPU ({self.num_cores} cores).")
+            return True
+
+        except ImportError:
+            return False
+        except Exception as e:
+            print(f"[AXELERA RUNTIME WARNING] Load attempt failed: {e}")
+            return False
 
     def _find_axelera_engine_class(self) -> Tuple[Optional[type], Optional[str]]:
         """Discovers Axelera NPU model loader class across all module variations and submodules."""
@@ -59,7 +151,6 @@ class VoyagerEngine:
                         cls_obj = getattr(mod, attr_name)
                         return cls_obj, mod_path
 
-                # Check sub-attributes of the imported module
                 for sub_attr in dir(mod):
                     if not sub_attr.startswith('_'):
                         try:
@@ -106,10 +197,27 @@ class VoyagerEngine:
         for m_name in search_modules:
             try:
                 mod = importlib.import_module(m_name)
+
+                # If select_devices is available
+                devices = None
+                if hasattr(mod, "select_devices"):
+                    try:
+                        devices = mod.select_devices()
+                    except Exception:
+                        pass
+
                 for ctx_name in target_ctx_names:
                     if hasattr(mod, ctx_name):
                         factory = getattr(mod, ctx_name)
-                        ctx_attempts = [
+                        ctx_attempts = []
+                        if devices:
+                            ctx_attempts.extend([
+                                lambda f=factory, d=devices: f(d),
+                                lambda f=factory, d=devices: f(d[0]),
+                                lambda f=factory, d=devices: f(devices=d),
+                            ])
+
+                        ctx_attempts.extend([
                             lambda f=factory: f(chip_id=self.chip_id),
                             lambda f=factory: f(self.chip_id),
                             lambda f=factory: f(device=self.chip_id),
@@ -117,7 +225,8 @@ class VoyagerEngine:
                             lambda f=factory: f(num_cores=self.num_cores),
                             lambda f=factory: f("metis-111c"),
                             lambda f=factory: f(),
-                        ]
+                        ])
+
                         for fn in ctx_attempts:
                             try:
                                 ctx = fn()
@@ -135,8 +244,12 @@ class VoyagerEngine:
         """Attempts to load Axelera Voyager SDK engine, falling back to ONNXRuntime if unavailable."""
         # 1. Attempt Axelera Voyager / Metis SDK load
         if self.axm_path and os.path.exists(self.axm_path):
-            engine_cls, mod_path = self._find_axelera_engine_class()
+            # First try dedicated axelera.runtime loader
+            if self._try_load_axelera_runtime():
+                return
 
+            # Generic fallback loader
+            engine_cls, mod_path = self._find_axelera_engine_class()
             if engine_cls is not None:
                 try:
                     print(f"[AXELERA SDK] Loading model {self.axm_path} via '{mod_path}.{getattr(engine_cls, '__name__', 'Engine')}' (Chip {self.chip_id}, {self.num_cores} cores)...")
@@ -150,12 +263,12 @@ class VoyagerEngine:
                     attempts = []
                     if context_obj is not None:
                         attempts.extend([
+                            lambda: engine_cls(path_str, context_obj),
+                            lambda: engine_cls(path_str, context=context_obj),
                             lambda: engine_cls(context_obj, path_str),
                             lambda: engine_cls(context_obj, path_bytes),
                             lambda: engine_cls(context_obj, path_obj),
-                            lambda: engine_cls(path_str, context=context_obj),
                             lambda: engine_cls(path_bytes, context=context_obj),
-                            lambda: engine_cls(path_str, context_obj),
                             lambda: engine_cls(path_bytes, context_obj),
                         ])
 
@@ -184,18 +297,10 @@ class VoyagerEngine:
                         print(f"[AXELERA SDK SUCCESS] Model loaded on Metis AIPU via '{mod_path}'.")
                         return
                     else:
-                        if mod_path:
-                            try:
-                                m = importlib.import_module(mod_path)
-                                print(f"[AXELERA SDK DIAGNOSTIC] Module '{mod_path}' attributes: {[a for a in dir(m) if not a.startswith('_')]}")
-                            except Exception:
-                                pass
                         raise last_err if last_err else RuntimeError("Model initialization failed across all parameter signatures")
 
                 except Exception as e:
                     print(f"[AXELERA SDK WARNING] Could not load .axm model on Metis AIPU: {e}")
-            else:
-                print(f"[AXELERA SDK NOTICE] Axelera NPU model loader class not found in imported module paths.")
 
         # 2. Fallback to ONNXRuntime
         if self.onnx_path and os.path.exists(self.onnx_path):
@@ -225,31 +330,31 @@ class VoyagerEngine:
         t0 = time.time()
         
         if self.backend == "axelera_voyager":
-            # Voyager SDK inference call
+            # Voyager / Axelera Runtime SDK inference call
             if hasattr(self.session, "run"):
                 outputs = self.session.run(input_tensor)
-            elif hasattr(self.session, "predict"):
-                outputs = self.session.predict(input_tensor)
             elif hasattr(self.session, "forward"):
                 outputs = self.session.forward(input_tensor)
+            elif hasattr(self.session, "predict"):
+                outputs = self.session.predict(input_tensor)
+            elif hasattr(self.session, "execute"):
+                outputs = self.session.execute(input_tensor)
             elif callable(self.session):
                 outputs = self.session(input_tensor)
             else:
-                raise RuntimeError(f"Voyager session object '{type(self.session).__name__}' has no run/predict method")
+                raise RuntimeError(f"Axelera session object '{type(self.session).__name__}' has no run/forward method")
 
             if not isinstance(outputs, list):
                 outputs = [outputs]
             return outputs
 
         elif self.backend == "onnxruntime":
-            # Ensure float32 format
             if input_tensor.dtype != np.float32:
                 input_tensor = input_tensor.astype(np.float32)
             outputs = self.session.run(self.output_names, {self.input_name: input_tensor})
             return outputs
 
         elif self.backend == "virtual":
-            # Return synthetic dummy output tensor for testing flow
             batch_size = input_tensor.shape[0] if len(input_tensor.shape) == 4 else 1
             dummy_output = np.zeros((batch_size, 84, 8400), dtype=np.float32)
             return [dummy_output]
