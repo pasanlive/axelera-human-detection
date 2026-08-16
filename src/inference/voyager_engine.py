@@ -57,28 +57,47 @@ class VoyagerEngine:
             print("[AXELERA RUNTIME SUCCESS] Created axelera.runtime.Context handle.")
 
             path_str = str(self.axm_path)
-            axm_dir = os.path.dirname(os.path.abspath(path_str))
-            axm_file = os.path.basename(path_str)
-
-            # 2. Try direct GraphExecutor loaders (axr.axelera_load_model / axr.graph_exec_load_model)
             model_obj = None
-            direct_loaders = [
-                lambda: axr.axelera_load_model(axm_dir, axm_file),
-                lambda: axr.graph_exec_load_model(axm_dir, axm_file),
-                lambda: axr.axelera_load_model(path_str, axm_file),
-            ]
 
-            for d_fn in direct_loaders:
-                try:
-                    model_obj = d_fn()
-                    if model_obj is not None:
-                        print(f"[AXELERA RUNTIME SUCCESS] Loaded model via direct GraphExecutor loader ({axm_dir}/{axm_file}).")
-                        self.session = model_obj
-                        self.backend = "axelera_voyager"
-                        return True
-                except Exception as e:
-                    print(f"[AXELERA RUNTIME DEBUG] GraphExecutor loader error ({type(e).__name__}): {e}")
+            # 2. Build candidate (directory, filename) pairs
+            search_targets = []
+            if os.path.isdir(path_str):
+                for f in os.listdir(path_str):
+                    search_targets.append((path_str, f))
+            else:
+                axm_dir = os.path.dirname(os.path.abspath(path_str))
+                axm_file = os.path.basename(path_str)
+                search_targets.append((axm_dir, axm_file))
+                
+                if os.path.exists(axm_dir):
+                    for f in os.listdir(axm_dir):
+                        if f.endswith('.so') or f.endswith('.bin') or f.endswith('.json') or f.endswith('.axm'):
+                            target_tuple = (axm_dir, f)
+                            if target_tuple not in search_targets:
+                                search_targets.append(target_tuple)
+
+            print(f"[AXELERA RUNTIME] Scanning compiled NPU model candidates in {search_targets}...")
+
+            for search_dir, search_file in search_targets:
+                target_full = os.path.join(search_dir, search_file)
+                if not os.path.exists(target_full):
+                    print(f"[AXELERA RUNTIME NOTICE] Target file '{target_full}' does not exist on disk yet.")
                     continue
+
+                for loader_fn in [
+                    lambda d=search_dir, f=search_file: axr.axelera_load_model(d, f),
+                    lambda d=search_dir, f=search_file: axr.graph_exec_load_model(d, f),
+                ]:
+                    try:
+                        model_obj = loader_fn()
+                        if model_obj is not None:
+                            print(f"[AXELERA RUNTIME SUCCESS] Model '{search_file}' loaded & instantiated on Metis AIPU ({self.num_cores} cores).")
+                            self.session = model_obj
+                            self.backend = "axelera_voyager"
+                            return True
+                    except Exception as e:
+                        print(f"[AXELERA RUNTIME DEBUG] GraphExecutor loader failed for ({search_dir}, {search_file}): {e}")
+                        continue
 
             # 3. Try axr.Model(obj: pAnyObject, context: Context)
             p_objects = []
@@ -94,12 +113,6 @@ class VoyagerEngine:
                     except Exception:
                         pass
 
-            if hasattr(axr, "Path"):
-                try:
-                    p_objects.append(axr.Path(path_str))
-                except Exception:
-                    pass
-
             for p_obj in p_objects:
                 try:
                     model_obj = axr.Model(obj=p_obj, context=ctx)
@@ -111,17 +124,7 @@ class VoyagerEngine:
                     continue
 
             if model_obj is None:
-                # Try positional axr.Model(p_obj, ctx)
-                for p_obj in p_objects:
-                    try:
-                        model_obj = axr.Model(p_obj, ctx)
-                        if model_obj is not None:
-                            break
-                    except Exception as e:
-                        continue
-
-            if model_obj is None:
-                print(f"[AXELERA RUNTIME WARNING] Could not construct axelera.runtime.Model('{path_str}')")
+                print(f"[AXELERA RUNTIME WARNING] Could not load .axm NPU model '{path_str}'. Fallback to ONNXRuntime will be engaged.")
                 return False
 
             # 4. Create ModelInstance if required
