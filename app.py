@@ -98,33 +98,40 @@ def main():
 
     try:
         while pipeline.is_running:
-            start_time = time.time()
+            try:
+                start_time = time.time()
 
-            # Execute pipeline step across all active streams
-            output_frames = pipeline.process_step()
+                # Execute pipeline step across all active streams
+                output_frames = pipeline.process_step()
 
-            # Compose multi-stream output grid
-            grid_frame = pipeline.compose_grid(output_frames)
+                # Compose multi-stream output grid
+                grid_frame = pipeline.compose_grid(output_frames)
 
-            if not args.headless:
-                try:
-                    cv2.imshow(window_name, grid_frame)
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord('q') or key == 27:  # 'q' or ESC
-                        print("[EXIT] User requested shutdown.")
-                        break
-                    elif key == ord('s'):
-                        snapshot_filename = f"snapshot_{int(time.time())}.jpg"
-                        cv2.imwrite(snapshot_filename, grid_frame)
-                        print(f"[SAVED] Saved frame snapshot to: {snapshot_filename}")
-                except Exception as e:
-                    print(f"[HEADLESS AUTO-SWITCH] GUI display unavailable ({e}). Continuing in headless mode...")
-                    args.headless = True
+                if not args.headless:
+                    try:
+                        cv2.imshow(window_name, grid_frame)
+                        key = cv2.waitKey(1) & 0xFF
+                        if key == ord('q') or key == 27:  # 'q' or ESC
+                            print("[EXIT] User requested shutdown.")
+                            break
+                        elif key == ord('s'):
+                            snapshot_filename = f"snapshot_{int(time.time())}.jpg"
+                            cv2.imwrite(snapshot_filename, grid_frame)
+                            print(f"[SAVED] Saved frame snapshot to: {snapshot_filename}")
+                    except Exception as e:
+                        print(f"[HEADLESS AUTO-SWITCH] GUI display unavailable ({e}). Continuing in headless mode...")
+                        args.headless = True
 
-            # Sleep slightly to maintain clean CPU iteration rate
-            elapsed = time.time() - start_time
-            sleep_time = max(0.001, (1.0 / 60.0) - elapsed)
-            time.sleep(sleep_time)
+                # Sleep slightly to maintain clean CPU iteration rate
+                elapsed = time.time() - start_time
+                sleep_time = max(0.001, (1.0 / 60.0) - elapsed)
+                time.sleep(sleep_time)
+
+            except Exception as step_err:
+                print(f"[PIPELINE RUNTIME WARNING] Step execution error: {step_err}")
+                import traceback
+                traceback.print_exc()
+                time.sleep(0.05)
 
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Stopping pipeline...")
