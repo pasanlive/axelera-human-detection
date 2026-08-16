@@ -5,6 +5,7 @@ VoyagerEngine: Inference Abstraction Layer for Axelera Metis 111C NPU and Fallba
 import os
 import time
 import importlib
+from pathlib import Path
 import numpy as np
 from typing import List, Dict, Union, Optional, Tuple
 
@@ -102,26 +103,49 @@ class VoyagerEngine:
                         if context_obj:
                             break
 
-                    if context_obj is not None:
-                        try:
-                            self.session = engine_cls(self.axm_path, context=context_obj)
-                        except TypeError:
-                            try:
-                                self.session = engine_cls(self.axm_path, context_obj)
-                            except TypeError:
-                                self.session = engine_cls(context_obj, self.axm_path)
-                    else:
-                        try:
-                            self.session = engine_cls(self.axm_path, chip_id=self.chip_id, num_cores=self.num_cores)
-                        except TypeError:
-                            try:
-                                self.session = engine_cls(self.axm_path, chip_id=self.chip_id)
-                            except TypeError:
-                                self.session = engine_cls(self.axm_path)
+                    path_str = str(self.axm_path)
+                    path_bytes = str(self.axm_path).encode('utf-8')
+                    path_obj = Path(self.axm_path)
 
-                    self.backend = "axelera_voyager"
-                    print(f"[AXELERA SDK SUCCESS] Model loaded on Metis AIPU via '{mod_path}'.")
-                    return
+                    attempts = []
+                    if context_obj is not None:
+                        attempts.extend([
+                            lambda: engine_cls(context_obj, path_str),
+                            lambda: engine_cls(context_obj, path_bytes),
+                            lambda: engine_cls(context_obj, path_obj),
+                            lambda: engine_cls(path_str, context=context_obj),
+                            lambda: engine_cls(path_bytes, context=context_obj),
+                            lambda: engine_cls(path_str, context_obj),
+                            lambda: engine_cls(path_bytes, context_obj),
+                        ])
+
+                    attempts.extend([
+                        lambda: engine_cls(path_str, chip_id=self.chip_id, num_cores=self.num_cores),
+                        lambda: engine_cls(path_bytes, chip_id=self.chip_id, num_cores=self.num_cores),
+                        lambda: engine_cls(path_str, chip_id=self.chip_id),
+                        lambda: engine_cls(path_bytes, chip_id=self.chip_id),
+                        lambda: engine_cls(path_str),
+                        lambda: engine_cls(path_bytes),
+                        lambda: engine_cls(path_obj)
+                    ])
+
+                    last_err = None
+                    for attempt_fn in attempts:
+                        try:
+                            self.session = attempt_fn()
+                            if self.session is not None:
+                                break
+                        except Exception as err:
+                            last_err = err
+                            continue
+
+                    if self.session is not None:
+                        self.backend = "axelera_voyager"
+                        print(f"[AXELERA SDK SUCCESS] Model loaded on Metis AIPU via '{mod_path}'.")
+                        return
+                    else:
+                        raise last_err if last_err else RuntimeError("Model initialization failed across all parameter signatures")
+
                 except Exception as e:
                     print(f"[AXELERA SDK WARNING] Could not load .axm model on Metis AIPU: {e}")
             else:
