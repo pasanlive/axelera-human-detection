@@ -76,41 +76,74 @@ class VoyagerEngine:
 
             print("[AXELERA RUNTIME SUCCESS] Created axelera.runtime.Context handle.")
 
-            # 2. Load Model object (axr.Model requires context as 1st positional argument)
+            # 2. Inspect axr.Model and loader functions
             path_str = str(self.axm_path)
+            path_bytes = path_str.encode('utf-8')
+            c_path_p = ctypes.c_char_p(path_bytes)
+
+            import inspect
+            try:
+                if hasattr(axr, "Model"):
+                    print(f"[AXELERA DIAGNOSTIC] axr.Model signature: {inspect.signature(axr.Model.__init__)}")
+                    print(f"[AXELERA DIAGNOSTIC] axr.Model doc: {getattr(axr.Model, '__doc__', None)}")
+                if hasattr(axr, "axelera_load_model"):
+                    print(f"[AXELERA DIAGNOSTIC] axr.axelera_load_model signature: {inspect.signature(axr.axelera_load_model)}")
+                if hasattr(axr, "graph_exec_load_model"):
+                    print(f"[AXELERA DIAGNOSTIC] axr.graph_exec_load_model signature: {inspect.signature(axr.graph_exec_load_model)}")
+            except Exception as ie:
+                print(f"[AXELERA DIAGNOSTIC] Inspection notice: {ie}")
+
             model_obj = None
 
-            for m_fn in [
-                lambda: axr.Model(ctx, path_str),
-                lambda: axr.Model(ctx, Path(path_str)),
-                lambda: axr.Model(ctx, path_str.encode('utf-8')),
-                lambda: axr.Model(ctx),
-                lambda: axr.Model(context=ctx, path=path_str),
-                lambda: axr.Model(context=ctx, model_path=path_str),
-                lambda: axr.Model(context=ctx, file_path=path_str),
-            ]:
+            # Try direct module loader functions first
+            direct_loaders = [
+                lambda: axr.axelera_load_model(path_str),
+                lambda: axr.axelera_load_model(c_path_p),
+                lambda: axr.axelera_load_model(path_str, ctx),
+                lambda: axr.graph_exec_load_model(path_str),
+                lambda: axr.graph_exec_load_model(c_path_p),
+                lambda: axr.graph_exec_load_model(path_str, ctx),
+            ]
+
+            for d_fn in direct_loaders:
                 try:
-                    model_obj = m_fn()
+                    model_obj = d_fn()
                     if model_obj is not None:
+                        print(f"[AXELERA RUNTIME SUCCESS] Loaded model via direct module loader function.")
                         break
                 except Exception as e:
-                    print(f"[AXELERA RUNTIME DEBUG] Model constructor error ({type(e).__name__}): {e}")
+                    print(f"[AXELERA RUNTIME DEBUG] Direct loader error ({type(e).__name__}): {e}")
                     continue
+
+            if model_obj is None:
+                for m_fn in [
+                    lambda: axr.Model(ctx, path_str),
+                    lambda: axr.Model(ctx, Path(path_str)),
+                    lambda: axr.Model(ctx, c_path_p),
+                    lambda: axr.Model(c_path_p, ctx),
+                    lambda: axr.Model(path_str, ctx),
+                    lambda: axr.Model(c_path_p),
+                    lambda: axr.Model(path_str),
+                ]:
+                    try:
+                        model_obj = m_fn()
+                        if model_obj is not None:
+                            break
+                    except Exception as e:
+                        print(f"[AXELERA RUNTIME DEBUG] Model constructor error ({type(e).__name__}): {e}")
+                        continue
 
             if model_obj is None:
                 print(f"[AXELERA RUNTIME WARNING] Could not construct axelera.runtime.Model('{path_str}')")
                 return False
 
-            print(f"[AXELERA RUNTIME SUCCESS] Constructed Model object for '{path_str}'.")
+            print(f"[AXELERA RUNTIME SUCCESS] Obtained Model handle for '{path_str}'.")
 
             # 3. Create ModelInstance bound to Context
             instance_methods = [
                 lambda: model_obj.create_instance(ctx),
                 lambda: ctx.create_instance(model_obj),
                 lambda: ctx.load_model(model_obj),
-                lambda: axr.axelera_load_model(path_str, ctx),
-                lambda: axr.axelera_load_model(model_obj, ctx),
-                lambda: axr.graph_exec_load_model(path_str, ctx),
                 lambda: model_obj.load(ctx),
                 lambda: model_obj.instantiate(ctx),
                 lambda: model_obj.create_instance(),
@@ -127,8 +160,8 @@ class VoyagerEngine:
                 except Exception as e:
                     print(f"[AXELERA RUNTIME DEBUG] ModelInstance creation error ({type(e).__name__}): {e}")
                     continue
-                self.session = model_obj
 
+            self.session = model_obj
             self.backend = "axelera_voyager"
             print(f"[AXELERA RUNTIME SUCCESS] Model '{Path(self.axm_path).name}' successfully loaded on Metis AIPU ({self.num_cores} cores).")
             return True
