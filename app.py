@@ -69,7 +69,8 @@ def main():
     parser.add_argument("--enroll", type=str, help="Enroll face identity name")
     parser.add_argument("--image", type=str, help="Image filepath for face enrollment")
     parser.add_argument("--list-faces", action="store_true", help="List enrolled face identities")
-    parser.add_argument("--headless", action="store_true", help="Run without GUI window")
+    no_display = sys.platform.startswith('linux') and not os.environ.get('DISPLAY') and not os.environ.get('WAYLAND_DISPLAY')
+    parser.add_argument("--headless", action="store_true", default=no_display, help="Run without GUI window")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -106,15 +107,19 @@ def main():
             grid_frame = pipeline.compose_grid(output_frames)
 
             if not args.headless:
-                cv2.imshow(window_name, grid_frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == 27:  # 'q' or ESC
-                    print("[EXIT] User requested shutdown.")
-                    break
-                elif key == ord('s'):
-                    snapshot_filename = f"snapshot_{int(time.time())}.jpg"
-                    cv2.imwrite(snapshot_filename, grid_frame)
-                    print(f"[SAVED] Saved frame snapshot to: {snapshot_filename}")
+                try:
+                    cv2.imshow(window_name, grid_frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q') or key == 27:  # 'q' or ESC
+                        print("[EXIT] User requested shutdown.")
+                        break
+                    elif key == ord('s'):
+                        snapshot_filename = f"snapshot_{int(time.time())}.jpg"
+                        cv2.imwrite(snapshot_filename, grid_frame)
+                        print(f"[SAVED] Saved frame snapshot to: {snapshot_filename}")
+                except Exception as e:
+                    print(f"[HEADLESS AUTO-SWITCH] GUI display unavailable ({e}). Continuing in headless mode...")
+                    args.headless = True
 
             # Sleep slightly to maintain clean CPU iteration rate
             elapsed = time.time() - start_time
