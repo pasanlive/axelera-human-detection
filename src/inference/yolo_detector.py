@@ -90,11 +90,13 @@ class YOLODetector:
 
     def _postprocess(self, output: np.ndarray, scale: float, pad_x: int, pad_y: int, w_orig: int, h_orig: int) -> List[Dict[str, Any]]:
         """Parses YOLO raw outputs and applies Non-Maximum Suppression (NMS)."""
-        if len(output.shape) == 3:
-            output = output[0]  # [84, 8400]
-        
-        # Transpose if output is [84, 8400] -> [8400, 84]
-        if output.shape[0] < output.shape[1]:
+        output = np.squeeze(output)
+
+        if len(output.shape) != 2:
+            return []
+
+        d0, d1 = output.shape
+        if d0 < d1:
             output = output.T
 
         boxes = []
@@ -102,11 +104,15 @@ class YOLODetector:
         class_ids = []
 
         for row in output:
+            if len(row) < 5:
+                continue
             scores = row[4:]
-            cls_id = np.argmax(scores)
-            max_score = scores[cls_id]
+            if len(scores) == 0:
+                continue
+            cls_id = int(np.argmax(scores))
+            max_score = float(scores[cls_id])
 
-            if cls_id == self.person_class_id and max_score >= self.conf_thresh:
+            if (cls_id == self.person_class_id or len(scores) == 1) and max_score >= self.conf_thresh:
                 cx, cy, w, h = row[0:4]
                 # Convert from padded canvas space back to original image space
                 x1 = (cx - w / 2 - pad_x) / scale
@@ -138,4 +144,5 @@ class YOLODetector:
                     "class_id": class_ids[i],
                     "label": "Person"
                 })
+
         return results

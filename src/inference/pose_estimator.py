@@ -90,15 +90,21 @@ class PoseEstimator:
         return input_tensor, scale, (pad_x, pad_y)
 
     def _postprocess(self, output: np.ndarray, scale: float, pad_x: int, pad_y: int, w_orig: int, h_orig: int) -> List[Dict[str, Any]]:
-        """Parses YOLO-Pose tensor outputs [1, 56, 8400] into bounding boxes and keypoints."""
-        if len(output.shape) == 3:
-            output = output[0]  # [56, 8400]
-        if output.shape[0] < output.shape[1]:
-            output = output.T    # [8400, 56]
+        """Parses YOLO-Pose tensor outputs into bounding boxes and keypoints."""
+        output = np.squeeze(output)
+
+        if len(output.shape) != 2:
+            return []
+
+        d0, d1 = output.shape
+        if d0 < d1:
+            output = output.T
 
         poses = []
         for row in output:
-            box_score = row[4]
+            if len(row) < 56:
+                continue
+            box_score = float(row[4])
             if box_score < self.conf_thresh:
                 continue
 
