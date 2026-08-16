@@ -20,7 +20,9 @@ class FaceRecognizer:
         # Face feature embedder engine
         self.embedder_engine = VoyagerEngine(
             axm_path=config.get("embedder_axm"),
-            onnx_path=config.get("embedder_onnx")
+            onnx_path=config.get("embedder_onnx"),
+            chip_id=config.get("chip_id", 0),
+            num_cores=config.get("num_cores", 4)
         )
 
         # OpenCV Haar Cascade / DNN face detector as fast face localization fallback

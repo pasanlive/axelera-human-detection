@@ -27,7 +27,9 @@ class PoseEstimator:
 
         self.engine = VoyagerEngine(
             axm_path=config.get("axm_path"),
-            onnx_path=config.get("onnx_path")
+            onnx_path=config.get("onnx_path"),
+            chip_id=config.get("chip_id", 0),
+            num_cores=config.get("num_cores", 4)
         )
 
         self.ultralytics_model = None

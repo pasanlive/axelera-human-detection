@@ -13,10 +13,11 @@ class VoyagerEngine:
     Supports seamless fallback to ONNXRuntime / PyTorch for CPU testing.
     """
 
-    def __init__(self, axm_path: Optional[str] = None, onnx_path: Optional[str] = None, chip_id: int = 0):
+    def __init__(self, axm_path: Optional[str] = None, onnx_path: Optional[str] = None, chip_id: int = 0, num_cores: int = 4):
         self.axm_path = axm_path
         self.onnx_path = onnx_path
         self.chip_id = chip_id
+        self.num_cores = num_cores
         
         self.backend = "unknown"
         self.session = None
@@ -32,10 +33,13 @@ class VoyagerEngine:
             try:
                 # Try importing voyager Python SDK (Axelera runtime)
                 import voyager
-                print(f"[VOYAGER SDK] Loading model {self.axm_path} on Axelera Metis chip {self.chip_id}...")
-                self.session = voyager.Engine(self.axm_path, chip_id=self.chip_id)
+                print(f"[VOYAGER SDK] Loading model {self.axm_path} on Axelera Metis chip {self.chip_id} ({self.num_cores} AIPU cores)...")
+                try:
+                    self.session = voyager.Engine(self.axm_path, chip_id=self.chip_id, num_cores=self.num_cores)
+                except TypeError:
+                    self.session = voyager.Engine(self.axm_path, chip_id=self.chip_id)
                 self.backend = "axelera_voyager"
-                print(f"[VOYAGER SDK SUCCESS] Model loaded on Axelera Metis 111C AIPU.")
+                print(f"[VOYAGER SDK SUCCESS] Model loaded on Axelera Metis 111C AIPU ({self.num_cores} cores).")
                 return
             except ImportError:
                 print(f"[VOYAGER SDK NOTICE] 'voyager' module not installed in current Python environment.")

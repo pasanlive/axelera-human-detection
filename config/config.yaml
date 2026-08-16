@@ -3,6 +3,7 @@
 hardware:
   device: "axelera"        # Options: "axelera" (NPU Metis 111C), "onnx" (CPU/GPU ONNXRuntime fallback), "pytorch"
   chip_id: 0               # Metis device index
+  num_cores: 4             # Utilize all 4 Metis AIPU cores (100% resources)
   voyager_sdk: true
 
 performance:
