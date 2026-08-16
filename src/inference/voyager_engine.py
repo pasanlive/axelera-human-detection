@@ -28,51 +28,64 @@ class VoyagerEngine:
 
     def _initialize_backend(self):
         """Attempts to load Axelera Voyager SDK engine, falling back to ONNXRuntime if unavailable."""
-        # 1. Attempt Axelera Voyager SDK load
+        # 1. Attempt Axelera Voyager / Metis SDK load
         if self.axm_path and os.path.exists(self.axm_path):
-            try:
-                import voyager
-                print(f"[VOYAGER SDK] Loading model {self.axm_path} on Axelera Metis chip {self.chip_id} ({self.num_cores} AIPU cores)...")
+            ax_module = None
+            module_name_used = None
 
-                # Auto-discover Voyager SDK model loader class/factory
-                engine_cls = None
-                for attr_name in ["Model", "Session", "InferenceSession", "Engine", "Pipeline", "Runtime", "load_model", "load"]:
-                    if hasattr(voyager, attr_name):
-                        engine_cls = getattr(voyager, attr_name)
-                        break
+            # Try importing official Axelera Python SDK packages first
+            for mod_name in ["axelera", "axelera_voyager", "voyager_sdk", "metis", "voyager"]:
+                try:
+                    mod = __import__(mod_name)
+                    # Skip Spotify's unrelated 'voyager' ANN vector library (which exposes 'Float8Index' / 'Space')
+                    if mod_name == "voyager" and hasattr(mod, "Float8Index") and not hasattr(mod, "Engine") and not hasattr(mod, "Model"):
+                        continue
+                    ax_module = mod
+                    module_name_used = mod_name
+                    break
+                except ImportError:
+                    continue
 
-                if engine_cls is None:
-                    # Check submodules (e.g. voyager.api, voyager.runtime)
-                    for submod_name in ["api", "runtime", "npu", "engine"]:
-                        if hasattr(voyager, submod_name):
-                            submod = getattr(voyager, submod_name)
-                            for attr_name in ["Model", "Session", "InferenceSession", "Engine", "Pipeline", "Runtime"]:
-                                if hasattr(submod, attr_name):
-                                    engine_cls = getattr(submod, attr_name)
-                                    break
-                        if engine_cls:
+            if ax_module is not None:
+                try:
+                    print(f"[AXELERA SDK] Loading model {self.axm_path} via '{module_name_used}' (Chip {self.chip_id}, {self.num_cores} cores)...")
+                    
+                    engine_cls = None
+                    for attr_name in ["Model", "Session", "InferenceSession", "Engine", "Pipeline", "Runtime", "load_model", "load"]:
+                        if hasattr(ax_module, attr_name):
+                            engine_cls = getattr(ax_module, attr_name)
                             break
 
-                if engine_cls is not None:
-                    try:
-                        self.session = engine_cls(self.axm_path, chip_id=self.chip_id, num_cores=self.num_cores)
-                    except TypeError:
+                    if engine_cls is None:
+                        for submod_name in ["api", "runtime", "npu", "engine", "inference"]:
+                            if hasattr(ax_module, submod_name):
+                                submod = getattr(ax_module, submod_name)
+                                for attr_name in ["Model", "Session", "InferenceSession", "Engine", "Pipeline", "Runtime"]:
+                                    if hasattr(submod, attr_name):
+                                        engine_cls = getattr(submod, attr_name)
+                                        break
+                            if engine_cls:
+                                break
+
+                    if engine_cls is not None:
                         try:
-                            self.session = engine_cls(self.axm_path, chip_id=self.chip_id)
+                            self.session = engine_cls(self.axm_path, chip_id=self.chip_id, num_cores=self.num_cores)
                         except TypeError:
-                            self.session = engine_cls(self.axm_path)
+                            try:
+                                self.session = engine_cls(self.axm_path, chip_id=self.chip_id)
+                            except TypeError:
+                                self.session = engine_cls(self.axm_path)
 
-                    self.backend = "axelera_voyager"
-                    print(f"[VOYAGER SDK SUCCESS] Model loaded via Voyager SDK ({type(self.session).__name__}).")
-                    return
-                else:
-                    exposed_attrs = [a for a in dir(voyager) if not a.startswith('_')]
-                    print(f"[VOYAGER SDK WARNING] Could not find Engine/Model class in 'voyager'. Available attributes: {exposed_attrs}")
-
-            except ImportError:
-                print(f"[VOYAGER SDK NOTICE] 'voyager' module not installed in current Python environment.")
-            except Exception as e:
-                print(f"[VOYAGER SDK WARNING] Could not load .axm model on Metis AIPU: {e}")
+                        self.backend = "axelera_voyager"
+                        print(f"[AXELERA SDK SUCCESS] Model loaded on Metis AIPU via '{module_name_used}.{getattr(engine_cls, '__name__', 'Engine')}'.")
+                        return
+                    else:
+                        exposed_attrs = [a for a in dir(ax_module) if not a.startswith('_')]
+                        print(f"[AXELERA SDK WARNING] Could not find Engine/Model class in '{module_name_used}'. Exposed attributes: {exposed_attrs}")
+                except Exception as e:
+                    print(f"[AXELERA SDK WARNING] Could not load .axm model on Metis AIPU: {e}")
+            else:
+                print(f"[AXELERA SDK NOTICE] Axelera NPU Python SDK ('axelera' / 'axelera_voyager') not found in environment.")
 
         # 2. Fallback to ONNXRuntime
         if self.onnx_path and os.path.exists(self.onnx_path):
