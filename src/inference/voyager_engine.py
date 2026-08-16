@@ -35,40 +35,20 @@ class VoyagerEngine:
             import axelera.runtime as axr
             print(f"[AXELERA RUNTIME] Initializing Axelera Metis NPU via axelera.runtime...")
 
-            # 1. Discover Context / Devices
+            # 1. Discover Context
             ctx = None
-            if hasattr(axr, "select_devices"):
+            for ctx_fn in [
+                lambda: axr.Context(),
+                lambda: axr.Context(self.chip_id),
+                lambda: axr.Context(device_id=self.chip_id)
+            ]:
                 try:
-                    devices = axr.select_devices()
-                    if devices:
-                        for ctx_fn in [
-                            lambda: axr.Context(devices),
-                            lambda: axr.Context(devices[0]),
-                            lambda: axr.Context(devices=devices),
-                        ]:
-                            try:
-                                ctx = ctx_fn()
-                                if ctx is not None:
-                                    break
-                            except Exception as e:
-                                print(f"[AXELERA RUNTIME DEBUG] Context(devices) error: {e}")
-                                continue
+                    ctx = ctx_fn()
+                    if ctx is not None:
+                        break
                 except Exception as e:
-                    print(f"[AXELERA RUNTIME NOTICE] select_devices: {e}")
-
-            if ctx is None:
-                for ctx_fn in [
-                    lambda: axr.Context(),
-                    lambda: axr.Context(self.chip_id),
-                    lambda: axr.Context(device_id=self.chip_id)
-                ]:
-                    try:
-                        ctx = ctx_fn()
-                        if ctx is not None:
-                            break
-                    except Exception as e:
-                        print(f"[AXELERA RUNTIME DEBUG] Context fallback error: {e}")
-                        continue
+                    print(f"[AXELERA RUNTIME DEBUG] Context creation error: {e}")
+                    continue
 
             if ctx is None:
                 print("[AXELERA RUNTIME WARNING] Could not instantiate axelera.runtime.Context")
@@ -76,70 +56,75 @@ class VoyagerEngine:
 
             print("[AXELERA RUNTIME SUCCESS] Created axelera.runtime.Context handle.")
 
-            # 2. Inspect axr.Model and loader functions
             path_str = str(self.axm_path)
-            path_bytes = path_str.encode('utf-8')
-            c_path_p = ctypes.c_char_p(path_bytes)
+            axm_dir = os.path.dirname(os.path.abspath(path_str))
+            axm_file = os.path.basename(path_str)
 
-            import inspect
-            try:
-                if hasattr(axr, "Model"):
-                    print(f"[AXELERA DIAGNOSTIC] axr.Model signature: {inspect.signature(axr.Model.__init__)}")
-                    print(f"[AXELERA DIAGNOSTIC] axr.Model doc: {getattr(axr.Model, '__doc__', None)}")
-                if hasattr(axr, "axelera_load_model"):
-                    print(f"[AXELERA DIAGNOSTIC] axr.axelera_load_model signature: {inspect.signature(axr.axelera_load_model)}")
-                if hasattr(axr, "graph_exec_load_model"):
-                    print(f"[AXELERA DIAGNOSTIC] axr.graph_exec_load_model signature: {inspect.signature(axr.graph_exec_load_model)}")
-            except Exception as ie:
-                print(f"[AXELERA DIAGNOSTIC] Inspection notice: {ie}")
-
+            # 2. Try direct GraphExecutor loaders (axr.axelera_load_model / axr.graph_exec_load_model)
             model_obj = None
-
-            # Try direct module loader functions first
             direct_loaders = [
-                lambda: axr.axelera_load_model(path_str),
-                lambda: axr.axelera_load_model(c_path_p),
-                lambda: axr.axelera_load_model(path_str, ctx),
-                lambda: axr.graph_exec_load_model(path_str),
-                lambda: axr.graph_exec_load_model(c_path_p),
-                lambda: axr.graph_exec_load_model(path_str, ctx),
+                lambda: axr.axelera_load_model(axm_dir, axm_file),
+                lambda: axr.graph_exec_load_model(axm_dir, axm_file),
+                lambda: axr.axelera_load_model(path_str, axm_file),
             ]
 
             for d_fn in direct_loaders:
                 try:
                     model_obj = d_fn()
                     if model_obj is not None:
-                        print(f"[AXELERA RUNTIME SUCCESS] Loaded model via direct module loader function.")
+                        print(f"[AXELERA RUNTIME SUCCESS] Loaded model via direct GraphExecutor loader ({axm_dir}/{axm_file}).")
+                        self.session = model_obj
+                        self.backend = "axelera_voyager"
+                        return True
+                except Exception as e:
+                    print(f"[AXELERA RUNTIME DEBUG] GraphExecutor loader error ({type(e).__name__}): {e}")
+                    continue
+
+            # 3. Try axr.Model(obj: pAnyObject, context: Context)
+            p_objects = []
+            if hasattr(axr, "Object"):
+                for obj_fn in [
+                    lambda: axr.Object(path_str),
+                    lambda: axr.Object(path_str.encode('utf-8')),
+                ]:
+                    try:
+                        obj_inst = obj_fn()
+                        if obj_inst is not None:
+                            p_objects.append(obj_inst)
+                    except Exception:
+                        pass
+
+            if hasattr(axr, "Path"):
+                try:
+                    p_objects.append(axr.Path(path_str))
+                except Exception:
+                    pass
+
+            for p_obj in p_objects:
+                try:
+                    model_obj = axr.Model(obj=p_obj, context=ctx)
+                    if model_obj is not None:
+                        print(f"[AXELERA RUNTIME SUCCESS] Created axr.Model(obj, context) handle.")
                         break
                 except Exception as e:
-                    print(f"[AXELERA RUNTIME DEBUG] Direct loader error ({type(e).__name__}): {e}")
+                    print(f"[AXELERA RUNTIME DEBUG] Model(obj, context) error ({type(e).__name__}): {e}")
                     continue
 
             if model_obj is None:
-                for m_fn in [
-                    lambda: axr.Model(ctx, path_str),
-                    lambda: axr.Model(ctx, Path(path_str)),
-                    lambda: axr.Model(ctx, c_path_p),
-                    lambda: axr.Model(c_path_p, ctx),
-                    lambda: axr.Model(path_str, ctx),
-                    lambda: axr.Model(c_path_p),
-                    lambda: axr.Model(path_str),
-                ]:
+                # Try positional axr.Model(p_obj, ctx)
+                for p_obj in p_objects:
                     try:
-                        model_obj = m_fn()
+                        model_obj = axr.Model(p_obj, ctx)
                         if model_obj is not None:
                             break
                     except Exception as e:
-                        print(f"[AXELERA RUNTIME DEBUG] Model constructor error ({type(e).__name__}): {e}")
                         continue
 
             if model_obj is None:
                 print(f"[AXELERA RUNTIME WARNING] Could not construct axelera.runtime.Model('{path_str}')")
                 return False
 
-            print(f"[AXELERA RUNTIME SUCCESS] Obtained Model handle for '{path_str}'.")
-
-            # 3. Create ModelInstance bound to Context
+            # 4. Create ModelInstance if required
             instance_methods = [
                 lambda: model_obj.create_instance(ctx),
                 lambda: ctx.create_instance(model_obj),
@@ -147,7 +132,6 @@ class VoyagerEngine:
                 lambda: model_obj.load(ctx),
                 lambda: model_obj.instantiate(ctx),
                 lambda: model_obj.create_instance(),
-                lambda: ctx.create_instance(),
             ]
 
             for fn in instance_methods:
@@ -163,7 +147,7 @@ class VoyagerEngine:
 
             self.session = model_obj
             self.backend = "axelera_voyager"
-            print(f"[AXELERA RUNTIME SUCCESS] Model '{Path(self.axm_path).name}' successfully loaded on Metis AIPU ({self.num_cores} cores).")
+            print(f"[AXELERA RUNTIME SUCCESS] Model '{Path(self.axm_path).name}' loaded on Metis AIPU.")
             return True
 
         except ImportError:
@@ -249,26 +233,10 @@ class VoyagerEngine:
         for m_name in search_modules:
             try:
                 mod = importlib.import_module(m_name)
-
-                devices = None
-                if hasattr(mod, "select_devices"):
-                    try:
-                        devices = mod.select_devices()
-                    except Exception:
-                        pass
-
                 for ctx_name in target_ctx_names:
                     if hasattr(mod, ctx_name):
                         factory = getattr(mod, ctx_name)
-                        ctx_attempts = []
-                        if devices:
-                            ctx_attempts.extend([
-                                lambda f=factory, d=devices: f(d),
-                                lambda f=factory, d=devices: f(d[0]),
-                                lambda f=factory, d=devices: f(devices=d),
-                            ])
-
-                        ctx_attempts.extend([
+                        ctx_attempts = [
                             lambda f=factory: f(chip_id=self.chip_id),
                             lambda f=factory: f(self.chip_id),
                             lambda f=factory: f(device=self.chip_id),
@@ -276,8 +244,7 @@ class VoyagerEngine:
                             lambda f=factory: f(num_cores=self.num_cores),
                             lambda f=factory: f("metis-111c"),
                             lambda f=factory: f(),
-                        ])
-
+                        ]
                         for fn in ctx_attempts:
                             try:
                                 ctx = fn()
@@ -382,8 +349,19 @@ class VoyagerEngine:
         t0 = time.time()
         
         if self.backend == "axelera_voyager":
-            # Voyager / Axelera Runtime SDK inference call
-            if hasattr(self.session, "run"):
+            # Axelera Metis NPU GraphExecutor / Voyager SDK inference execution
+            if hasattr(self.session, "set_input") and hasattr(self.session, "run"):
+                self.session.set_input(0, input_tensor)
+                self.session.run()
+                num_outputs = getattr(self.session, "get_num_outputs", lambda: 1)()
+                outputs = []
+                for i in range(num_outputs):
+                    out = self.session.get_output(i)
+                    if hasattr(out, "asnumpy"):
+                        out = out.asnumpy()
+                    outputs.append(out)
+                return outputs
+            elif hasattr(self.session, "run"):
                 outputs = self.session.run(input_tensor)
             elif hasattr(self.session, "forward"):
                 outputs = self.session.forward(input_tensor)
@@ -394,7 +372,7 @@ class VoyagerEngine:
             elif callable(self.session):
                 outputs = self.session(input_tensor)
             else:
-                raise RuntimeError(f"Axelera session object '{type(self.session).__name__}' has no run/forward method")
+                raise RuntimeError(f"Axelera session object '{type(self.session).__name__}' has no recognized execution method")
 
             if not isinstance(outputs, list):
                 outputs = [outputs]
