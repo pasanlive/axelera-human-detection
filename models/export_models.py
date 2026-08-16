@@ -81,7 +81,7 @@ def export_face_embedder_onnx(output_dir: str):
         print(f"[EXPORT ERROR] Failed to generate Face Embedder ONNX: {e}")
         return None
 
-def compile_axm_with_voyager(onnx_path: str, output_dir: str, target_chip: str = "metis-111c"):
+def compile_axm_with_voyager(onnx_path: str, output_dir: str, target_chip: str = "metis-111c", input_shape: str = None):
     """
     Compiles an ONNX model to Axelera `.axm` binary format using Axelera Voyager SDK toolchain.
     """
@@ -104,6 +104,9 @@ def compile_axm_with_voyager(onnx_path: str, output_dir: str, target_chip: str =
                 "--output", str(output_axm),
                 "--overwrite"
             ]
+            if input_shape:
+                cmd_args.extend(["--input-shape", input_shape])
+
             print(f"[AXELERA COMPILER] Executing: {' '.join(cmd_args)}")
             subprocess.run(cmd_args, check=True)
             print(f"[AXELERA SUCCESS] Saved compiled .axm to: {output_axm}")
@@ -114,7 +117,8 @@ def compile_axm_with_voyager(onnx_path: str, output_dir: str, target_chip: str =
     else:
         print(f"[AXELERA NOTICE] Axelera Compiler CLI ('axcompile') not found on system PATH.")
         print(f"[AXELERA INSTRUCTION] To generate '.axm' files manually using Voyager SDK:")
-        print(f"   axcompile --input {onnx_path} --output {output_axm} --overwrite")
+        shape_flag = f" --input-shape {input_shape}" if input_shape else ""
+        print(f"   axcompile --input {onnx_path} --output {output_axm}{shape_flag} --overwrite")
         return None
 
 def main():
@@ -122,29 +126,31 @@ def main():
     parser.add_argument("--onnx-dir", type=str, default="models/onnx", help="Directory for ONNX exports")
     parser.add_argument("--axm-dir", type=str, default="models/axm", help="Directory for AXM compiles")
     parser.add_argument("--target", type=str, default="metis-111c", help="Axelera hardware target chip")
+    parser.add_argument("--imgsz", type=int, default=512, help="YOLO input resolution (512 fits 4MB L1 SRAM cache)")
     args = parser.parse_args()
 
     onnx_dir = getattr(args, 'onnx_dir', 'models/onnx')
     axm_dir = getattr(args, 'axm_dir', 'models/axm')
+    imgsz = getattr(args, 'imgsz', 512)
 
     models_to_export = [
-        ("yolov8n.pt", 640),
-        ("yolov8n-pose.pt", 640)
+        ("yolov8n.pt", imgsz),
+        ("yolov8n-pose.pt", imgsz)
     ]
 
     print("==========================================================")
     print("      Axelera Metis 111C Model Exporter & Compiler        ")
     print("==========================================================")
 
-    for model_name, imgsz in models_to_export:
-        onnx_file = export_yolo_to_onnx(model_name, onnx_dir, imgsz=imgsz)
+    for model_name, sz in models_to_export:
+        onnx_file = export_yolo_to_onnx(model_name, onnx_dir, imgsz=sz)
         if onnx_file:
-            compile_axm_with_voyager(onnx_file, axm_dir, target_chip=args.target)
+            compile_axm_with_voyager(onnx_file, axm_dir, target_chip=args.target, input_shape=f"1,3,{sz},{sz}")
 
     # Export Face Embedder
     face_onnx = export_face_embedder_onnx(onnx_dir)
     if face_onnx:
-        compile_axm_with_voyager(face_onnx, axm_dir, target_chip=args.target)
+        compile_axm_with_voyager(face_onnx, axm_dir, target_chip=args.target, input_shape="1,3,112,112")
 
     print("\n[COMPLETE] Model conversion workflow finished.")
 

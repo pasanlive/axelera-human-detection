@@ -30,7 +30,7 @@ models:
     onnx_path: "models/onnx/yolov8n.onnx"
     conf_threshold: 0.45
     iou_threshold: 0.45
-    input_size: [640, 640]
+    input_size: [512, 512]
     person_class_id: 0     # COCO person class ID
 
   pose_estimator:
@@ -38,7 +38,7 @@ models:
     axm_path: "models/axm/yolov8n-pose.axm"
     onnx_path: "models/onnx/yolov8n-pose.onnx"
     conf_threshold: 0.50
-    input_size: [640, 640]
+    input_size: [512, 512]
     num_keypoints: 17
 
   face_recognizer:
