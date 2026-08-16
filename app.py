@@ -126,6 +126,10 @@ def main():
     finally:
         pipeline.stop()
         if not args.headless:
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
         print("[SHUTDOWN] Axelera Metis system stopped cleanly.")
         os._exit(0)
 
