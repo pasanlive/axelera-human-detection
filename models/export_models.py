@@ -102,8 +102,7 @@ def compile_axm_with_voyager(onnx_path: str, output_dir: str, target_chip: str =
                 axelera_cmd,
                 "--input", onnx_path,
                 "--output", str(output_axm),
-                "--target", target_chip,
-                "--quantization", "int8"
+                "--overwrite"
             ]
             print(f"[AXELERA COMPILER] Executing: {' '.join(cmd_args)}")
             subprocess.run(cmd_args, check=True)
@@ -115,7 +114,7 @@ def compile_axm_with_voyager(onnx_path: str, output_dir: str, target_chip: str =
     else:
         print(f"[AXELERA NOTICE] Axelera Compiler CLI ('axcompile') not found on system PATH.")
         print(f"[AXELERA INSTRUCTION] To generate '.axm' files manually using Voyager SDK:")
-        print(f"   axcompile --input {onnx_path} --output {output_axm} --target {target_chip} --quantization int8")
+        print(f"   axcompile --input {onnx_path} --output {output_axm} --overwrite")
         return None
 
 def main():

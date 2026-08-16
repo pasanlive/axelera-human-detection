@@ -82,8 +82,7 @@ Or manually compile using the Axelera Voyager CLI (`axcompile`):
 axcompile \
     --input models/onnx/yolov8n.onnx \
     --output models/axm/yolov8n.axm \
-    --target metis-111c \
-    --quantization int8
+    --overwrite
 ```
 
 ---
