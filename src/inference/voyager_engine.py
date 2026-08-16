@@ -4,6 +4,7 @@ VoyagerEngine: Inference Abstraction Layer for Axelera Metis 111C NPU and Fallba
 
 import os
 import time
+import ctypes
 import importlib
 from pathlib import Path
 import numpy as np
@@ -75,18 +76,26 @@ class VoyagerEngine:
 
             print("[AXELERA RUNTIME SUCCESS] Created axelera.runtime.Context handle.")
 
-            # 2. Load Model using axr.Path object
+            # 2. Load Model using C-string pointers and Path objects
             path_str = str(self.axm_path)
+            path_bytes = path_str.encode('utf-8')
+            c_path_p = ctypes.c_char_p(path_bytes)
+            c_path_buf = ctypes.create_string_buffer(path_bytes)
             ax_path = axr.Path(path_str) if hasattr(axr, "Path") else Path(path_str)
             model_obj = None
 
             for load_fn in [
+                lambda: axr.Model(ctx, c_path_p),
+                lambda: axr.Model(c_path_p, ctx),
+                lambda: axr.Model(ctx, c_path_buf),
+                lambda: axr.Model(c_path_buf, ctx),
+                lambda: axr.Model(ctx, path_str),
+                lambda: axr.Model(path_str, ctx),
                 lambda: axr.Model(ax_path),
                 lambda: axr.Model(ax_path, ctx),
-                lambda: axr.axelera_load_model(ax_path, ctx),
-                lambda: axr.graph_exec_load_model(ax_path, ctx),
-                lambda: axr.Model(path=ax_path, context=ctx),
-                lambda: axr.Model(context=ctx, path=ax_path),
+                lambda: axr.axelera_load_model(ctx, c_path_p),
+                lambda: axr.axelera_load_model(c_path_p, ctx),
+                lambda: axr.graph_exec_load_model(ctx, c_path_p),
             ]:
                 try:
                     model_obj = load_fn()
@@ -262,19 +271,20 @@ class VoyagerEngine:
                     context_obj = self._get_or_create_context(mod_path)
 
                     path_str = str(self.axm_path)
-                    path_bytes = str(self.axm_path).encode('utf-8')
+                    path_bytes = path_str.encode('utf-8')
+                    c_path_p = ctypes.c_char_p(path_bytes)
+                    c_path_buf = ctypes.create_string_buffer(path_bytes)
                     path_obj = Path(self.axm_path)
 
                     attempts = []
                     if context_obj is not None:
                         attempts.extend([
+                            lambda: engine_cls(context_obj, c_path_p),
+                            lambda: engine_cls(c_path_p, context_obj),
+                            lambda: engine_cls(context_obj, c_path_buf),
+                            lambda: engine_cls(c_path_buf, context_obj),
                             lambda: engine_cls(path_str, context_obj),
-                            lambda: engine_cls(path_str, context=context_obj),
                             lambda: engine_cls(context_obj, path_str),
-                            lambda: engine_cls(context_obj, path_bytes),
-                            lambda: engine_cls(context_obj, path_obj),
-                            lambda: engine_cls(path_bytes, context=context_obj),
-                            lambda: engine_cls(path_bytes, context_obj),
                         ])
                     else:
                         attempts.extend([
