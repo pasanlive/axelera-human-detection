@@ -76,53 +76,53 @@ class VoyagerEngine:
 
             print("[AXELERA RUNTIME SUCCESS] Created axelera.runtime.Context handle.")
 
-            # 2. Load Model using C-string pointers and Path objects
+            # 2. Load Model object (axr.Model inherits from Path and takes single filepath argument)
             path_str = str(self.axm_path)
-            path_bytes = path_str.encode('utf-8')
-            c_path_p = ctypes.c_char_p(path_bytes)
-            c_path_buf = ctypes.create_string_buffer(path_bytes)
-            ax_path = axr.Path(path_str) if hasattr(axr, "Path") else Path(path_str)
             model_obj = None
 
-            for load_fn in [
-                lambda: axr.Model(ctx, c_path_p),
-                lambda: axr.Model(c_path_p, ctx),
-                lambda: axr.Model(ctx, c_path_buf),
-                lambda: axr.Model(c_path_buf, ctx),
-                lambda: axr.Model(ctx, path_str),
-                lambda: axr.Model(path_str, ctx),
-                lambda: axr.Model(ax_path),
-                lambda: axr.Model(ax_path, ctx),
-                lambda: axr.axelera_load_model(ctx, c_path_p),
-                lambda: axr.axelera_load_model(c_path_p, ctx),
-                lambda: axr.graph_exec_load_model(ctx, c_path_p),
+            for m_fn in [
+                lambda: axr.Model(path_str),
+                lambda: axr.Model(Path(path_str)),
+                lambda: axr.Model(path_str.encode('utf-8')),
             ]:
                 try:
-                    model_obj = load_fn()
+                    model_obj = m_fn()
                     if model_obj is not None:
                         break
                 except Exception as e:
-                    print(f"[AXELERA RUNTIME DEBUG] Model load error ({type(e).__name__}): {e}")
+                    print(f"[AXELERA RUNTIME DEBUG] Model constructor error ({type(e).__name__}): {e}")
                     continue
 
             if model_obj is None:
-                print(f"[AXELERA RUNTIME WARNING] Could not load model '{path_str}' into axelera.runtime.Model")
+                print(f"[AXELERA RUNTIME WARNING] Could not construct axelera.runtime.Model('{path_str}')")
                 return False
 
-            # 3. Create ModelInstance if required
-            if hasattr(model_obj, "create_instance"):
+            print(f"[AXELERA RUNTIME SUCCESS] Constructed Model object for '{path_str}'.")
+
+            # 3. Create ModelInstance bound to Context
+            instance_methods = [
+                lambda: model_obj.create_instance(ctx),
+                lambda: ctx.create_instance(model_obj),
+                lambda: ctx.load_model(model_obj),
+                lambda: axr.axelera_load_model(path_str, ctx),
+                lambda: axr.axelera_load_model(model_obj, ctx),
+                lambda: axr.graph_exec_load_model(path_str, ctx),
+                lambda: model_obj.load(ctx),
+                lambda: model_obj.instantiate(ctx),
+                lambda: model_obj.create_instance(),
+                lambda: ctx.create_instance(),
+            ]
+
+            for fn in instance_methods:
                 try:
-                    self.session = model_obj.create_instance()
+                    self.session = fn()
+                    if self.session is not None:
+                        self.backend = "axelera_voyager"
+                        print(f"[AXELERA RUNTIME SUCCESS] Model '{Path(self.axm_path).name}' successfully loaded & instantiated on Metis AIPU ({self.num_cores} cores).")
+                        return True
                 except Exception as e:
-                    print(f"[AXELERA RUNTIME DEBUG] create_instance failed: {e}")
-                    self.session = model_obj
-            elif hasattr(model_obj, "create_model_instance"):
-                try:
-                    self.session = model_obj.create_model_instance()
-                except Exception as e:
-                    print(f"[AXELERA RUNTIME DEBUG] create_model_instance failed: {e}")
-                    self.session = model_obj
-            else:
+                    print(f"[AXELERA RUNTIME DEBUG] ModelInstance creation error ({type(e).__name__}): {e}")
+                    continue
                 self.session = model_obj
 
             self.backend = "axelera_voyager"
