@@ -75,23 +75,25 @@ class VoyagerEngine:
 
             print("[AXELERA RUNTIME SUCCESS] Created axelera.runtime.Context handle.")
 
-            # 2. Load Model
+            # 2. Load Model using axr.Path object
             path_str = str(self.axm_path)
+            ax_path = axr.Path(path_str) if hasattr(axr, "Path") else Path(path_str)
             model_obj = None
 
             for load_fn in [
-                lambda: axr.Model(path_str, ctx),
-                lambda: axr.Model(ctx, path_str),
-                lambda: axr.axelera_load_model(path_str, ctx),
-                lambda: axr.graph_exec_load_model(path_str, ctx),
-                lambda: axr.Model(path_str, context=ctx),
+                lambda: axr.Model(ax_path),
+                lambda: axr.Model(ax_path, ctx),
+                lambda: axr.axelera_load_model(ax_path, ctx),
+                lambda: axr.graph_exec_load_model(ax_path, ctx),
+                lambda: axr.Model(path=ax_path, context=ctx),
+                lambda: axr.Model(context=ctx, path=ax_path),
             ]:
                 try:
                     model_obj = load_fn()
                     if model_obj is not None:
                         break
                 except Exception as e:
-                    print(f"[AXELERA RUNTIME DEBUG] Model load error: {type(e).__name__}: {e}")
+                    print(f"[AXELERA RUNTIME DEBUG] Model load error ({type(e).__name__}): {e}")
                     continue
 
             if model_obj is None:
