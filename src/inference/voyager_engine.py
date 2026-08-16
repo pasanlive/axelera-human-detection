@@ -317,45 +317,112 @@ class VoyagerEngine:
         :param input_tensor: Preprocessed numpy array (e.g., shape [1, 3, H, W] float32 or uint8)
         :return: List of output numpy tensors from the model.
         """
+    def _prepare_input_tensor(self, input_tensor: np.ndarray) -> np.ndarray:
+        """Adapts input tensor layout (NCHW->NHWC), dtype (float32->int8/uint8), and shape padding for Metis AIPU."""
+        target_shape = None
+        target_dtype = None
+
+        if hasattr(self.session, "_input_infos"):
+            try:
+                infos = getattr(self.session, "_input_infos")
+                info = infos[0] if isinstance(infos, (list, tuple)) else (infos.get(0) if isinstance(infos, dict) else None)
+                if info is not None:
+                    target_shape = getattr(info, "shape", None)
+                    target_dtype = getattr(info, "dtype", None)
+            except Exception:
+                pass
+
+        curr_tensor = input_tensor
+
+        # 1. Adapt layout & padding if target_shape is known
+        if target_shape is not None and tuple(curr_tensor.shape) != tuple(target_shape):
+            # Check if target layout is NHWC [1, H, W, C] where C is 1, 3, or 4
+            if len(target_shape) == 4 and target_shape[-1] in [1, 3, 4] and len(curr_tensor.shape) == 4 and curr_tensor.shape[1] in [1, 3, 4]:
+                curr_tensor = np.transpose(curr_tensor, (0, 2, 3, 1))
+
+            # Adapt data type before padding
+            if target_dtype is not None and curr_tensor.dtype != target_dtype:
+                if target_dtype == np.int8:
+                    if curr_tensor.max() <= 1.0:
+                        curr_tensor = (curr_tensor * 255.0 - 128.0).clip(-128, 127).astype(np.int8)
+                    else:
+                        curr_tensor = (curr_tensor - 128.0).clip(-128, 127).astype(np.int8)
+                elif target_dtype == np.uint8:
+                    if curr_tensor.max() <= 1.0:
+                        curr_tensor = (curr_tensor * 255.0).clip(0, 255).astype(np.uint8)
+                    else:
+                        curr_tensor = curr_tensor.clip(0, 255).astype(np.uint8)
+                else:
+                    curr_tensor = curr_tensor.astype(target_dtype)
+
+            # Perform zero padding if dimensions differ
+            if tuple(curr_tensor.shape) != tuple(target_shape):
+                padded = np.zeros(target_shape, dtype=curr_tensor.dtype)
+                if len(target_shape) == 4 and len(curr_tensor.shape) == 4:
+                    n = min(curr_tensor.shape[0], target_shape[0])
+                    d1 = min(curr_tensor.shape[1], target_shape[1])
+                    d2 = min(curr_tensor.shape[2], target_shape[2])
+                    d3 = min(curr_tensor.shape[3], target_shape[3])
+                    padded[:n, :d1, :d2, :d3] = curr_tensor[:n, :d1, :d2, :d3]
+                    curr_tensor = padded
+                else:
+                    curr_tensor = np.resize(curr_tensor, target_shape)
+        else:
+            # Adapt data type if shapes match
+            if target_dtype is not None and curr_tensor.dtype != target_dtype:
+                if target_dtype == np.int8:
+                    if curr_tensor.max() <= 1.0:
+                        curr_tensor = (curr_tensor * 255.0 - 128.0).clip(-128, 127).astype(np.int8)
+                    else:
+                        curr_tensor = (curr_tensor - 128.0).clip(-128, 127).astype(np.int8)
+                elif target_dtype == np.uint8:
+                    if curr_tensor.max() <= 1.0:
+                        curr_tensor = (curr_tensor * 255.0).clip(0, 255).astype(np.uint8)
+                    else:
+                        curr_tensor = curr_tensor.clip(0, 255).astype(np.uint8)
+                else:
+                    curr_tensor = curr_tensor.astype(target_dtype)
+
+        return curr_tensor
+
+    def run(self, input_tensor: np.ndarray) -> List[np.ndarray]:
+        """
+        Executes model inference on the given input tensor.
+        :param input_tensor: Preprocessed numpy array (e.g., shape [1, 3, H, W] float32 or uint8)
+        :return: List of output numpy tensors from the model.
+        """
         t0 = time.time()
         
         if self.backend == "axelera_voyager":
             # Axelera Metis NPU GraphExecutor / Voyager SDK inference execution
             if hasattr(self.session, "set_input") and hasattr(self.session, "run"):
-                # Proactively inspect expected input dtype from graph executor (_input_infos)
-                target_dtype = None
-                if hasattr(self.session, "_input_infos"):
-                    try:
-                        infos = getattr(self.session, "_input_infos")
-                        if isinstance(infos, dict) and 0 in infos:
-                            target_dtype = getattr(infos[0], "dtype", None)
-                        elif isinstance(infos, (list, tuple)) and len(infos) > 0:
-                            target_dtype = getattr(infos[0], "dtype", None)
-                    except Exception:
-                        pass
-
-                if target_dtype is not None and input_tensor.dtype != target_dtype:
-                    if target_dtype == np.int8:
-                        if input_tensor.max() <= 1.0:
-                            input_tensor = (input_tensor * 255.0 - 128.0).clip(-128, 127).astype(np.int8)
-                        else:
-                            input_tensor = (input_tensor - 128.0).clip(-128, 127).astype(np.int8)
-                    elif target_dtype == np.uint8:
-                        if input_tensor.max() <= 1.0:
-                            input_tensor = (input_tensor * 255.0).clip(0, 255).astype(np.uint8)
-                        else:
-                            input_tensor = input_tensor.clip(0, 255).astype(np.uint8)
-                    else:
-                        input_tensor = input_tensor.astype(target_dtype)
+                input_tensor = self._prepare_input_tensor(input_tensor)
 
                 try:
                     self.session.set_input(0, input_tensor)
                 except (AssertionError, TypeError) as ae:
-                    err_msg = str(ae).lower()
-                    if "int8" in err_msg:
+                    err_str = str(ae)
+                    if "Expected input shape to be" in err_str:
+                        import re
+                        m = re.search(r"Expected input shape to be \(([^)]+)\)", err_str)
+                        if m:
+                            shape_dims = tuple(int(x.strip()) for x in m.group(1).split(','))
+                            if len(input_tensor.shape) == 4 and input_tensor.shape[1] in [1, 3, 4] and shape_dims[-1] in [1, 3, 4]:
+                                input_tensor = np.transpose(input_tensor, (0, 2, 3, 1))
+                            padded = np.zeros(shape_dims, dtype=input_tensor.dtype)
+                            n = min(input_tensor.shape[0], shape_dims[0])
+                            d1 = min(input_tensor.shape[1], shape_dims[1])
+                            d2 = min(input_tensor.shape[2], shape_dims[2])
+                            d3 = min(input_tensor.shape[3], shape_dims[3])
+                            padded[:n, :d1, :d2, :d3] = input_tensor[:n, :d1, :d2, :d3]
+                            input_tensor = padded
+                            self.session.set_input(0, input_tensor)
+                        else:
+                            raise ae
+                    elif "int8" in err_str.lower():
                         input_tensor = (input_tensor * 255.0 - 128.0).clip(-128, 127).astype(np.int8) if input_tensor.max() <= 1.0 else (input_tensor - 128.0).clip(-128, 127).astype(np.int8)
                         self.session.set_input(0, input_tensor)
-                    elif "uint8" in err_msg:
+                    elif "uint8" in err_str.lower():
                         input_tensor = (input_tensor * 255.0).clip(0, 255).astype(np.uint8) if input_tensor.max() <= 1.0 else input_tensor.clip(0, 255).astype(np.uint8)
                         self.session.set_input(0, input_tensor)
                     else:
