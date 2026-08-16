@@ -70,16 +70,16 @@ pip install -r requirements.txt
 
 ## ⚙️ Model Export & Compilation (.axm)
 
-Models must be compiled to Axelera's `.axm` hardware format using the `axelera-compiler` tool provided in the Voyager SDK.
+Models must be compiled to Axelera's `.axm` hardware format using the `axcompile` tool provided in the Voyager SDK.
 
 Run the automatic exporter script:
 ```bash
 python models/export_models.py --target metis-111c
 ```
 
-Or manually compile using the Axelera Voyager CLI:
+Or manually compile using the Axelera Voyager CLI (`axcompile`):
 ```bash
-axelera-compiler \
+axcompile \
     --input models/onnx/yolov8n.onnx \
     --output models/axm/yolov8n.axm \
     --target metis-111c \

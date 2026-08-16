@@ -29,9 +29,9 @@ models/
    ```
 
 3. **Step 3: Manual Compilation via Axelera CLI (Optional)**
-   If using custom ONNX models, compile directly with `axelera-compiler`:
+   If using custom ONNX models, compile directly with `axcompile`:
    ```bash
-   axelera-compiler \
+   axcompile \
        --input models/onnx/yolov8n.onnx \
        --output models/axm/yolov8n.axm \
        --target metis-111c \

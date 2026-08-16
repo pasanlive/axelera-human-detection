@@ -91,7 +91,7 @@ def compile_axm_with_voyager(onnx_path: str, output_dir: str, target_chip: str =
 
     axelera_cmd = None
     import shutil
-    for cmd in ["axelera-compiler", "voyager-compiler", "axelera-export"]:
+    for cmd in ["axcompile", "axelera-compiler", "voyager-compiler", "axelera-export"]:
         if shutil.which(cmd):
             axelera_cmd = cmd
             break
@@ -113,9 +113,9 @@ def compile_axm_with_voyager(onnx_path: str, output_dir: str, target_chip: str =
             print(f"[AXELERA ERROR] Compiler execution failed: {e}")
             return None
     else:
-        print(f"[AXELERA NOTICE] Axelera Compiler CLI not found on system PATH.")
+        print(f"[AXELERA NOTICE] Axelera Compiler CLI ('axcompile') not found on system PATH.")
         print(f"[AXELERA INSTRUCTION] To generate '.axm' files manually using Voyager SDK:")
-        print(f"   axelera-compiler --input {onnx_path} --output {output_axm} --target {target_chip} --quantization int8")
+        print(f"   axcompile --input {onnx_path} --output {output_axm} --target {target_chip} --quantization int8")
         return None
 
 def main():
