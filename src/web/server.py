@@ -109,11 +109,14 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
             cam_list = []
             if hasattr(srv.pipeline, 'stream_manager'):
                 for cid, cam in srv.pipeline.stream_manager.cameras.items():
+                    is_open = getattr(cam, 'is_running', False)
+                    if hasattr(cam, 'cap') and cam.cap is not None:
+                        is_open = cam.cap.isOpened()
                     cam_list.append({
                         "id": cid,
                         "name": cam.name,
-                        "fps": cam.fps,
-                        "is_opened": cam.is_opened
+                        "fps": round(getattr(cam, 'fps', 0.0), 1),
+                        "is_opened": is_open
                     })
 
             payload = {
@@ -249,11 +252,14 @@ class WebServer:
             cam_list = []
             if hasattr(self.pipeline, 'stream_manager'):
                 for cid, cam in self.pipeline.stream_manager.cameras.items():
+                    is_open = getattr(cam, 'is_running', False)
+                    if hasattr(cam, 'cap') and cam.cap is not None:
+                        is_open = cam.cap.isOpened()
                     cam_list.append({
                         "id": cid,
                         "name": cam.name,
-                        "fps": cam.fps,
-                        "is_opened": cam.is_opened
+                        "fps": round(getattr(cam, 'fps', 0.0), 1),
+                        "is_opened": is_open
                     })
 
             return jsonify({
