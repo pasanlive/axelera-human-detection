@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Axelera Metis AI Vision Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #0a0d14;
+            --bg-card: rgba(18, 24, 38, 0.75);
+            --bg-card-hover: rgba(28, 38, 60, 0.85);
+            --border-glow: rgba(0, 242, 254, 0.2);
+            --accent-primary: #00f2fe;
+            --accent-secondary: #4facfe;
+            --accent-success: #00e676;
+            --accent-warning: #ffb300;
+            --text-main: #f1f5f9;
+            --text-muted: #94a3b8;
+            --font-main: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-main);
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background-image: 
+                radial-gradient(circle at 15% 20%, rgba(0, 242, 254, 0.08) 0%, transparent 45%),
+                radial-gradient(circle at 85% 80%, rgba(79, 172, 254, 0.06) 0%, transparent 45%);
+            background-attachment: fixed;
+        }
+
+        /* Header */
+        header {
+            padding: 1.25rem 2rem;
+            background: rgba(10, 13, 20, 0.85);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .brand-icon {
+            width: 38px;
+            height: 38px;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.2rem;
+            color: #000;
+            box-shadow: 0 0 20px rgba(0, 242, 254, 0.4);
+        }
+
+        .brand-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            background: linear-gradient(90deg, #ffffff, var(--text-muted));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 0.9rem;
+            background: rgba(0, 230, 118, 0.12);
+            border: 1px solid rgba(0, 230, 118, 0.3);
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--accent-success);
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--accent-success);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--accent-success);
+            animation: pulse 1.8s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); opacity: 0.8; }
+            50% { transform: scale(1.25); opacity: 1; }
+            100% { transform: scale(0.95); opacity: 0.8; }
+        }
+
+        /* Layout Grid */
+        main {
+            flex: 1;
+            padding: 1.5rem 2rem;
+            display: grid;
+            grid-template-columns: 1fr 340px;
+            gap: 1.5rem;
+            max-width: 1800px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        @media (max-width: 1200px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Video Feed Section */
+        .video-container {
+            background: var(--bg-card);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-glow);
+            border-radius: 16px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+
+        .video-header {
+            padding: 1rem 1.25rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.2);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .stream-selector {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .btn-select {
+            padding: 0.4rem 0.85rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-select:hover, .btn-select.active {
+            background: linear-gradient(135deg, rgba(0, 242, 254, 0.2), rgba(79, 172, 254, 0.2));
+            border-color: var(--accent-primary);
+            color: var(--accent-primary);
+            font-weight: 500;
+        }
+
+        .video-wrapper {
+            position: relative;
+            width: 100%;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 480px;
+        }
+
+        .video-wrapper img {
+            width: 100%;
+            height: auto;
+            max-height: 720px;
+            object-fit: contain;
+            display: block;
+        }
+
+        /* Telemetry Cards */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
+            transition: transform 0.2s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            border-color: var(--border-glow);
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .stat-value {
+            font-size: 1.6rem;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            color: #fff;
+        }
+
+        /* Sidebar Controls & Feed */
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border-glow);
+            border-radius: 16px;
+            padding: 1.25rem;
+            backdrop-filter: blur(12px);
+        }
+
+        .panel-title {
+            font-size: 1.05rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.85rem;
+        }
+
+        .toggle-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9rem;
+            color: var(--text-main);
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: rgba(255, 255, 255, 0.15);
+            transition: .3s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(20px);
+        }
+
+        .btn-action {
+            width: 100%;
+            padding: 0.75rem;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            border: none;
+            border-radius: 10px;
+            color: #000;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: opacity 0.2s ease, transform 0.1s ease;
+            margin-top: 0.5rem;
+        }
+
+        .btn-action:hover {
+            opacity: 0.9;
+            transform: scale(1.01);
+        }
+
+        /* Event Ticker */
+        .event-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+            max-height: 320px;
+            overflow-y: auto;
+        }
+
+        .event-card {
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 0.7rem 0.85rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85rem;
+        }
+
+        .event-time {
+            font-family: var(--font-mono);
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .event-tag {
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
+            font-weight: 500;
+            font-size: 0.75rem;
+        }
+
+        .tag-person { background: rgba(0, 242, 254, 0.15); color: var(--accent-primary); }
+        .tag-face { background: rgba(0, 230, 118, 0.15); color: var(--accent-success); }
+
+        footer {
+            padding: 1rem 2rem;
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="brand">
+            <div class="brand-icon">A</div>
+            <div>
+                <div class="brand-title">Axelera Metis AI Vision</div>
+                <div style="font-size: 0.75rem; color: var(--text-muted);">Local Network Edge Inference Dashboard</div>
+            </div>
+        </div>
+        <div class="status-badge">
+            <div class="pulse-dot"></div>
+            <span id="hardware-status">Metis AIPU Active (4 Cores)</span>
+        </div>
+    </header>
+
+    <main>
+        <div>
+            <!-- Video Container -->
+            <div class="video-container">
+                <div class="video-header">
+                    <div style="font-weight: 600; font-size: 0.95rem;">Live RTSP Stream Processing</div>
+                    <div class="stream-selector" id="stream-selector">
+                        <button class="btn-select active" onclick="switchStream('grid')">Multi-Grid</button>
+                    </div>
+                </div>
+                <div class="video-wrapper">
+                    <img id="mjpeg-stream" src="/video_feed" alt="Axelera Live Stream">
+                </div>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Inference FPS</div>
+                    <div class="stat-value" id="stat-fps">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Active Cameras</div>
+                    <div class="stat-value" id="stat-cams">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Humans Tracked</div>
+                    <div class="stat-value" id="stat-persons">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Identified Faces</div>
+                    <div class="stat-value" id="stat-faces">--</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <!-- Control Panel -->
+            <div class="panel">
+                <div class="panel-title">Stream Controls</div>
+                <div class="control-group">
+                    <div class="toggle-row">
+                        <span>Bounding Boxes</span>
+                        <label class="switch">
+                            <input type="checkbox" id="toggle-boxes" checked onchange="toggleFeature('boxes', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-row">
+                        <span>Pose Keypoints</span>
+                        <label class="switch">
+                            <input type="checkbox" id="toggle-pose" checked onchange="toggleFeature('pose', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-row">
+                        <span>Face Recognition</span>
+                        <label class="switch">
+                            <input type="checkbox" id="toggle-faces" checked onchange="toggleFeature('faces', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <button class="btn-action" onclick="downloadSnapshot()">📸 Capture Frame Snapshot</button>
+                </div>
+            </div>
+
+            <!-- Detection Events Feed -->
+            <div class="panel">
+                <div class="panel-title">Real-Time Event Feed</div>
+                <div class="event-list" id="event-feed">
+                    <div class="event-card">
+                        <div>
+                            <div>System Initialized</div>
+                            <div class="event-time">Axelera Metis AIPU active</div>
+                        </div>
+                        <span class="event-tag tag-person">SYSTEM</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        Axelera Metis 111C NPU Engine &bull; Multi-Camera Pipeline System &bull; Local Access: <span id="local-url">http://0.0.0.0:8000</span>
+    </footer>
+
+    <script>
+        let currentFeed = 'grid';
+
+        function switchStream(feedId) {
+            currentFeed = feedId;
+            const img = document.getElementById('mjpeg-stream');
+            if (feedId === 'grid') {
+                img.src = '/video_feed';
+            } else {
+                img.src = '/video_feed/' + feedId;
+            }
+
+            document.querySelectorAll('.btn-select').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+        }
+
+        function toggleFeature(feature, enabled) {
+            fetch('/api/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ feature: feature, enabled: enabled })
+            }).catch(err => console.error(err));
+        }
+
+        function downloadSnapshot() {
+            window.open('/api/snapshot', '_blank');
+        }
+
+        function fetchTelemetry() {
+            fetch('/api/status')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('stat-fps').innerText = data.fps ? data.fps.toFixed(1) : '30.0';
+                    document.getElementById('stat-cams').innerText = data.active_cameras || '1';
+                    document.getElementById('stat-persons').innerText = data.persons_detected !== undefined ? data.persons_detected : '0';
+                    document.getElementById('stat-faces').innerText = data.faces_recognized !== undefined ? data.faces_recognized : '0';
+
+                    // Update camera selector tabs if changed
+                    if (data.cameras && data.cameras.length > 0) {
+                        const selector = document.getElementById('stream-selector');
+                        let html = `<button class="btn-select ${currentFeed === 'grid' ? 'active' : ''}" onclick="switchStream('grid')">Multi-Grid</button>`;
+                        data.cameras.forEach(cam => {
+                            html += `<button class="btn-select ${currentFeed === cam.id ? 'active' : ''}" onclick="switchStream('${cam.id}')">${cam.name}</button>`;
+                        });
+                        selector.innerHTML = html;
+                    }
+                })
+                .catch(err => console.error(err));
+        }
+
+        setInterval(fetchTelemetry, 1500);
+        fetchTelemetry();
+    </script>
+</body>
+</html>

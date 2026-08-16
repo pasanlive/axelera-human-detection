@@ -20,6 +20,7 @@ import cv2
 from src.pipeline import MultiCameraPipeline
 from src.utils.face_db import FaceDatabase
 from src.inference.face_recognizer import FaceRecognizer
+from src.web.server import WebServer
 
 def load_config(config_path: str) -> dict:
     """Loads system YAML configuration file."""
@@ -30,34 +31,25 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 def enroll_face_cli(name: str, image_path: str, config: dict):
-    """CLI handler for enrolling a new face into the database."""
-    if not os.path.exists(image_path):
-        print(f"[ENROLL ERROR] Image file does not exist: {image_path}")
-        sys.exit(1)
-
-    print(f"[ENROLLMENT] Processing face enrollment for identity: '{name}'...")
-    img = cv2.imread(image_path)
-    if img is None:
-        print(f"[ENROLL ERROR] Could not decode image file: {image_path}")
-        sys.exit(1)
-
+    """CLI handler for enrolling a face identity."""
     db_path = config.get("face_db", {}).get("path", "data/face_db.json")
     face_db = FaceDatabase(db_path=db_path)
     recognizer = FaceRecognizer(config["models"]["face_recognizer"], face_db)
 
-    # Extract embedding from input image
-    embedding = recognizer.extract_embedding(img)
-    face_db.add_identity(name, embedding)
-    print(f"[ENROLLMENT SUCCESS] Identity '{name}' successfully saved in {db_path}.")
+    print(f"[FACE ENROLLMENT] Enrolling '{name}' from image: {image_path}...")
+    success = recognizer.enroll_identity(name, image_path)
+    if success:
+        print(f"[FACE ENROLLMENT SUCCESS] Identity '{name}' successfully enrolled.")
+    else:
+        print(f"[FACE ENROLLMENT FAILED] Could not detect a valid face in: {image_path}")
 
 def list_faces_cli(config: dict):
-    """CLI handler to list enrolled identities."""
+    """CLI handler for listing all enrolled face identities."""
     db_path = config.get("face_db", {}).get("path", "data/face_db.json")
     face_db = FaceDatabase(db_path=db_path)
     identities = face_db.list_identities()
-
     print("\n==========================================================")
-    print(f"       Enrolled Identities Gallery ({len(identities)} total)")
+    print(f" Enrolled Face Identities ({len(identities)})")
     print("==========================================================")
     for idx, name in enumerate(identities, 1):
         print(f" {idx}. {name}")
@@ -71,6 +63,9 @@ def main():
     parser.add_argument("--list-faces", action="store_true", help="List enrolled face identities")
     no_display = sys.platform.startswith('linux') and not os.environ.get('DISPLAY') and not os.environ.get('WAYLAND_DISPLAY')
     parser.add_argument("--headless", action="store_true", default=no_display, help="Run without GUI window")
+    parser.add_argument("--web", action="store_true", default=True, help="Enable local network web dashboard interface")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Web server host IP address")
+    parser.add_argument("--port", type=int, default=8000, help="Web server port")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -92,6 +87,12 @@ def main():
     pipeline = MultiCameraPipeline(config)
     pipeline.start()
 
+    # Start Remote Web Dashboard Server
+    web_server = None
+    if args.web:
+        web_server = WebServer(pipeline, host=args.host, port=args.port)
+        web_server.start_background()
+
     window_name = config.get("visualization", {}).get("window_name", "Axelera Metis Multi-Camera System")
 
     print("\n[RUNNING] Press 'q' to quit, 's' to save current snapshot frame.\n")
@@ -106,6 +107,10 @@ def main():
 
                 # Compose multi-stream output grid
                 grid_frame = pipeline.compose_grid(output_frames)
+
+                # Broadcast frame buffers to Web Server
+                if web_server:
+                    web_server.update_frame(grid_frame, output_frames)
 
                 if not args.headless:
                     try:

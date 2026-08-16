@@ -8,5 +8,9 @@ onnxruntime>=1.15.0
 scipy>=1.10.0
 Pillow>=9.5.0
 
+# Web Dashboard Server Dependencies
+Flask>=2.3.0
+Flask-CORS>=4.0.0
+
 # Axelera Metis NPU Hardware SDK (Install from Axelera SDK package / wheels directory)
 # Example: pip install voyager-*.whl  (or install via Axelera Voyager SDK installer)
