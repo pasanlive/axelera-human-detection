@@ -33,7 +33,6 @@ class VoyagerEngine:
         """Dedicated loader for official axelera.runtime package."""
         try:
             import axelera.runtime as axr
-            print(f"[AXELERA RUNTIME] Initializing Axelera Metis NPU via axelera.runtime...")
 
             # 1. Discover Context
             ctx = None
@@ -46,38 +45,47 @@ class VoyagerEngine:
                     ctx = ctx_fn()
                     if ctx is not None:
                         break
-                except Exception as e:
-                    print(f"[AXELERA RUNTIME DEBUG] Context creation error: {e}")
+                except Exception:
                     continue
 
             if ctx is None:
-                print("[AXELERA RUNTIME WARNING] Could not instantiate axelera.runtime.Context")
                 return False
 
-            print("[AXELERA RUNTIME SUCCESS] Created axelera.runtime.Context handle.")
-
             path_str = str(self.axm_path)
+            path_abs = os.path.abspath(path_str)
             model_obj = None
 
-            # 2. Build candidate (directory, filename) pairs
-            search_targets = []
-            path_abs = os.path.abspath(path_str)
+            # 2. Check for official Axelera Metis compiled_model/model.json structure first
+            model_json_path = os.path.join(path_abs, "compiled_model", "model.json")
+            if os.path.exists(model_json_path):
+                comp_dir = os.path.dirname(model_json_path)
+                for loader_fn in [
+                    lambda: axr.axelera_load_model(comp_dir, "model.json"),
+                    lambda: axr.graph_exec_load_model(comp_dir, "model.json"),
+                ]:
+                    try:
+                        model_obj = loader_fn()
+                        if model_obj is not None:
+                            print(f"[AXELERA RUNTIME SUCCESS] Model '{Path(self.axm_path).name}' loaded on Metis AIPU ({self.num_cores} cores).")
+                            self.session = model_obj
+                            self.backend = "axelera_voyager"
+                            return True
+                    except Exception:
+                        continue
 
+            # 3. Fallback candidate search
+            search_targets = []
             if os.path.exists(path_abs):
                 if os.path.isdir(path_abs):
                     for f in os.listdir(path_abs):
                         search_targets.append((path_abs, f))
                 else:
-                    parent_dir = os.path.dirname(path_abs)
-                    file_name = os.path.basename(path_abs)
-                    search_targets.append((parent_dir, file_name))
+                    search_targets.append((os.path.dirname(path_abs), os.path.basename(path_abs)))
             else:
                 parent_dir = os.path.dirname(path_abs)
                 if os.path.exists(parent_dir):
                     for f in os.listdir(parent_dir):
                         search_targets.append((parent_dir, f))
-
-            print(f"[AXELERA RUNTIME] Candidate search targets: {search_targets}")
 
             for search_dir, search_file in search_targets:
                 target_full = os.path.join(search_dir, search_file)
@@ -85,13 +93,12 @@ class VoyagerEngine:
                     continue
 
                 if os.path.isfile(target_full):
+                    if not search_file.endswith('.json'):
+                        continue
                     f_size = os.path.getsize(target_full)
-                    print(f"[AXELERA RUNTIME] Inspecting target file '{target_full}' (size: {f_size} bytes)...")
                     if f_size == 0:
-                        print(f"[AXELERA RUNTIME WARNING] '{target_full}' is 0 bytes (empty file). Re-compilation required.")
                         continue
                 elif os.path.isdir(target_full):
-                    print(f"[AXELERA RUNTIME] Inspecting target directory '{target_full}'...")
                     for sub_f in os.listdir(target_full):
                         sub_target = (target_full, sub_f)
                         if sub_target not in search_targets:
@@ -109,8 +116,7 @@ class VoyagerEngine:
                             self.session = model_obj
                             self.backend = "axelera_voyager"
                             return True
-                    except Exception as e:
-                        print(f"[AXELERA RUNTIME DEBUG] GraphExecutor loader failed for ({search_dir}, {search_file}): {e}")
+                    except Exception:
                         continue
 
             print(f"[AXELERA RUNTIME WARNING] Could not load .axm NPU model '{path_str}'. Fallback to ONNXRuntime will be engaged.")
@@ -118,8 +124,7 @@ class VoyagerEngine:
 
         except ImportError:
             return False
-        except Exception as e:
-            print(f"[AXELERA RUNTIME WARNING] Load attempt failed: {e}")
+        except Exception:
             return False
 
     def _find_axelera_engine_class(self) -> Tuple[Optional[type], Optional[str]]:
