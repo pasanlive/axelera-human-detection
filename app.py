@@ -67,6 +67,7 @@ def main():
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Web server host IP address")
     parser.add_argument("--port", type=int, default=8000, help="Web server port")
     parser.add_argument("--https", action="store_true", default=True, help="Enable HTTPS mode with self-signed SSL cert")
+    parser.add_argument("--no-https", action="store_true", help="Disable HTTPS mode and run plain HTTP server")
     parser.add_argument("--cert", type=str, default="data/ssl/cert.pem", help="SSL certificate filepath")
     parser.add_argument("--key", type=str, default="data/ssl/key.pem", help="SSL private key filepath")
     args = parser.parse_args()
@@ -100,7 +101,7 @@ def main():
     web_server = None
     if args.web:
         web_cfg = config.get("web", {})
-        use_https = args.https if args.https is not None else web_cfg.get("https", True)
+        use_https = False if args.no_https else web_cfg.get("https", True)
         cert_file = args.cert or web_cfg.get("cert_file", "data/ssl/cert.pem")
         key_file = args.key or web_cfg.get("key_file", "data/ssl/key.pem")
         web_server = WebServer(pipeline, host=args.host, port=args.port, use_https=use_https, cert_file=cert_file, key_file=key_file)

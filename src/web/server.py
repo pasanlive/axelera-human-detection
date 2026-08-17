@@ -45,29 +45,45 @@ def get_local_ip() -> str:
 
 
 def ensure_self_signed_cert(cert_path: str = "data/ssl/cert.pem", key_path: str = "data/ssl/key.pem") -> Tuple[Optional[str], Optional[str]]:
-    """Automatically generates self-signed TLS/SSL certificate & private key if not already present."""
+    """Automatically generates self-signed TLS/SSL certificate & private key with SAN IP extensions."""
     cert_path = os.path.abspath(cert_path)
     key_path = os.path.abspath(key_path)
-
-    if os.path.exists(cert_path) and os.path.exists(key_path):
-        return cert_path, key_path
+    local_ip = get_local_ip()
 
     os.makedirs(os.path.dirname(cert_path), exist_ok=True)
-    print(f"[SSL CERT] Generating self-signed SSL certificate for HTTPS access...")
+    cnf_path = os.path.join(os.path.dirname(cert_path), "openssl.cnf")
 
-    # Attempt 1: OpenSSL CLI
+    # Always generate/refresh cert config with SAN IP extensions for modern browser compatibility
     try:
+        with open(cnf_path, "w") as f:
+            f.write(f"""[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_req
+prompt = no
+[req_distinguished_name]
+CN = {local_ip}
+[v3_req]
+keyUsage = keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = localhost
+IP.1 = 127.0.0.1
+IP.2 = {local_ip}
+""")
         cmd = [
             "openssl", "req", "-x509", "-newkey", "rsa:2048",
             "-keyout", key_path, "-out", cert_path, "-days", "3650",
-            "-nodes", "-subj", "/CN=AxeleraMetis"
+            "-nodes", "-config", cnf_path
         ]
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if res.returncode == 0 and os.path.exists(cert_path) and os.path.exists(key_path):
-            print(f"[SSL CERT SUCCESS] Self-signed certificate generated at: {cert_path}")
             return cert_path, key_path
     except Exception:
         pass
+
+    if os.path.exists(cert_path) and os.path.exists(key_path):
+        return cert_path, key_path
 
     # Attempt 2: Python cryptography library
     try:
@@ -75,10 +91,21 @@ def ensure_self_signed_cert(cert_path: str = "data/ssl/cert.pem", key_path: str 
         from cryptography.x509.oid import NameOID
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
+        import ipaddress
         import datetime
 
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, u"AxeleraMetis")])
+        subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, local_ip)])
+        
+        san_list = [
+            x509.DNSName(u"localhost"),
+            x509.IPAddress(ipaddress.ip_address("127.0.0.1"))
+        ]
+        try:
+            san_list.append(x509.IPAddress(ipaddress.ip_address(local_ip)))
+        except Exception:
+            pass
+
         cert = x509.CertificateBuilder().subject_name(
             subject
         ).issuer_name(
@@ -91,6 +118,8 @@ def ensure_self_signed_cert(cert_path: str = "data/ssl/cert.pem", key_path: str 
             datetime.datetime.utcnow()
         ).not_valid_after(
             datetime.datetime.utcnow() + datetime.timedelta(days=3650)
+        ).add_extension(
+            x509.SubjectAlternativeName(san_list), critical=False
         ).sign(key, hashes.SHA256())
 
         with open(key_path, "wb") as f:
@@ -103,12 +132,10 @@ def ensure_self_signed_cert(cert_path: str = "data/ssl/cert.pem", key_path: str 
         with open(cert_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
 
-        print(f"[SSL CERT SUCCESS] Self-signed certificate generated via cryptography.")
         return cert_path, key_path
     except Exception:
         pass
 
-    print("[SSL CERT WARNING] Could not generate self-signed SSL cert on disk. HTTPS will fall back to HTTP or adhoc.")
     return None, None
 
 
