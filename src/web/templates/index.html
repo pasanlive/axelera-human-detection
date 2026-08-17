@@ -740,8 +740,9 @@
         /* Modal & WebCam Functions */
         function openEnrollModal() {
             document.getElementById('enroll-modal').classList.add('active');
-            document.getElementById('modal-status').className = 'status-banner';
-            document.getElementById('modal-status').style.display = 'none';
+            const statusDiv = document.getElementById('modal-status');
+            statusDiv.className = 'status-banner';
+            statusDiv.style.display = 'none';
             document.getElementById('enroll-name').value = '';
             document.getElementById('enroll-file-input').value = '';
             document.getElementById('image-preview').style.display = 'none';
@@ -757,7 +758,9 @@
 
         function stopWebcam() {
             if (webcamStream) {
-                webcamStream.getTracks().forEach(track => track.stop());
+                try {
+                    webcamStream.getTracks().forEach(track => track.stop());
+                } catch(e) {}
                 webcamStream = null;
             }
             const video = document.getElementById('webcam-feed');
@@ -774,13 +777,27 @@
 
         function startWebcam() {
             const statusDiv = document.getElementById('modal-status');
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            statusDiv.className = 'status-banner';
+            statusDiv.style.display = 'none';
+
+            // Safe cross-browser getUserMedia getter
+            const getUserMedia = (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) ?
+                function(c) { return navigator.mediaDevices.getUserMedia(c); } :
+                ((navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia) ?
+                    function(c) {
+                        return new Promise(function(resolve, reject) {
+                            (navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia).call(navigator, c, resolve, reject);
+                        });
+                    } : null);
+
+            if (!getUserMedia) {
                 statusDiv.className = 'status-banner error';
-                statusDiv.innerText = 'WebCam access is not supported or requires HTTPS / localhost in browser.';
+                statusDiv.style.display = 'block';
+                statusDiv.innerText = '⚠️ WebCam browser restriction: Browsers require HTTPS or http://localhost to access client WebCam over a local network IP. Please use "Upload File" or "Stream Frame", or access via localhost / HTTPS.';
                 return;
             }
 
-            navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } } })
+            getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } } })
                 .then(stream => {
                     webcamStream = stream;
                     const video = document.getElementById('webcam-feed');
@@ -790,19 +807,26 @@
                     document.getElementById('preview-placeholder').style.display = 'none';
                     document.getElementById('btn-snap-webcam').style.display = 'block';
                     document.getElementById('btn-start-webcam').style.display = 'none';
-                    statusDiv.className = 'status-banner';
                     statusDiv.style.display = 'none';
                 })
                 .catch(err => {
                     console.error('WebCam error:', err);
                     statusDiv.className = 'status-banner error';
-                    statusDiv.innerText = 'WebCam permission denied or camera unavailable: ' + err.message;
+                    statusDiv.style.display = 'block';
+                    statusDiv.innerText = 'WebCam permission denied or camera unavailable: ' + (err.message || err.name || err);
                 });
         }
 
         function captureWebcamFrame() {
             const video = document.getElementById('webcam-feed');
-            if (!video || !video.srcObject) return;
+            const statusDiv = document.getElementById('modal-status');
+
+            if (!video || !video.videoWidth) {
+                statusDiv.className = 'status-banner error';
+                statusDiv.style.display = 'block';
+                statusDiv.innerText = 'WebCam feed not ready. Please wait for video feed to display.';
+                return;
+            }
 
             const canvas = document.createElement('canvas');
             canvas.width = video.videoWidth || 640;
@@ -817,9 +841,9 @@
             video.style.display = 'none';
             document.getElementById('preview-placeholder').style.display = 'none';
 
-            const statusDiv = document.getElementById('modal-status');
             statusDiv.className = 'status-banner success';
-            statusDiv.innerText = 'WebCam frame captured! Click Submit to enroll profile.';
+            statusDiv.style.display = 'block';
+            statusDiv.innerText = '📸 WebCam frame captured! Click Submit to enroll profile.';
         }
 
         function switchEnrollTab(tab) {
@@ -832,6 +856,8 @@
             const webcamSec = document.getElementById('section-webcam');
             const imgPreview = document.getElementById('image-preview');
             const placeholder = document.getElementById('preview-placeholder');
+            const statusDiv = document.getElementById('modal-status');
+            statusDiv.style.display = 'none';
 
             if (tab === 'file') {
                 stopWebcam();
@@ -882,6 +908,11 @@
             img.src = capturedBase64;
             img.style.display = 'block';
             document.getElementById('preview-placeholder').style.display = 'none';
+
+            const statusDiv = document.getElementById('modal-status');
+            statusDiv.className = 'status-banner success';
+            statusDiv.style.display = 'block';
+            statusDiv.innerText = '📸 Live RTSP frame captured! Click Submit to enroll profile.';
         }
 
         function submitEnrollment() {
@@ -890,6 +921,7 @@
 
             if (!name) {
                 statusDiv.className = 'status-banner error';
+                statusDiv.style.display = 'block';
                 statusDiv.innerText = 'Please enter identity full name.';
                 return;
             }
@@ -911,6 +943,7 @@
                 .then(handleEnrollResult)
                 .catch(err => {
                     statusDiv.className = 'status-banner error';
+                    statusDiv.style.display = 'block';
                     statusDiv.innerText = 'Enrollment failed: ' + err;
                 });
             } else if (capturedBase64) {
@@ -923,10 +956,12 @@
                 .then(handleEnrollResult)
                 .catch(err => {
                     statusDiv.className = 'status-banner error';
+                    statusDiv.style.display = 'block';
                     statusDiv.innerText = 'Enrollment failed: ' + err;
                 });
             } else {
                 statusDiv.className = 'status-banner error';
+                statusDiv.style.display = 'block';
                 statusDiv.innerText = 'Please select an image file, snap a webcam face, or capture a live frame.';
             }
         }
@@ -935,11 +970,13 @@
             const statusDiv = document.getElementById('modal-status');
             if (data.success) {
                 statusDiv.className = 'status-banner success';
+                statusDiv.style.display = 'block';
                 statusDiv.innerText = data.message || 'Successfully enrolled!';
                 fetchIdentities();
                 setTimeout(closeEnrollModal, 1500);
             } else {
                 statusDiv.className = 'status-banner error';
+                statusDiv.style.display = 'block';
                 statusDiv.innerText = data.error || 'Face feature extraction failed.';
             }
         }
