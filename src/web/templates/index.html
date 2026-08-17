@@ -234,10 +234,26 @@
         }
 
         .stat-value {
-            font-size: 1.6rem;
+            font-size: 1.5rem;
             font-weight: 700;
             font-family: var(--font-mono);
             color: #fff;
+        }
+
+        .progress-bar-bg {
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            margin-top: 0.4rem;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: 2px;
+            transition: width 0.4s ease;
         }
 
         /* Sidebar Panels */
@@ -584,7 +600,7 @@
                 </div>
             </div>
 
-            <!-- Stats Grid -->
+            <!-- Pipeline Stats Grid -->
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-label">Inference FPS</div>
@@ -601,6 +617,33 @@
                 <div class="stat-card">
                     <div class="stat-label">Enrolled Profiles</div>
                     <div class="stat-value" id="stat-faces">--</div>
+                </div>
+            </div>
+
+            <!-- Hardware & AI Resource Monitor Panel -->
+            <div class="stats-grid" style="margin-top: 1rem;">
+                <div class="stat-card">
+                    <div class="stat-label">💾 RAM Usage</div>
+                    <div class="stat-value" id="stat-ram-val">-- / -- GB</div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);" id="stat-ram-sub">--% Used</div>
+                    <div class="progress-bar-bg"><div id="stat-ram-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">⚡ Metis AIPU Load</div>
+                    <div class="stat-value" id="stat-aipu-val">--%</div>
+                    <div style="font-size: 0.75rem; color: var(--accent-success);" id="stat-aipu-sub">4 Cores Active</div>
+                    <div class="progress-bar-bg"><div id="stat-aipu-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">🚀 AI Compute TOPS</div>
+                    <div class="stat-value" id="stat-tops-val">-- TOPS</div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);" id="stat-tops-sub">Capacity: 214.0 TOPS</div>
+                    <div class="progress-bar-bg"><div id="stat-tops-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">🌡️ System Temp</div>
+                    <div class="stat-value" id="stat-temp-val">-- °C</div>
+                    <div style="font-size: 0.75rem; color: var(--accent-success);" id="stat-temp-sub">Optimal Thermal Status</div>
                 </div>
             </div>
         </div>
@@ -780,7 +823,6 @@
             statusDiv.className = 'status-banner';
             statusDiv.style.display = 'none';
 
-            // Safe cross-browser getUserMedia getter
             const getUserMedia = (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) ?
                 function(c) { return navigator.mediaDevices.getUserMedia(c); } :
                 ((navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia) ?
@@ -1024,6 +1066,39 @@
                     document.getElementById('stat-fps').innerText = data.fps ? data.fps.toFixed(1) : '30.0';
                     document.getElementById('stat-cams').innerText = data.active_cameras || '1';
                     document.getElementById('stat-persons').innerText = data.persons_detected !== undefined ? data.persons_detected : '0';
+
+                    if (data.telemetry) {
+                        const t = data.telemetry;
+                        if (t.ram) {
+                            document.getElementById('stat-ram-val').innerText = `${t.ram.used_gb} / ${t.ram.total_gb} GB`;
+                            document.getElementById('stat-ram-sub').innerText = `${t.ram.percent}% Used`;
+                            document.getElementById('stat-ram-bar').style.width = `${t.ram.percent}%`;
+                        }
+                        if (t.aipu) {
+                            document.getElementById('stat-aipu-val').innerText = `${t.aipu.load_percent}%`;
+                            document.getElementById('stat-aipu-sub').innerText = `${t.aipu.cores} AIPU Cores Active`;
+                            document.getElementById('stat-aipu-bar').style.width = `${t.aipu.load_percent}%`;
+
+                            document.getElementById('stat-tops-val').innerText = `${t.aipu.tops_current} TOPS`;
+                            document.getElementById('stat-tops-sub').innerText = `Max Peak: ${t.aipu.tops_max} TOPS`;
+                            const topsPct = Math.min(100, Math.round((t.aipu.tops_current / t.aipu.tops_max) * 100));
+                            document.getElementById('stat-tops-bar').style.width = `${topsPct}%`;
+                        }
+                        if (t.temperature_c !== undefined) {
+                            document.getElementById('stat-temp-val').innerText = `${t.temperature_c} °C`;
+                            const sub = document.getElementById('stat-temp-sub');
+                            if (t.temperature_c < 60) {
+                                sub.innerText = 'Optimal Thermal Status';
+                                sub.style.color = 'var(--accent-success)';
+                            } else if (t.temperature_c < 75) {
+                                sub.innerText = 'Warm Operational Mode';
+                                sub.style.color = 'var(--accent-warning)';
+                            } else {
+                                sub.innerText = 'High Temperature Alert';
+                                sub.style.color = 'var(--accent-danger)';
+                            }
+                        }
+                    }
 
                     if (data.cameras && data.cameras.length > 0) {
                         const selector = document.getElementById('stream-selector');
