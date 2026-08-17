@@ -120,12 +120,16 @@ class PoseEstimator:
             output = output.T
 
         w_target, h_target = self.input_size
-        poses = []
+        boxes = []
+        confidences = []
+        keypoints_list = []
+
         for row in output:
             if len(row) < 56:
                 continue
 
-            box_score = float(row[4])
+            raw_score = float(row[4])
+            box_score = 1.0 / (1.0 + np.exp(-raw_score)) if (raw_score > 1.0 or raw_score < 0.0) else raw_score
             if box_score < self.conf_thresh:
                 continue
 
@@ -146,18 +150,31 @@ class PoseEstimator:
             kpts_scaled = np.zeros((17, 3), dtype=np.float32)
 
             for k in range(17):
-                kx_raw, ky_raw, kc = kpts_raw[k]
+                kx_raw, ky_raw, kc_raw = kpts_raw[k]
                 if is_quantized:
                     kx_raw *= w_target
                     ky_raw *= h_target
                 kx = (kx_raw - pad_x) / scale
                 ky = (ky_raw - pad_y) / scale
+                kc = 1.0 / (1.0 + np.exp(-kc_raw)) if (kc_raw > 1.0 or kc_raw < 0.0) else kc_raw
                 kpts_scaled[k] = [kx, ky, kc]
 
-            poses.append({
-                "bbox": [float(x1), float(y1), float(x2), float(y2)],
-                "confidence": float(box_score),
-                "keypoints": kpts_scaled
-            })
+            boxes.append([int(x1), int(y1), int(x2 - x1), int(y2 - y1)])
+            confidences.append(float(box_score))
+            keypoints_list.append(kpts_scaled)
 
-        return poses
+        if len(boxes) == 0:
+            return []
+
+        indices = cv2.dnn.NMSBoxes(boxes, confidences, self.conf_thresh, self.iou_thresh)
+        results = []
+        if len(indices) > 0:
+            for i in indices.flatten():
+                x, y, w, h = boxes[i]
+                results.append({
+                    "bbox": [float(x), float(y), float(x + w), float(y + h)],
+                    "confidence": float(confidences[i]),
+                    "keypoints": keypoints_list[i]
+                })
+
+        return results

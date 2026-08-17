@@ -133,7 +133,8 @@ class YOLODetector:
                 continue
 
             cls_id = int(np.argmax(scores))
-            max_score = float(scores[cls_id])
+            raw_max = float(scores[cls_id])
+            max_score = 1.0 / (1.0 + np.exp(-raw_max)) if (raw_max > 1.0 or raw_max < 0.0) else raw_max
 
             if (cls_id == self.person_class_id or len(scores) == 1) and max_score >= self.conf_thresh:
                 cx, cy, w, h = row[0:4]
