@@ -111,3 +111,36 @@ class FaceRecognizer:
             })
 
         return results
+
+    def enroll_identity(self, name: str, image_or_path: Any) -> bool:
+        """
+        Enrolls a new face identity into the FaceDatabase.
+        :param name: Identity name string (e.g. 'John Doe')
+        :param image_or_path: Filepath string or pre-decoded numpy array image
+        :return: True if successfully enrolled, False otherwise
+        """
+        if isinstance(image_or_path, str):
+            img = cv2.imread(image_or_path)
+        else:
+            img = image_or_path
+
+        if img is None or img.size == 0:
+            return False
+
+        face_crop = img
+        if self.cascade_detector is not None:
+            try:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                faces = self.cascade_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30))
+                if len(faces) > 0:
+                    x, y, w, h = faces[0]
+                    face_crop = img[y:y+h, x:x+w]
+            except Exception:
+                face_crop = img
+
+        embedding = self.extract_embedding(face_crop)
+        if embedding is None or np.all(embedding == 0):
+            return False
+
+        self.face_db.add_identity(name, embedding)
+        return True

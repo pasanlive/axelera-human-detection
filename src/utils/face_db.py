@@ -91,3 +91,12 @@ class FaceDatabase:
 
     def list_identities(self) -> List[str]:
         return list(self.identities.keys())
+
+    def remove_identity(self, name: str) -> bool:
+        """Removes an enrolled identity from the database."""
+        if name in self.identities:
+            del self.identities[name]
+            self.save()
+            print(f"[FACE DB REMOVED] Removed identity: '{name}'.")
+            return True
+        return False

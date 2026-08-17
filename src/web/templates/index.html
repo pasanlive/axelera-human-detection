@@ -16,6 +16,7 @@
             --accent-primary: #00f2fe;
             --accent-secondary: #4facfe;
             --accent-success: #00e676;
+            --accent-danger: #ff5252;
             --accent-warning: #ffb300;
             --text-main: #f1f5f9;
             --text-muted: #94a3b8;
@@ -86,6 +87,12 @@
             -webkit-text-fill-color: transparent;
         }
 
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
         .status-badge {
             display: flex;
             align-items: center;
@@ -119,7 +126,7 @@
             flex: 1;
             padding: 1.5rem 2rem;
             display: grid;
-            grid-template-columns: 1fr 340px;
+            grid-template-columns: 1fr 360px;
             gap: 1.5rem;
             max-width: 1800px;
             margin: 0 auto;
@@ -233,7 +240,7 @@
             color: #fff;
         }
 
-        /* Sidebar Controls & Feed */
+        /* Sidebar Panels */
         .sidebar {
             display: flex;
             flex-direction: column;
@@ -314,7 +321,7 @@
             transform: translateX(20px);
         }
 
-        .btn-action {
+        .btn-primary {
             width: 100%;
             padding: 0.75rem;
             background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
@@ -325,49 +332,212 @@
             font-size: 0.95rem;
             cursor: pointer;
             transition: opacity 0.2s ease, transform 0.1s ease;
-            margin-top: 0.5rem;
         }
 
-        .btn-action:hover {
+        .btn-primary:hover {
             opacity: 0.9;
             transform: scale(1.01);
         }
 
-        /* Event Ticker */
-        .event-list {
+        .btn-secondary {
+            width: 100%;
+            padding: 0.75rem;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 10px;
+            color: var(--text-main);
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: var(--accent-primary);
+        }
+
+        /* Face Gallery List */
+        .identity-list {
             display: flex;
             flex-direction: column;
-            gap: 0.6rem;
-            max-height: 320px;
+            gap: 0.5rem;
+            max-height: 220px;
             overflow-y: auto;
         }
 
-        .event-card {
+        .identity-item {
             background: rgba(0, 0, 0, 0.25);
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.06);
             border-radius: 8px;
-            padding: 0.7rem 0.85rem;
+            padding: 0.6rem 0.8rem;
             display: flex;
-            justify-content: space-between;
             align-items: center;
+            justify-content: space-between;
             font-size: 0.85rem;
         }
 
-        .event-time {
-            font-family: var(--font-mono);
-            color: var(--text-muted);
-            font-size: 0.75rem;
-        }
-
-        .event-tag {
-            padding: 0.25rem 0.5rem;
+        .btn-delete {
+            background: rgba(255, 82, 82, 0.15);
+            border: 1px solid rgba(255, 82, 82, 0.3);
+            color: var(--accent-danger);
             border-radius: 6px;
-            font-weight: 500;
+            padding: 0.25rem 0.5rem;
             font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
         }
 
-        .tag-person { background: rgba(0, 242, 254, 0.15); color: var(--accent-primary); }
-        .tag-face { background: rgba(0, 230, 118, 0.15); color: var(--accent-success); }
+        .btn-delete:hover {
+            background: var(--accent-danger);
+            color: #fff;
+        }
+
+        /* Modal Popup */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .modal-card {
+            background: #121826;
+            border: 1px solid var(--accent-primary);
+            box-shadow: 0 0 30px rgba(0, 242, 254, 0.2);
+            border-radius: 20px;
+            width: 90%;
+            max-width: 480px;
+            padding: 1.75rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+            position: relative;
+        }
+
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #fff;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .btn-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .form-label {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.75rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 10px;
+            color: #fff;
+            font-family: var(--font-main);
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.2s ease;
+        }
+
+        .form-input:focus {
+            border-color: var(--accent-primary);
+        }
+
+        .tab-bar {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 0.25rem;
+            border-radius: 10px;
+        }
+
+        .tab-btn {
+            padding: 0.5rem;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-weight: 500;
+            font-size: 0.85rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .tab-btn.active {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+
+        .preview-box {
+            width: 100%;
+            height: 180px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 2px dashed rgba(255, 255, 255, 0.15);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .preview-box img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .status-banner {
+            padding: 0.6rem 0.8rem;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            display: none;
+        }
+
+        .status-banner.success {
+            background: rgba(0, 230, 118, 0.15);
+            color: var(--accent-success);
+            border: 1px solid rgba(0, 230, 118, 0.3);
+            display: block;
+        }
+
+        .status-banner.error {
+            background: rgba(255, 82, 82, 0.15);
+            color: var(--accent-danger);
+            border: 1px solid rgba(255, 82, 82, 0.3);
+            display: block;
+        }
 
         footer {
             padding: 1rem 2rem;
@@ -388,9 +558,12 @@
                 <div style="font-size: 0.75rem; color: var(--text-muted);">Local Network Edge Inference Dashboard</div>
             </div>
         </div>
-        <div class="status-badge">
-            <div class="pulse-dot"></div>
-            <span id="hardware-status">Metis AIPU Active (4 Cores)</span>
+        <div class="header-actions">
+            <button class="btn-primary" style="padding: 0.45rem 1rem;" onclick="openEnrollModal()">👤 Enroll Face Profile</button>
+            <div class="status-badge">
+                <div class="pulse-dot"></div>
+                <span id="hardware-status">Metis AIPU Active (4 Cores)</span>
+            </div>
         </div>
     </header>
 
@@ -424,7 +597,7 @@
                     <div class="stat-value" id="stat-persons">--</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Identified Faces</div>
+                    <div class="stat-label">Enrolled Profiles</div>
                     <div class="stat-value" id="stat-faces">--</div>
                 </div>
             </div>
@@ -457,25 +630,61 @@
                             <span class="slider"></span>
                         </label>
                     </div>
-                    <button class="btn-action" onclick="downloadSnapshot()">📸 Capture Frame Snapshot</button>
+                    <button class="btn-primary" onclick="openEnrollModal()">👤 Add New Face Profile</button>
+                    <button class="btn-secondary" onclick="downloadSnapshot()">📸 Capture Frame Snapshot</button>
                 </div>
             </div>
 
-            <!-- Detection Events Feed -->
+            <!-- Enrolled Identity Gallery -->
             <div class="panel">
-                <div class="panel-title">Real-Time Event Feed</div>
-                <div class="event-list" id="event-feed">
-                    <div class="event-card">
-                        <div>
-                            <div>System Initialized</div>
-                            <div class="event-time">Axelera Metis AIPU active</div>
-                        </div>
-                        <span class="event-tag tag-person">SYSTEM</span>
-                    </div>
+                <div class="panel-title">
+                    <span>Enrolled Identities</span>
+                    <span style="font-size: 0.8rem; color: var(--accent-primary);" id="identity-count">0Profiles</span>
+                </div>
+                <div class="identity-list" id="identity-list">
+                    <div style="font-size: 0.8rem; color: var(--text-muted); text-align: center; padding: 1rem;">No profiles enrolled yet</div>
                 </div>
             </div>
         </div>
     </main>
+
+    <!-- Face Enrollment Modal -->
+    <div class="modal-overlay" id="enroll-modal">
+        <div class="modal-card">
+            <div class="modal-title">
+                <span>👤 Enroll Identity Face Profile</span>
+                <button class="btn-close" onclick="closeEnrollModal()">&times;</button>
+            </div>
+
+            <div id="modal-status" class="status-banner"></div>
+
+            <div class="form-group">
+                <label class="form-label">Person / Identity Full Name</label>
+                <input type="text" id="enroll-name" class="form-input" placeholder="e.g. John Doe">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Face Image Source</label>
+                <div class="tab-bar">
+                    <button class="tab-btn active" id="tab-file-btn" onclick="switchEnrollTab('file')">📁 Upload Image File</button>
+                    <button class="tab-btn" id="tab-live-btn" onclick="switchEnrollTab('live')">📸 Live Stream Frame</button>
+                </div>
+            </div>
+
+            <!-- File Upload Section -->
+            <div id="section-file" class="form-group">
+                <input type="file" id="enroll-file-input" class="form-input" accept="image/*" onchange="previewImageFile(event)">
+            </div>
+
+            <!-- Image Preview Box -->
+            <div class="preview-box">
+                <img id="image-preview" src="" alt="Face Preview" style="display: none;">
+                <span id="preview-placeholder" style="font-size: 0.85rem; color: var(--text-muted);">Select file or capture frame</span>
+            </div>
+
+            <button class="btn-primary" id="btn-submit-enroll" onclick="submitEnrollment()">Submit & Enroll Profile</button>
+        </div>
+    </div>
 
     <footer>
         Axelera Metis 111C NPU Engine &bull; Multi-Camera Pipeline System &bull; Local Access: <span id="local-url">http://0.0.0.0:8000</span>
@@ -483,6 +692,8 @@
 
     <script>
         let currentFeed = 'grid';
+        let activeTab = 'file';
+        let capturedBase64 = null;
 
         function switchStream(feedId) {
             currentFeed = feedId;
@@ -496,7 +707,9 @@
             document.querySelectorAll('.btn-select').forEach(btn => {
                 btn.classList.remove('active');
             });
-            event.target.classList.add('active');
+            if (event && event.target) {
+                event.target.classList.add('active');
+            }
         }
 
         function toggleFeature(feature, enabled) {
@@ -511,6 +724,164 @@
             window.open('/api/snapshot', '_blank');
         }
 
+        /* Modal Functions */
+        function openEnrollModal() {
+            document.getElementById('enroll-modal').classList.add('active');
+            document.getElementById('modal-status').className = 'status-banner';
+            document.getElementById('enroll-name').value = '';
+            document.getElementById('enroll-file-input').value = '';
+            document.getElementById('image-preview').style.display = 'none';
+            document.getElementById('preview-placeholder').style.display = 'block';
+            capturedBase64 = null;
+        }
+
+        function closeEnrollModal() {
+            document.getElementById('enroll-modal').classList.remove('active');
+        }
+
+        function switchEnrollTab(tab) {
+            activeTab = tab;
+            document.getElementById('tab-file-btn').classList.toggle('active', tab === 'file');
+            document.getElementById('tab-live-btn').classList.toggle('active', tab === 'live');
+            
+            const fileSec = document.getElementById('section-file');
+            if (tab === 'file') {
+                fileSec.style.display = 'block';
+                capturedBase64 = null;
+            } else {
+                fileSec.style.display = 'none';
+                captureLiveStreamFrame();
+            }
+        }
+
+        function previewImageFile(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(evt) {
+                    const img = document.getElementById('image-preview');
+                    img.src = evt.target.result;
+                    img.style.display = 'block';
+                    document.getElementById('preview-placeholder').style.display = 'none';
+                    capturedBase64 = evt.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        function captureLiveStreamFrame() {
+            const streamImg = document.getElementById('mjpeg-stream');
+            const canvas = document.createElement('canvas');
+            canvas.width = streamImg.naturalWidth || 640;
+            canvas.height = streamImg.naturalHeight || 480;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(streamImg, 0, 0, canvas.width, canvas.height);
+            
+            capturedBase64 = canvas.toDataURL('image/jpeg');
+            const img = document.getElementById('image-preview');
+            img.src = capturedBase64;
+            img.style.display = 'block';
+            document.getElementById('preview-placeholder').style.display = 'none';
+        }
+
+        function submitEnrollment() {
+            const name = document.getElementById('enroll-name').value.trim();
+            const statusDiv = document.getElementById('modal-status');
+
+            if (!name) {
+                statusDiv.className = 'status-banner error';
+                statusDiv.innerText = 'Please enter identity full name.';
+                return;
+            }
+
+            statusDiv.className = 'status-banner';
+            statusDiv.style.display = 'block';
+            statusDiv.innerText = 'Enrolling face profile...';
+
+            if (activeTab === 'file' && document.getElementById('enroll-file-input').files.length > 0) {
+                // Submit FormData
+                const formData = new FormData();
+                formData.append('name', name);
+                formData.append('file', document.getElementById('enroll-file-input').files[0]);
+
+                fetch('/api/enroll_face', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(res => res.json())
+                .then(handleEnrollResult)
+                .catch(err => {
+                    statusDiv.className = 'status-banner error';
+                    statusDiv.innerText = 'Enrollment failed: ' + err;
+                });
+            } else if (capturedBase64) {
+                // Submit JSON Base64
+                fetch('/api/enroll_face', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, image_base64: capturedBase64 })
+                })
+                .then(res => res.json())
+                .then(handleEnrollResult)
+                .catch(err => {
+                    statusDiv.className = 'status-banner error';
+                    statusDiv.innerText = 'Enrollment failed: ' + err;
+                });
+            } else {
+                statusDiv.className = 'status-banner error';
+                statusDiv.innerText = 'Please select an image file or capture a live frame.';
+            }
+        }
+
+        function handleEnrollResult(data) {
+            const statusDiv = document.getElementById('modal-status');
+            if (data.success) {
+                statusDiv.className = 'status-banner success';
+                statusDiv.innerText = data.message || 'Successfully enrolled!';
+                fetchIdentities();
+                setTimeout(closeEnrollModal, 1500);
+            } else {
+                statusDiv.className = 'status-banner error';
+                statusDiv.innerText = data.error || 'Face feature extraction failed.';
+            }
+        }
+
+        function deleteIdentity(name) {
+            if (confirm(`Remove face profile '${name}' from database?`)) {
+                fetch('/api/identity/' + encodeURIComponent(name), { method: 'DELETE' })
+                    .then(res => res.json())
+                    .then(data => fetchIdentities())
+                    .catch(err => console.error(err));
+            }
+        }
+
+        function fetchIdentities() {
+            fetch('/api/identities')
+                .then(res => res.json())
+                .then(data => {
+                    const list = document.getElementById('identity-list');
+                    document.getElementById('identity-count').innerText = (data.count || 0) + ' Profiles';
+                    document.getElementById('stat-faces').innerText = data.count || 0;
+
+                    if (!data.identities || data.identities.length === 0) {
+                        list.innerHTML = '<div style="font-size: 0.8rem; color: var(--text-muted); text-align: center; padding: 1rem;">No profiles enrolled yet</div>';
+                        return;
+                    }
+
+                    let html = '';
+                    data.identities.forEach(name => {
+                        html += `
+                            <div class="identity-item">
+                                <span style="font-weight: 500;">👤 ${name}</span>
+                                <button class="btn-delete" onclick="deleteIdentity('${name}')">Delete</button>
+                            </div>
+                        `;
+                    });
+                    list.innerHTML = html;
+                })
+                .catch(err => console.error(err));
+        }
+
         function fetchTelemetry() {
             fetch('/api/status')
                 .then(res => res.json())
@@ -518,9 +889,7 @@
                     document.getElementById('stat-fps').innerText = data.fps ? data.fps.toFixed(1) : '30.0';
                     document.getElementById('stat-cams').innerText = data.active_cameras || '1';
                     document.getElementById('stat-persons').innerText = data.persons_detected !== undefined ? data.persons_detected : '0';
-                    document.getElementById('stat-faces').innerText = data.faces_recognized !== undefined ? data.faces_recognized : '0';
 
-                    // Update camera selector tabs if changed
                     if (data.cameras && data.cameras.length > 0) {
                         const selector = document.getElementById('stream-selector');
                         let html = `<button class="btn-select ${currentFeed === 'grid' ? 'active' : ''}" onclick="switchStream('grid')">Multi-Grid</button>`;
@@ -533,8 +902,9 @@
                 .catch(err => console.error(err));
         }
 
-        setInterval(fetchTelemetry, 1500);
+        setInterval(fetchTelemetry, 2000);
         fetchTelemetry();
+        fetchIdentities();
     </script>
 </body>
 </html>

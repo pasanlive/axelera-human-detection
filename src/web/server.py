@@ -298,6 +298,62 @@ class WebServer:
                     return send_file(filepath, mimetype='image/jpeg', as_attachment=True)
             return jsonify({"error": "No frame available"}), 404
 
+        @self.app.route('/api/identities', methods=['GET'])
+        def api_list_identities():
+            identities = []
+            if hasattr(self.pipeline, 'face_db'):
+                identities = self.pipeline.face_db.list_identities()
+            return jsonify({"identities": identities, "count": len(identities)})
+
+        @self.app.route('/api/identity/<name>', methods=['DELETE'])
+        def api_delete_identity(name):
+            success = False
+            if hasattr(self.pipeline, 'face_db'):
+                success = self.pipeline.face_db.remove_identity(name)
+            return jsonify({"success": success, "name": name})
+
+        @self.app.route('/api/enroll_face', methods=['POST'])
+        def api_enroll_face():
+            import base64
+            name = None
+            if request.content_type and 'multipart/form-data' in request.content_type:
+                name = request.form.get('name')
+            elif request.is_json:
+                name = request.json.get('name')
+
+            if not name:
+                return jsonify({"error": "Identity name is required"}), 400
+
+            img = None
+            if 'file' in request.files:
+                file = request.files['file']
+                file_bytes = np.frombuffer(file.read(), np.uint8)
+                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            elif request.is_json and 'image_base64' in request.json:
+                b64_str = request.json['image_base64']
+                if ',' in b64_str:
+                    b64_str = b64_str.split(',')[1]
+                img_data = base64.b64decode(b64_str)
+                file_bytes = np.frombuffer(img_data, np.uint8)
+                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            elif request.is_json and request.json.get('use_live_frame'):
+                with self.lock:
+                    if self.latest_grid_jpeg:
+                        file_bytes = np.frombuffer(self.latest_grid_jpeg, np.uint8)
+                        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+            if img is None or img.size == 0:
+                return jsonify({"error": "No valid face image provided"}), 400
+
+            success = False
+            if hasattr(self.pipeline, 'face_recognizer'):
+                success = self.pipeline.face_recognizer.enroll_identity(name, img)
+
+            if success:
+                return jsonify({"success": True, "name": name, "message": f"Successfully enrolled '{name}'."})
+            else:
+                return jsonify({"error": "Could not detect or extract face features from image."}), 400
+
     def start_background(self):
         """Starts web server in a daemon background thread."""
         print("==========================================================")
