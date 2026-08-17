@@ -89,8 +89,26 @@ class YOLODetector:
         return detections
 
     def _postprocess(self, output: np.ndarray, scale: float, pad_x: int, pad_y: int, w_orig: int, h_orig: int) -> List[Dict[str, Any]]:
-        """Parses YOLO raw outputs and applies Non-Maximum Suppression (NMS)."""
+        """Parses YOLO raw outputs (supporting float32, int8, uint8, and various NPU shapes) and applies NMS."""
+        if output is None:
+            return []
+
+        # Convert int8/uint8 quantized NPU output to float32
+        if output.dtype in [np.int8, np.int16]:
+            output = (output.astype(np.float32) + 128.0) / 255.0
+        elif output.dtype == np.uint8:
+            output = output.astype(np.float32) / 255.0
+        else:
+            output = output.astype(np.float32)
+
         output = np.squeeze(output)
+
+        # Handle 3D output shapes from NPU (e.g. [1, 84, 5376] or [514, 528, 84])
+        if len(output.shape) == 3:
+            if output.shape[-1] in [84, 85, 80, 56, 1] or output.shape[-1] < 100:
+                output = output.reshape(-1, output.shape[-1])
+            elif output.shape[0] in [84, 85, 80, 56, 1] or output.shape[0] < 100:
+                output = output.reshape(output.shape[0], -1).T
 
         if len(output.shape) != 2:
             return []
@@ -99,6 +117,7 @@ class YOLODetector:
         if d0 < d1:
             output = output.T
 
+        w_target, h_target = self.input_size
         boxes = []
         confidences = []
         class_ids = []
@@ -109,11 +128,26 @@ class YOLODetector:
             scores = row[4:]
             if len(scores) == 0:
                 continue
-            cls_id = int(np.argmax(scores))
-            max_score = float(scores[cls_id])
 
-            if (cls_id == self.person_class_id or len(scores) == 1) and max_score >= self.conf_thresh:
+            # Apply sigmoid if scores are raw unnormalized logits (> 1.0 or < 0.0)
+            if scores.max() > 1.0 or scores.min() < 0.0:
+                scores_norm = 1.0 / (1.0 + np.exp(-scores))
+            else:
+                scores_norm = scores
+
+            cls_id = int(np.argmax(scores_norm))
+            max_score = float(scores_norm[cls_id])
+
+            if (cls_id == self.person_class_id or len(scores_norm) == 1) and max_score >= self.conf_thresh:
                 cx, cy, w, h = row[0:4]
+
+                # If coordinates are normalized in range [0, 1], scale up to target canvas size
+                if cx <= 1.0 and cy <= 1.0 and w <= 1.0 and h <= 1.0:
+                    cx *= w_target
+                    cy *= h_target
+                    w *= w_target
+                    h *= h_target
+
                 # Convert from padded canvas space back to original image space
                 x1 = (cx - w / 2 - pad_x) / scale
                 y1 = (cy - h / 2 - pad_y) / scale
@@ -140,8 +174,8 @@ class YOLODetector:
                 x, y, w, h = boxes[i]
                 results.append({
                     "bbox": [float(x), float(y), float(x + w), float(y + h)],
-                    "confidence": confidences[i],
-                    "class_id": class_ids[i],
+                    "confidence": float(confidences[i]),
+                    "class_id": int(class_ids[i]),
                     "label": "Person"
                 })
 

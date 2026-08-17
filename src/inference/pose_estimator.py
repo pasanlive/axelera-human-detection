@@ -90,8 +90,24 @@ class PoseEstimator:
         return input_tensor, scale, (pad_x, pad_y)
 
     def _postprocess(self, output: np.ndarray, scale: float, pad_x: int, pad_y: int, w_orig: int, h_orig: int) -> List[Dict[str, Any]]:
-        """Parses YOLO-Pose tensor outputs into bounding boxes and keypoints."""
+        """Parses YOLO-Pose tensor outputs into bounding boxes and keypoints (supports float32, int8, uint8)."""
+        if output is None:
+            return []
+
+        if output.dtype in [np.int8, np.int16]:
+            output = (output.astype(np.float32) + 128.0) / 255.0
+        elif output.dtype == np.uint8:
+            output = output.astype(np.float32) / 255.0
+        else:
+            output = output.astype(np.float32)
+
         output = np.squeeze(output)
+
+        if len(output.shape) == 3:
+            if output.shape[-1] in [56, 57, 17] or output.shape[-1] < 100:
+                output = output.reshape(-1, output.shape[-1])
+            elif output.shape[0] in [56, 57, 17] or output.shape[0] < 100:
+                output = output.reshape(output.shape[0], -1).T
 
         if len(output.shape) != 2:
             return []
@@ -100,15 +116,24 @@ class PoseEstimator:
         if d0 < d1:
             output = output.T
 
+        w_target, h_target = self.input_size
         poses = []
         for row in output:
             if len(row) < 56:
                 continue
-            box_score = float(row[4])
+
+            raw_score = float(row[4])
+            box_score = 1.0 / (1.0 + np.exp(-raw_score)) if (raw_score > 1.0 or raw_score < 0.0) else raw_score
             if box_score < self.conf_thresh:
                 continue
 
             cx, cy, w, h = row[0:4]
+            if cx <= 1.0 and cy <= 1.0 and w <= 1.0 and h <= 1.0:
+                cx *= w_target
+                cy *= h_target
+                w *= w_target
+                h *= h_target
+
             x1 = (cx - w / 2 - pad_x) / scale
             y1 = (cy - h / 2 - pad_y) / scale
             x2 = (cx + w / 2 - pad_x) / scale
@@ -119,9 +144,13 @@ class PoseEstimator:
             kpts_scaled = np.zeros((17, 3), dtype=np.float32)
 
             for k in range(17):
-                kx = (kpts_raw[k, 0] - pad_x) / scale
-                ky = (kpts_raw[k, 1] - pad_y) / scale
-                kc = kpts_raw[k, 2]
+                kx_raw, ky_raw, kc_raw = kpts_raw[k]
+                if kx_raw <= 1.0 and ky_raw <= 1.0:
+                    kx_raw *= w_target
+                    ky_raw *= h_target
+                kx = (kx_raw - pad_x) / scale
+                ky = (ky_raw - pad_y) / scale
+                kc = 1.0 / (1.0 + np.exp(-kc_raw)) if (kc_raw > 1.0 or kc_raw < 0.0) else kc_raw
                 kpts_scaled[k] = [kx, ky, kc]
 
             poses.append({
