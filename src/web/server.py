@@ -32,16 +32,20 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
 
-def get_local_ip() -> str:
-    """Returns local network IP address of the host system."""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
+def get_hardware_backend_name(pipeline) -> str:
+    """Detects active hardware execution backend dynamically."""
+    if not pipeline:
+        return "Axelera Metis AIPU (4 Cores)"
+    detector = getattr(pipeline, 'detector', None)
+    if detector and hasattr(detector, 'engine'):
+        b = getattr(detector.engine, 'backend', 'unknown')
+        if b == 'onnxruntime':
+            return "ONNXRuntime (CPU/GPU Fallback)"
+        elif b == 'pytorch_virtual':
+            return "PyTorch Virtual Simulation"
+        elif b == 'axelera_voyager':
+            return "Axelera Metis AIPU (4 Cores)"
+    return "Axelera Metis AIPU (4 Cores)"
 
 
 def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
@@ -330,10 +334,11 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
                     })
 
             telemetry = get_system_telemetry(srv.pipeline)
+            hw_name = get_hardware_backend_name(srv.pipeline)
 
             payload = {
                 "status": "online" if srv.pipeline.is_running else "offline",
-                "hardware": "Axelera Metis AIPU (4 Cores)",
+                "hardware": hw_name,
                 "fps": 30.0,
                 "active_cameras": len(cam_list),
                 "cameras": cam_list,
@@ -533,10 +538,11 @@ class WebServer:
                     })
 
             telemetry = get_system_telemetry(self.pipeline)
+            hw_name = get_hardware_backend_name(self.pipeline)
 
             return jsonify({
                 "status": "online" if self.pipeline.is_running else "offline",
-                "hardware": "Axelera Metis AIPU (4 Cores)",
+                "hardware": hw_name,
                 "fps": 30.0,
                 "active_cameras": len(cam_list),
                 "cameras": cam_list,

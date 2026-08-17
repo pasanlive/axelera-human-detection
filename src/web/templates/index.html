@@ -1097,6 +1097,9 @@
             fetch('/api/status')
                 .then(res => res.json())
                 .then(data => {
+                    if (data.hardware) {
+                        document.getElementById('hardware-status').innerText = data.hardware;
+                    }
                     document.getElementById('stat-fps').innerText = data.fps ? data.fps.toFixed(1) : '30.0';
                     document.getElementById('stat-cams').innerText = data.active_cameras || '1';
                     document.getElementById('stat-persons').innerText = data.persons_detected !== undefined ? data.persons_detected : '0';
