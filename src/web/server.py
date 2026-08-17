@@ -45,7 +45,7 @@ def get_local_ip() -> str:
 
 
 def ensure_self_signed_cert(cert_path: str = "data/ssl/cert.pem", key_path: str = "data/ssl/key.pem") -> Tuple[Optional[str], Optional[str]]:
-    """Automatically generates self-signed TLS/SSL certificate & private key with SAN IP extensions."""
+    """Automatically generates self-signed TLS/SSL certificate & private key with SAN IP extensions and valid keyUsage for Chrome/Safari compatibility."""
     cert_path = os.path.abspath(cert_path)
     key_path = os.path.abspath(key_path)
     local_ip = get_local_ip()
@@ -53,7 +53,7 @@ def ensure_self_signed_cert(cert_path: str = "data/ssl/cert.pem", key_path: str 
     os.makedirs(os.path.dirname(cert_path), exist_ok=True)
     cnf_path = os.path.join(os.path.dirname(cert_path), "openssl.cnf")
 
-    # Always generate/refresh cert config with SAN IP extensions for modern browser compatibility
+    # Always generate/refresh cert config with SAN IP extensions and digitalSignature keyUsage
     try:
         with open(cnf_path, "w") as f:
             f.write(f"""[req]
@@ -63,7 +63,7 @@ prompt = no
 [req_distinguished_name]
 CN = {local_ip}
 [v3_req]
-keyUsage = keyEncipherment, dataEncipherment
+keyUsage = digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 [alt_names]
@@ -81,9 +81,6 @@ IP.2 = {local_ip}
             return cert_path, key_path
     except Exception:
         pass
-
-    if os.path.exists(cert_path) and os.path.exists(key_path):
-        return cert_path, key_path
 
     # Attempt 2: Python cryptography library
     try:
@@ -118,6 +115,18 @@ IP.2 = {local_ip}
             datetime.datetime.utcnow()
         ).not_valid_after(
             datetime.datetime.utcnow() + datetime.timedelta(days=3650)
+        ).add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False
+            ), critical=True
         ).add_extension(
             x509.SubjectAlternativeName(san_list), critical=False
         ).sign(key, hashes.SHA256())

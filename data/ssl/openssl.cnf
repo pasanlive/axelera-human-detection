@@ -5,7 +5,7 @@ prompt = no
 [req_distinguished_name]
 CN = 192.168.0.109
 [v3_req]
-keyUsage = keyEncipherment, dataEncipherment
+keyUsage = digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 [alt_names]
