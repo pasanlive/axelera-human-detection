@@ -94,10 +94,13 @@ class YOLODetector:
             return []
 
         # Convert int8/uint8 quantized NPU output to float32
+        is_quantized = False
         if output.dtype in [np.int8, np.int16]:
             output = (output.astype(np.float32) + 128.0) / 255.0
+            is_quantized = True
         elif output.dtype == np.uint8:
             output = output.astype(np.float32) / 255.0
+            is_quantized = True
         else:
             output = output.astype(np.float32)
 
@@ -129,20 +132,14 @@ class YOLODetector:
             if len(scores) == 0:
                 continue
 
-            # Apply sigmoid if scores are raw unnormalized logits (> 1.0 or < 0.0)
-            if scores.max() > 1.0 or scores.min() < 0.0:
-                scores_norm = 1.0 / (1.0 + np.exp(-scores))
-            else:
-                scores_norm = scores
+            cls_id = int(np.argmax(scores))
+            max_score = float(scores[cls_id])
 
-            cls_id = int(np.argmax(scores_norm))
-            max_score = float(scores_norm[cls_id])
-
-            if (cls_id == self.person_class_id or len(scores_norm) == 1) and max_score >= self.conf_thresh:
+            if (cls_id == self.person_class_id or len(scores) == 1) and max_score >= self.conf_thresh:
                 cx, cy, w, h = row[0:4]
 
-                # If coordinates are normalized in range [0, 1], scale up to target canvas size
-                if cx <= 1.0 and cy <= 1.0 and w <= 1.0 and h <= 1.0:
+                # If raw tensor was int8/uint8 quantized into [0.0, 1.0], scale coordinates up to target canvas size
+                if is_quantized:
                     cx *= w_target
                     cy *= h_target
                     w *= w_target

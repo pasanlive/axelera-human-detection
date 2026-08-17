@@ -94,10 +94,13 @@ class PoseEstimator:
         if output is None:
             return []
 
+        is_quantized = False
         if output.dtype in [np.int8, np.int16]:
             output = (output.astype(np.float32) + 128.0) / 255.0
+            is_quantized = True
         elif output.dtype == np.uint8:
             output = output.astype(np.float32) / 255.0
+            is_quantized = True
         else:
             output = output.astype(np.float32)
 
@@ -122,13 +125,12 @@ class PoseEstimator:
             if len(row) < 56:
                 continue
 
-            raw_score = float(row[4])
-            box_score = 1.0 / (1.0 + np.exp(-raw_score)) if (raw_score > 1.0 or raw_score < 0.0) else raw_score
+            box_score = float(row[4])
             if box_score < self.conf_thresh:
                 continue
 
             cx, cy, w, h = row[0:4]
-            if cx <= 1.0 and cy <= 1.0 and w <= 1.0 and h <= 1.0:
+            if is_quantized:
                 cx *= w_target
                 cy *= h_target
                 w *= w_target
@@ -144,13 +146,12 @@ class PoseEstimator:
             kpts_scaled = np.zeros((17, 3), dtype=np.float32)
 
             for k in range(17):
-                kx_raw, ky_raw, kc_raw = kpts_raw[k]
-                if kx_raw <= 1.0 and ky_raw <= 1.0:
+                kx_raw, ky_raw, kc = kpts_raw[k]
+                if is_quantized:
                     kx_raw *= w_target
                     ky_raw *= h_target
                 kx = (kx_raw - pad_x) / scale
                 ky = (ky_raw - pad_y) / scale
-                kc = 1.0 / (1.0 + np.exp(-kc_raw)) if (kc_raw > 1.0 or kc_raw < 0.0) else kc_raw
                 kpts_scaled[k] = [kx, ky, kc]
 
             poses.append({
