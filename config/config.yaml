@@ -15,15 +15,15 @@ web:
   key_file: "data/ssl/key.pem"
 
 performance:
-  pose_interval: 2         # Run pose estimation every N frames for maximum FPS
-  face_interval: 3         # Run face recognition every N frames per track ID
+  pose_interval: 1         # Run pose estimation every N frames for maximum FPS
+  face_interval: 1         # Run face recognition every N frames per track ID
   rtsp_transport: "tcp"    # Low-latency TCP stream transport
   buffer_size: 1           # Drop stale software frames (0 latency buffer)
 
 cameras:
   - id: "cam_01"
     name: "Front Entrance"
-    source: "rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/main/av_stream"            # Webcam index or RTSP URL e.g. "rtsp://admin:pass@192.168.1.100:554/stream1"
+    source: "rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream"            # Webcam index or RTSP URL e.g. "rtsp://admin:pass@192.168.1.100:554/stream1"
     enabled: true
     fps_limit: 30
   - id: "cam_02"
