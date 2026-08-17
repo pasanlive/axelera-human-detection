@@ -32,6 +32,18 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
 
+def get_local_ip() -> str:
+    """Returns local network IP address of the host system."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
 def get_hardware_backend_name(pipeline) -> str:
     """Detects active hardware execution backend dynamically."""
     if not pipeline:
