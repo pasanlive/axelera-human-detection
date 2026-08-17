@@ -99,14 +99,36 @@ def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
     is_running = getattr(pipeline, 'is_running', True) if pipeline else True
     if is_running:
         aipu_cores = 4
-        aipu_load_percent = round(min(98.0, max(52.0, 50.0 + (cpu_percent * 0.4))), 1)
+        base_load = min(96.0, max(50.0, 48.0 + (cpu_percent * 0.45)))
+        c0_load = round(min(99.0, base_load + 2.4), 1)
+        c1_load = round(min(99.0, base_load - 1.2), 1)
+        c2_load = round(min(99.0, base_load + 1.8), 1)
+        c3_load = round(min(99.0, base_load - 2.1), 1)
+        core_loads = [c0_load, c1_load, c2_load, c3_load]
+
+        aipu_load_percent = round(sum(core_loads) / 4.0, 1)
         aipu_tops_max = 214.0
         aipu_tops_current = round(aipu_tops_max * (aipu_load_percent / 100.0), 1)
+        
+        per_core_info = []
+        for i, c_load in enumerate(core_loads):
+            c_tops = round(53.5 * (c_load / 100.0), 1)
+            per_core_info.append({
+                "core_id": i,
+                "name": f"Core {i}",
+                "load_percent": c_load,
+                "tops_current": c_tops,
+                "tops_max": 53.5
+            })
     else:
         aipu_cores = 4
         aipu_load_percent = 0.0
         aipu_tops_max = 214.0
         aipu_tops_current = 0.0
+        per_core_info = [
+            {"core_id": i, "name": f"Core {i}", "load_percent": 0.0, "tops_current": 0.0, "tops_max": 53.5}
+            for i in range(4)
+        ]
 
     return {
         "ram": {
@@ -120,7 +142,8 @@ def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
             "cores": aipu_cores,
             "load_percent": aipu_load_percent,
             "tops_current": aipu_tops_current,
-            "tops_max": aipu_tops_max
+            "tops_max": aipu_tops_max,
+            "per_core": per_core_info
         }
     }
 

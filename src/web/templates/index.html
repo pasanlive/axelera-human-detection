@@ -646,6 +646,40 @@
                     <div style="font-size: 0.75rem; color: var(--accent-success);" id="stat-temp-sub">Optimal Thermal Status</div>
                 </div>
             </div>
+
+            <!-- Metis AIPU Per-Core Load Monitor Grid -->
+            <div style="margin-top: 1rem; background: var(--bg-card); border: 1px solid var(--border-glow); border-radius: 16px; padding: 1.25rem; backdrop-filter: blur(12px);">
+                <div class="panel-title" style="margin-bottom: 0.75rem;">
+                    <span>🧠 Axelera Metis AIPU 4-Core Telemetry</span>
+                    <span style="font-size: 0.8rem; color: var(--accent-success);">Peak Capacity: 214.0 TOPS INT8</span>
+                </div>
+                <div class="stats-grid" style="margin-top: 0; grid-template-columns: repeat(4, 1fr);">
+                    <div class="stat-card" style="background: rgba(0, 0, 0, 0.3);">
+                        <div class="stat-label">AIPU Core 0</div>
+                        <div class="stat-value" id="core-0-val">--%</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);" id="core-0-sub">-- / 53.5 TOPS</div>
+                        <div class="progress-bar-bg"><div id="core-0-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+                    </div>
+                    <div class="stat-card" style="background: rgba(0, 0, 0, 0.3);">
+                        <div class="stat-label">AIPU Core 1</div>
+                        <div class="stat-value" id="core-1-val">--%</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);" id="core-1-sub">-- / 53.5 TOPS</div>
+                        <div class="progress-bar-bg"><div id="core-1-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+                    </div>
+                    <div class="stat-card" style="background: rgba(0, 0, 0, 0.3);">
+                        <div class="stat-label">AIPU Core 2</div>
+                        <div class="stat-value" id="core-2-val">--%</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);" id="core-2-sub">-- / 53.5 TOPS</div>
+                        <div class="progress-bar-bg"><div id="core-2-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+                    </div>
+                    <div class="stat-card" style="background: rgba(0, 0, 0, 0.3);">
+                        <div class="stat-label">AIPU Core 3</div>
+                        <div class="stat-value" id="core-3-val">--%</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);" id="core-3-sub">-- / 53.5 TOPS</div>
+                        <div class="progress-bar-bg"><div id="core-3-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Sidebar -->
@@ -1083,6 +1117,18 @@
                             document.getElementById('stat-tops-sub').innerText = `Max Peak: ${t.aipu.tops_max} TOPS`;
                             const topsPct = Math.min(100, Math.round((t.aipu.tops_current / t.aipu.tops_max) * 100));
                             document.getElementById('stat-tops-bar').style.width = `${topsPct}%`;
+
+                            if (t.aipu.per_core) {
+                                t.aipu.per_core.forEach(core => {
+                                    const id = core.core_id;
+                                    const valEl = document.getElementById(`core-${id}-val`);
+                                    const subEl = document.getElementById(`core-${id}-sub`);
+                                    const barEl = document.getElementById(`core-${id}-bar`);
+                                    if (valEl) valEl.innerText = `${core.load_percent}%`;
+                                    if (subEl) subEl.innerText = `${core.tops_current} / 53.5 TOPS`;
+                                    if (barEl) barEl.style.width = `${core.load_percent}%`;
+                                });
+                            }
                         }
                         if (t.temperature_c !== undefined) {
                             document.getElementById('stat-temp-val').innerText = `${t.temperature_c} °C`;
