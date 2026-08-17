@@ -113,7 +113,13 @@ def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
         temp_c = round(41.5 + (cpu_percent * 0.1), 1)
 
     is_running = getattr(pipeline, 'is_running', True) if pipeline else True
-    if is_running:
+    is_npu_active = False
+    if pipeline and hasattr(pipeline, 'detector') and hasattr(pipeline.detector, 'engine'):
+        backend_name = getattr(pipeline.detector.engine, 'backend', 'unknown')
+        if backend_name == 'axelera_voyager':
+            is_npu_active = True
+
+    if is_running and is_npu_active:
         aipu_cores = 4
         base_load = min(96.0, max(50.0, 48.0 + (cpu_percent * 0.45)))
         c0_load = round(min(99.0, base_load + 2.4), 1)
@@ -134,7 +140,8 @@ def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
                 "name": f"Core {i}",
                 "load_percent": c_load,
                 "tops_current": c_tops,
-                "tops_max": 53.5
+                "tops_max": 53.5,
+                "active": True
             })
     else:
         aipu_cores = 4
@@ -142,7 +149,7 @@ def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
         aipu_tops_max = 214.0
         aipu_tops_current = 0.0
         per_core_info = [
-            {"core_id": i, "name": f"Core {i}", "load_percent": 0.0, "tops_current": 0.0, "tops_max": 53.5}
+            {"core_id": i, "name": f"Core {i}", "load_percent": 0.0, "tops_current": 0.0, "tops_max": 53.5, "active": False}
             for i in range(4)
         ]
 

@@ -621,7 +621,13 @@
             </div>
 
             <!-- Hardware & AI Resource Monitor Panel -->
-            <div class="stats-grid" style="margin-top: 1rem;">
+            <div class="stats-grid" style="margin-top: 1rem; grid-template-columns: repeat(5, 1fr);">
+                <div class="stat-card">
+                    <div class="stat-label">💻 CPU Usage</div>
+                    <div class="stat-value" id="stat-cpu-val">--%</div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);" id="stat-cpu-sub">Host CPU Load</div>
+                    <div class="progress-bar-bg"><div id="stat-cpu-bar" class="progress-bar-fill" style="width: 0%;"></div></div>
+                </div>
                 <div class="stat-card">
                     <div class="stat-label">💾 RAM Usage</div>
                     <div class="stat-value" id="stat-ram-val">-- / -- GB</div>
@@ -1106,6 +1112,10 @@
 
                     if (data.telemetry) {
                         const t = data.telemetry;
+                        if (t.cpu_percent !== undefined) {
+                            document.getElementById('stat-cpu-val').innerText = `${t.cpu_percent}%`;
+                            document.getElementById('stat-cpu-bar').style.width = `${t.cpu_percent}%`;
+                        }
                         if (t.ram) {
                             document.getElementById('stat-ram-val').innerText = `${t.ram.used_gb} / ${t.ram.total_gb} GB`;
                             document.getElementById('stat-ram-sub').innerText = `${t.ram.percent}% Used`;
@@ -1113,7 +1123,14 @@
                         }
                         if (t.aipu) {
                             document.getElementById('stat-aipu-val').innerText = `${t.aipu.load_percent}%`;
-                            document.getElementById('stat-aipu-sub').innerText = `${t.aipu.cores} AIPU Cores Active`;
+                            const aipuSub = document.getElementById('stat-aipu-sub');
+                            if (t.aipu.load_percent > 0) {
+                                aipuSub.innerText = `${t.aipu.cores} AIPU Cores Active`;
+                                aipuSub.style.color = 'var(--accent-success)';
+                            } else {
+                                aipuSub.innerText = 'Inactive (CPU/ONNX Fallback)';
+                                aipuSub.style.color = 'var(--text-muted)';
+                            }
                             document.getElementById('stat-aipu-bar').style.width = `${t.aipu.load_percent}%`;
 
                             document.getElementById('stat-tops-val').innerText = `${t.aipu.tops_current} TOPS`;
@@ -1128,7 +1145,7 @@
                                     const subEl = document.getElementById(`core-${id}-sub`);
                                     const barEl = document.getElementById(`core-${id}-bar`);
                                     if (valEl) valEl.innerText = `${core.load_percent}%`;
-                                    if (subEl) subEl.innerText = `${core.tops_current} / 53.5 TOPS`;
+                                    if (subEl) subEl.innerText = core.active ? `${core.tops_current} / 53.5 TOPS` : 'Inactive (CPU Fallback)';
                                     if (barEl) barEl.style.width = `${core.load_percent}%`;
                                 });
                             }
