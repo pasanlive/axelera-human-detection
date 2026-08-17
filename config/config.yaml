@@ -12,8 +12,8 @@ web:
   port: 8000
 
 performance:
-  pose_interval: 2         # Run pose estimation every N frames for maximum FPS
-  face_interval: 3         # Run face recognition every N frames per track ID
+  pose_interval: 1         # Run pose estimation every N frames for maximum FPS
+  face_interval: 1         # Run face recognition every N frames per track ID
   rtsp_transport: "tcp"    # Low-latency TCP stream transport
   buffer_size: 1           # Drop stale software frames (0 latency buffer)
 
