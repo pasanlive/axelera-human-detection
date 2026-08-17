@@ -10,6 +10,9 @@ web:
   enabled: true
   host: "0.0.0.0"
   port: 8000
+  https: true
+  cert_file: "data/ssl/cert.pem"
+  key_file: "data/ssl/key.pem"
 
 performance:
   pose_interval: 1         # Run pose estimation every N frames for maximum FPS

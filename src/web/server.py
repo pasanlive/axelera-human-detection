@@ -1,6 +1,6 @@
 """
 WebServer: Low-Latency MJPEG Web Streaming and REST API for Axelera Metis System.
-Supports Flask and native Python http.server fallback for zero-dependency remote local network access.
+Supports HTTPS SSL encryption, Flask, and native Python http.server fallback for secure remote local network access.
 """
 
 import os
@@ -9,7 +9,9 @@ import time
 import json
 import socket
 import threading
-from typing import Dict, Any, Generator
+import subprocess
+import ssl
+from typing import Dict, Any, Generator, Tuple, Optional
 import cv2
 import numpy as np
 
@@ -40,6 +42,74 @@ def get_local_ip() -> str:
         return ip
     except Exception:
         return "127.0.0.1"
+
+
+def ensure_self_signed_cert(cert_path: str = "data/ssl/cert.pem", key_path: str = "data/ssl/key.pem") -> Tuple[Optional[str], Optional[str]]:
+    """Automatically generates self-signed TLS/SSL certificate & private key if not already present."""
+    cert_path = os.path.abspath(cert_path)
+    key_path = os.path.abspath(key_path)
+
+    if os.path.exists(cert_path) and os.path.exists(key_path):
+        return cert_path, key_path
+
+    os.makedirs(os.path.dirname(cert_path), exist_ok=True)
+    print(f"[SSL CERT] Generating self-signed SSL certificate for HTTPS access...")
+
+    # Attempt 1: OpenSSL CLI
+    try:
+        cmd = [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-keyout", key_path, "-out", cert_path, "-days", "3650",
+            "-nodes", "-subj", "/CN=AxeleraMetis"
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res.returncode == 0 and os.path.exists(cert_path) and os.path.exists(key_path):
+            print(f"[SSL CERT SUCCESS] Self-signed certificate generated at: {cert_path}")
+            return cert_path, key_path
+    except Exception:
+        pass
+
+    # Attempt 2: Python cryptography library
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        import datetime
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, u"AxeleraMetis")])
+        cert = x509.CertificateBuilder().subject_name(
+            subject
+        ).issuer_name(
+            issuer
+        ).public_key(
+            key.public_key()
+        ).serial_number(
+            x509.random_serial_number()
+        ).not_valid_before(
+            datetime.datetime.utcnow()
+        ).not_valid_after(
+            datetime.datetime.utcnow() + datetime.timedelta(days=3650)
+        ).sign(key, hashes.SHA256())
+
+        with open(key_path, "wb") as f:
+            f.write(key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
+
+        with open(cert_path, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+
+        print(f"[SSL CERT SUCCESS] Self-signed certificate generated via cryptography.")
+        return cert_path, key_path
+    except Exception:
+        pass
+
+    print("[SSL CERT WARNING] Could not generate self-signed SSL cert on disk. HTTPS will fall back to HTTP or adhoc.")
+    return None, None
 
 
 class ThreadingSimpleServer(ThreadingMixIn, HTTPServer):
@@ -130,6 +200,14 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
             }
             self.wfile.write(json.dumps(payload).encode('utf-8'))
 
+        elif self.path == '/api/identities':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            identities = srv.pipeline.face_db.list_identities() if hasattr(srv.pipeline, 'face_db') else []
+            self.wfile.write(json.dumps({"identities": identities, "count": len(identities)}).encode('utf-8'))
+
         elif self.path == '/api/snapshot':
             with srv.lock:
                 jpeg_data = srv.latest_grid_jpeg
@@ -167,17 +245,66 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"success": True}).encode('utf-8'))
             except Exception as e:
                 self.send_error(400, str(e))
+        elif self.path == '/api/enroll_face' and srv:
+            length = int(self.headers.get('content-length', 0))
+            body = self.rfile.read(length)
+            try:
+                import base64
+                data = json.loads(body.decode('utf-8'))
+                name = data.get('name')
+                b64_str = data.get('image_base64')
+                if not name or not b64_str:
+                    self.send_error(400, "Missing name or image_base64")
+                    return
+
+                if ',' in b64_str:
+                    b64_str = b64_str.split(',')[1]
+                img_data = base64.b64decode(b64_str)
+                file_bytes = np.frombuffer(img_data, np.uint8)
+                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+                success = False
+                if hasattr(srv.pipeline, 'face_recognizer') and img is not None:
+                    success = srv.pipeline.face_recognizer.enroll_identity(name, img)
+
+                self.send_response(200 if success else 400)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                if success:
+                    self.wfile.write(json.dumps({"success": True, "name": name, "message": f"Successfully enrolled '{name}'."}).encode('utf-8'))
+                else:
+                    self.wfile.write(json.dumps({"error": "Could not detect or extract face features from image."}).encode('utf-8'))
+            except Exception as e:
+                self.send_error(400, str(e))
+        else:
+            self.send_error(404)
+
+    def do_DELETE(self):
+        srv = NativeHTTPHandler.server_ref
+        if self.path.startswith('/api/identity/') and srv:
+            import urllib.parse
+            name = urllib.parse.unquote(self.path.split('/')[-1])
+            success = srv.pipeline.face_db.remove_identity(name) if hasattr(srv.pipeline, 'face_db') else False
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": success, "name": name}).encode('utf-8'))
         else:
             self.send_error(404)
 
 
 class WebServer:
-    """Web Application Server providing remote local-network streaming and API telemetry."""
+    """Web Application Server providing remote local-network streaming and API telemetry with HTTPS SSL support."""
 
-    def __init__(self, pipeline, host: str = "0.0.0.0", port: int = 8000):
+    def __init__(self, pipeline, host: str = "0.0.0.0", port: int = 8000, use_https: bool = True, cert_file: Optional[str] = "data/ssl/cert.pem", key_file: Optional[str] = "data/ssl/key.pem"):
         self.pipeline = pipeline
         self.host = host
         self.port = port
+        self.use_https = use_https
+        self.cert_file = cert_file or "data/ssl/cert.pem"
+        self.key_file = key_file or "data/ssl/key.pem"
         self.local_ip = get_local_ip()
 
         self.latest_grid_jpeg = None
@@ -356,11 +483,18 @@ class WebServer:
 
     def start_background(self):
         """Starts web server in a daemon background thread."""
+        protocol = "https" if self.use_https else "http"
         print("==========================================================")
-        print(f"  [WEB DASHBOARD] Axelera Metis Web Interface Active")
-        print(f"  --> Local Access:   http://localhost:{self.port}")
-        print(f"  --> Network Access: http://{self.local_ip}:{self.port}")
+        print(f"  [WEB DASHBOARD] Axelera Metis Web Interface Active ({protocol.upper()})")
+        print(f"  --> Local Access:   {protocol}://localhost:{self.port}")
+        print(f"  --> Network Access: {protocol}://{self.local_ip}:{self.port}")
+        if self.use_https:
+            print(f"  (Note: Accept self-signed SSL certificate prompt in browser)")
         print("==========================================================")
+
+        cert_p, key_p = None, None
+        if self.use_https:
+            cert_p, key_p = ensure_self_signed_cert(self.cert_file, self.key_file)
 
         def run_server():
             if FLASK_AVAILABLE and self.app:
@@ -368,14 +502,20 @@ class WebServer:
                 log = logging.getLogger('werkzeug')
                 log.setLevel(logging.ERROR)
                 try:
-                    self.app.run(host=self.host, port=self.port, debug=False, use_reloader=False, threaded=True)
+                    ssl_arg = (cert_p, key_p) if (cert_p and key_p) else ('adhoc' if self.use_https else None)
+                    self.app.run(host=self.host, port=self.port, debug=False, use_reloader=False, threaded=True, ssl_context=ssl_arg)
                     return
                 except Exception as e:
                     print(f"[WEB SERVER] Flask start error ({e}). Switching to native HTTP server...")
 
-            # Fallback native multi-threaded HTTP server
+            # Fallback native HTTP server with SSL
             NativeHTTPHandler.server_ref = self
             server = ThreadingSimpleServer((self.host, self.port), NativeHTTPHandler)
+            if self.use_https and cert_p and key_p:
+                ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ssl_ctx.load_cert_chain(certfile=cert_p, keyfile=key_p)
+                server.socket = ssl_ctx.wrap_socket(server.socket, server_side=True)
+
             server.serve_forever()
 
         t = threading.Thread(target=run_server, daemon=True)
