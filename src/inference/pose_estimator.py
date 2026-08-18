@@ -135,7 +135,7 @@ class PoseEstimator:
                 continue
 
             cx, cy, w, h = row[0:4]
-            if is_quantized:
+            if max(abs(cx), abs(cy), abs(w), abs(h)) <= 2.0 or is_quantized:
                 cx *= w_target
                 cy *= h_target
                 w *= w_target
@@ -152,7 +152,7 @@ class PoseEstimator:
 
             for k in range(17):
                 kx_raw, ky_raw, kc_raw = kpts_raw[k]
-                if is_quantized:
+                if max(abs(kx_raw), abs(ky_raw)) <= 2.0 or is_quantized:
                     kx_raw *= w_target
                     ky_raw *= h_target
                 kx = (kx_raw - pad_x) / scale

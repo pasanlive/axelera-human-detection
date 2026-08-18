@@ -139,8 +139,8 @@ class YOLODetector:
             if (cls_id == self.person_class_id or len(scores) == 1) and max_score >= self.conf_thresh:
                 cx, cy, w, h = row[0:4]
 
-                # If raw tensor was int8/uint8 quantized into [0.0, 1.0], scale coordinates up to target canvas size
-                if is_quantized:
+                # If coordinates are normalized in range [0, 1] (or if raw tensor was quantized), scale coordinates up to target canvas size
+                if max(abs(cx), abs(cy), abs(w), abs(h)) <= 2.0 or is_quantized:
                     cx *= w_target
                     cy *= h_target
                     w *= w_target

@@ -334,12 +334,13 @@ class VoyagerEngine:
 
         curr_tensor = input_tensor
 
-        # 1. Adapt layout & padding if target_shape is known
-        if target_shape is not None and tuple(curr_tensor.shape) != tuple(target_shape):
-            # Check if target layout is NHWC [1, H, W, C] where C is 1, 3, or 4
-            if len(target_shape) == 4 and target_shape[-1] in [1, 3, 4] and len(curr_tensor.shape) == 4 and curr_tensor.shape[1] in [1, 3, 4]:
+        # 1. Adapt layout (NCHW [1, 3, H, W] -> NHWC [1, H, W, 3]) for Axelera Metis NPU
+        if len(curr_tensor.shape) == 4 and curr_tensor.shape[1] in [1, 3, 4]:
+            if target_shape is None or (len(target_shape) == 4 and target_shape[-1] in [1, 3, 4]):
                 curr_tensor = np.transpose(curr_tensor, (0, 2, 3, 1))
 
+        # 2. Adapt layout & padding if target_shape is known
+        if target_shape is not None and tuple(curr_tensor.shape) != tuple(target_shape):
             # Adapt data type before padding
             if target_dtype is not None and curr_tensor.dtype != target_dtype:
                 if target_dtype == np.int8:
