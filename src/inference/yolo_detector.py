@@ -118,8 +118,8 @@ class YOLODetector:
                 if dfl_raw is None or cls_raw is None:
                     continue
 
-                dfl = (dfl_raw.astype(np.float32) + 128.0) / 255.0 if dfl_raw.dtype in [np.int8, np.int16] else dfl_raw.astype(np.float32)
-                cls = (cls_raw.astype(np.float32) + 128.0) / 255.0 if cls_raw.dtype in [np.int8, np.int16] else cls_raw.astype(np.float32)
+                dfl = dfl_raw.astype(np.float32) / 12.8 if dfl_raw.dtype in [np.int8, np.int16] else dfl_raw.astype(np.float32)
+                cls = cls_raw.astype(np.float32) / 12.8 if cls_raw.dtype in [np.int8, np.int16] else cls_raw.astype(np.float32)
 
                 dfl = np.squeeze(dfl)
                 cls = np.squeeze(cls)
@@ -133,11 +133,12 @@ class YOLODetector:
                     dfl_softmax = dfl_softmax / np.sum(dfl_softmax, axis=-1, keepdims=True)
                     dfl_val = np.sum(dfl_softmax * np.arange(16), axis=-1)  # shape (gh, gw, 4)
 
+                    # Sigmoid activation on class logits
+                    cls_prob = 1.0 / (1.0 + np.exp(-cls[:, :, 0]))
+
                     for r in range(gh):
                         for c in range(gw):
-                            raw_score = float(cls[r, c, 0])
-                            score = 1.0 / (1.0 + np.exp(-raw_score)) if (raw_score > 1.0 or raw_score < 0.0) else raw_score
-
+                            score = float(cls_prob[r, c])
                             if score >= self.conf_thresh:
                                 l_d, t_d, r_d, b_d = dfl_val[r, c, 0], dfl_val[r, c, 1], dfl_val[r, c, 2], dfl_val[r, c, 3]
                                 cx = (c + 0.5 + (r_d - l_d) / 2.0) * stride

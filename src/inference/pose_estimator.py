@@ -121,9 +121,9 @@ class PoseEstimator:
                 if dfl_raw is None or score_raw is None or kpt_raw is None:
                     continue
 
-                dfl = (dfl_raw.astype(np.float32) + 128.0) / 255.0 if dfl_raw.dtype in [np.int8, np.int16] else dfl_raw.astype(np.float32)
-                score = (score_raw.astype(np.float32) + 128.0) / 255.0 if score_raw.dtype in [np.int8, np.int16] else score_raw.astype(np.float32)
-                kpt = (kpt_raw.astype(np.float32) + 128.0) / 255.0 if kpt_raw.dtype in [np.int8, np.int16] else kpt_raw.astype(np.float32)
+                dfl = dfl_raw.astype(np.float32) / 12.8 if dfl_raw.dtype in [np.int8, np.int16] else dfl_raw.astype(np.float32)
+                score = score_raw.astype(np.float32) / 12.8 if score_raw.dtype in [np.int8, np.int16] else score_raw.astype(np.float32)
+                kpt = kpt_raw.astype(np.float32) / 12.8 if kpt_raw.dtype in [np.int8, np.int16] else kpt_raw.astype(np.float32)
 
                 dfl = np.squeeze(dfl)
                 score = np.squeeze(score)
@@ -138,10 +138,11 @@ class PoseEstimator:
                     dfl_softmax = dfl_softmax / np.sum(dfl_softmax, axis=-1, keepdims=True)
                     dfl_val = np.sum(dfl_softmax * np.arange(16), axis=-1)
 
+                    score_prob = 1.0 / (1.0 + np.exp(-score[:, :, 0]))
+
                     for r in range(gh):
                         for c in range(gw):
-                            raw_score = float(score[r, c, 0])
-                            box_score = 1.0 / (1.0 + np.exp(-raw_score)) if (raw_score > 1.0 or raw_score < 0.0) else raw_score
+                            box_score = float(score_prob[r, c])
 
                             if box_score >= self.conf_thresh:
                                 l_d, t_d, r_d, b_d = dfl_val[r, c, 0], dfl_val[r, c, 1], dfl_val[r, c, 2], dfl_val[r, c, 3]
@@ -167,7 +168,7 @@ class PoseEstimator:
                                     kx_rel, ky_rel, kc_raw = kpts_raw[k]
                                     kx = ((c + 0.5 + kx_rel) * stride - pad_x) / scale
                                     ky = ((r + 0.5 + ky_rel) * stride - pad_y) / scale
-                                    kc = 1.0 / (1.0 + np.exp(-kc_raw)) if (kc_raw > 1.0 or kc_raw < 0.0) else kc_raw
+                                    kc = 1.0 / (1.0 + np.exp(-kc_raw))
                                     kpts_scaled[k] = [kx, ky, kc]
 
                                 boxes.append([int(x1), int(y1), int(x2 - x1), int(y2 - y1)])
