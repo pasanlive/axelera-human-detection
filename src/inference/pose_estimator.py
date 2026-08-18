@@ -21,6 +21,7 @@ class PoseEstimator:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.conf_thresh = config.get("conf_threshold", 0.50)
+        self.iou_thresh = config.get("iou_threshold", 0.45)
         self.input_size = tuple(config.get("input_size", [640, 640]))
         self.num_keypoints = config.get("num_keypoints", 17)
         self.model_name = config.get("model_name", "yolov8n-pose.pt")
