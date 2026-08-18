@@ -105,6 +105,74 @@ class YOLODetector:
             self._postprocess_logged = True
             print(f"[YOLO DETECTOR DEBUG] output_list count={len(output_list)}, shapes={[o.shape for o in output_list if o is not None]}")
 
+        # Handle Axelera 6-output multi-head FPN NPU structure (3 scales DFL + 3 scales Class scores)
+        if len(output_list) == 6:
+            w_target, h_target = self.input_size
+            boxes = []
+            confidences = []
+            class_ids = []
+
+            for idx in range(3):
+                dfl_raw = output_list[idx]
+                cls_raw = output_list[idx + 3]
+                if dfl_raw is None or cls_raw is None:
+                    continue
+
+                dfl = (dfl_raw.astype(np.float32) + 128.0) / 255.0 if dfl_raw.dtype in [np.int8, np.int16] else dfl_raw.astype(np.float32)
+                cls = (cls_raw.astype(np.float32) + 128.0) / 255.0 if cls_raw.dtype in [np.int8, np.int16] else cls_raw.astype(np.float32)
+
+                dfl = np.squeeze(dfl)
+                cls = np.squeeze(cls)
+
+                if len(dfl.shape) == 3 and len(cls.shape) == 3:
+                    gh, gw = dfl.shape[0], dfl.shape[1]
+                    stride = float(w_target) / float(gw) if gw > 0 else 8.0
+
+                    dfl_reshaped = dfl.reshape(gh, gw, 4, 16)
+                    dfl_softmax = np.exp(dfl_reshaped - np.max(dfl_reshaped, axis=-1, keepdims=True))
+                    dfl_softmax = dfl_softmax / np.sum(dfl_softmax, axis=-1, keepdims=True)
+                    dfl_val = np.sum(dfl_softmax * np.arange(16), axis=-1)  # shape (gh, gw, 4)
+
+                    for r in range(gh):
+                        for c in range(gw):
+                            raw_score = float(cls[r, c, 0])
+                            score = 1.0 / (1.0 + np.exp(-raw_score)) if (raw_score > 1.0 or raw_score < 0.0) else raw_score
+
+                            if score >= self.conf_thresh:
+                                l_d, t_d, r_d, b_d = dfl_val[r, c, 0], dfl_val[r, c, 1], dfl_val[r, c, 2], dfl_val[r, c, 3]
+                                cx = (c + 0.5 + (r_d - l_d) / 2.0) * stride
+                                cy = (r + 0.5 + (b_d - t_d) / 2.0) * stride
+                                w = (l_d + r_d) * stride
+                                h = (t_d + b_d) * stride
+
+                                x1 = (cx - w / 2.0 - pad_x) / scale
+                                y1 = (cy - h / 2.0 - pad_y) / scale
+                                x2 = (cx + w / 2.0 - pad_x) / scale
+                                y2 = (cy + h / 2.0 - pad_y) / scale
+
+                                x1 = max(0.0, min(w_orig, x1))
+                                y1 = max(0.0, min(h_orig, y1))
+                                x2 = max(0.0, min(w_orig, x2))
+                                y2 = max(0.0, min(h_orig, y2))
+
+                                boxes.append([int(x1), int(y1), int(x2 - x1), int(y2 - y1)])
+                                confidences.append(float(score))
+                                class_ids.append(0)
+
+            if len(boxes) > 0:
+                indices = cv2.dnn.NMSBoxes(boxes, confidences, self.conf_thresh, self.iou_thresh)
+                results = []
+                if len(indices) > 0:
+                    for i in indices.flatten():
+                        x, y, w, h = boxes[i]
+                        results.append({
+                            "bbox": [float(x), float(y), float(x + w), float(y + h)],
+                            "confidence": float(confidences[i]),
+                            "class_id": int(class_ids[i]),
+                            "label": "Person"
+                        })
+                return results
+
         # Search for tensor containing expected YOLO feature channels (84, 85, 80)
         target_tensor = None
         for o in output_list:

@@ -107,6 +107,86 @@ class PoseEstimator:
             self._postprocess_logged = True
             print(f"[POSE ESTIMATOR DEBUG] output_list count={len(output_list)}, shapes={[o.shape for o in output_list if o is not None]}")
 
+        # Handle Axelera 9-output multi-head FPN NPU structure (3 scales DFL + 3 scales Box Score + 3 scales Keypoints)
+        if len(output_list) == 9:
+            w_target, h_target = self.input_size
+            boxes = []
+            confidences = []
+            keypoints_list = []
+
+            for idx in range(3):
+                dfl_raw = output_list[idx]
+                score_raw = output_list[idx + 3]
+                kpt_raw = output_list[idx + 6]
+                if dfl_raw is None or score_raw is None or kpt_raw is None:
+                    continue
+
+                dfl = (dfl_raw.astype(np.float32) + 128.0) / 255.0 if dfl_raw.dtype in [np.int8, np.int16] else dfl_raw.astype(np.float32)
+                score = (score_raw.astype(np.float32) + 128.0) / 255.0 if score_raw.dtype in [np.int8, np.int16] else score_raw.astype(np.float32)
+                kpt = (kpt_raw.astype(np.float32) + 128.0) / 255.0 if kpt_raw.dtype in [np.int8, np.int16] else kpt_raw.astype(np.float32)
+
+                dfl = np.squeeze(dfl)
+                score = np.squeeze(score)
+                kpt = np.squeeze(kpt)
+
+                if len(dfl.shape) == 3 and len(score.shape) == 3 and len(kpt.shape) == 3:
+                    gh, gw = dfl.shape[0], dfl.shape[1]
+                    stride = float(w_target) / float(gw) if gw > 0 else 8.0
+
+                    dfl_reshaped = dfl.reshape(gh, gw, 4, 16)
+                    dfl_softmax = np.exp(dfl_reshaped - np.max(dfl_reshaped, axis=-1, keepdims=True))
+                    dfl_softmax = dfl_softmax / np.sum(dfl_softmax, axis=-1, keepdims=True)
+                    dfl_val = np.sum(dfl_softmax * np.arange(16), axis=-1)
+
+                    for r in range(gh):
+                        for c in range(gw):
+                            raw_score = float(score[r, c, 0])
+                            box_score = 1.0 / (1.0 + np.exp(-raw_score)) if (raw_score > 1.0 or raw_score < 0.0) else raw_score
+
+                            if box_score >= self.conf_thresh:
+                                l_d, t_d, r_d, b_d = dfl_val[r, c, 0], dfl_val[r, c, 1], dfl_val[r, c, 2], dfl_val[r, c, 3]
+                                cx = (c + 0.5 + (r_d - l_d) / 2.0) * stride
+                                cy = (r + 0.5 + (b_d - t_d) / 2.0) * stride
+                                w = (l_d + r_d) * stride
+                                h = (t_d + b_d) * stride
+
+                                x1 = (cx - w / 2.0 - pad_x) / scale
+                                y1 = (cy - h / 2.0 - pad_y) / scale
+                                x2 = (cx + w / 2.0 - pad_x) / scale
+                                y2 = (cy + h / 2.0 - pad_y) / scale
+
+                                x1 = max(0.0, min(w_orig, x1))
+                                y1 = max(0.0, min(h_orig, y1))
+                                x2 = max(0.0, min(w_orig, x2))
+                                y2 = max(0.0, min(h_orig, y2))
+
+                                kpts_raw = kpt[r, c, 0:51].reshape(17, 3)
+                                kpts_scaled = np.zeros((17, 3), dtype=np.float32)
+
+                                for k in range(17):
+                                    kx_rel, ky_rel, kc_raw = kpts_raw[k]
+                                    kx = ((c + 0.5 + kx_rel) * stride - pad_x) / scale
+                                    ky = ((r + 0.5 + ky_rel) * stride - pad_y) / scale
+                                    kc = 1.0 / (1.0 + np.exp(-kc_raw)) if (kc_raw > 1.0 or kc_raw < 0.0) else kc_raw
+                                    kpts_scaled[k] = [kx, ky, kc]
+
+                                boxes.append([int(x1), int(y1), int(x2 - x1), int(y2 - y1)])
+                                confidences.append(float(box_score))
+                                keypoints_list.append(kpts_scaled)
+
+            if len(boxes) > 0:
+                indices = cv2.dnn.NMSBoxes(boxes, confidences, self.conf_thresh, self.iou_thresh)
+                results = []
+                if len(indices) > 0:
+                    for i in indices.flatten():
+                        x, y, w, h = boxes[i]
+                        results.append({
+                            "bbox": [float(x), float(y), float(x + w), float(y + h)],
+                            "confidence": float(confidences[i]),
+                            "keypoints": keypoints_list[i]
+                        })
+                return results
+
         # Search for tensor containing expected YOLO pose feature channels (56, 57, 17)
         target_tensor = None
         for o in output_list:
