@@ -104,14 +104,18 @@ class YOLODetector:
         else:
             output = output.astype(np.float32)
 
+        # Strip batch dimensions [1, C, N] -> [C, N]
+        while len(output.shape) > 2 and output.shape[0] == 1:
+            output = output[0]
+
         output = np.squeeze(output)
 
-        # Handle 3D output shapes from NPU (e.g. [84, H, W] or [1, 84, N] or [H, W, 84])
+        # Handle 3D output shapes from NPU (e.g. [84, H, W] or [H, W, 84])
         if len(output.shape) == 3:
             s0, s1, s2 = output.shape
-            if s0 in [84, 85, 80, 56, 1] or s0 < s1:
+            if s0 in [84, 85, 80] or s0 < min(s1, s2):
                 output = output.reshape(s0, -1).T
-            elif s2 in [84, 85, 80, 56, 1]:
+            elif s2 in [84, 85, 80] or s2 < min(s0, s1):
                 output = output.reshape(-1, s2)
             else:
                 output = output.reshape(-1, s2)
@@ -120,7 +124,7 @@ class YOLODetector:
             return []
 
         d0, d1 = output.shape
-        if d0 in [84, 85, 80, 56] or (d0 < d1 and d0 < 100):
+        if d0 in [84, 85, 80] or (d0 < d1 and d0 < 100):
             output = output.T
 
         w_target, h_target = self.input_size
