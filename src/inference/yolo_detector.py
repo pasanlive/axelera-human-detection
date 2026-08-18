@@ -4,7 +4,7 @@ YOLODetector: Human / Object Detection Module using Axelera Metis or Ultralytics
 
 import cv2
 import numpy as np
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any, Optional, Union
 from src.inference.voyager_engine import VoyagerEngine
 
 class YOLODetector:
@@ -84,18 +84,41 @@ class YOLODetector:
         input_tensor, scale, (pad_x, pad_y) = self.preprocess(frame)
         outputs = self.engine.run(input_tensor)
 
-        # Parse YOLO raw output tensors [1, 84, 8400] -> [boxes, scores]
-        detections = self._postprocess(outputs[0], scale, pad_x, pad_y, w_orig, h_orig)
+        # Parse YOLO raw output tensors
+        detections = self._postprocess(outputs, scale, pad_x, pad_y, w_orig, h_orig)
         return detections
 
-    def _postprocess(self, output: np.ndarray, scale: float, pad_x: int, pad_y: int, w_orig: int, h_orig: int) -> List[Dict[str, Any]]:
-        """Parses YOLO raw outputs (supporting float32, int8, uint8, and various NPU shapes) and applies NMS."""
-        if output is None:
+    def _postprocess(self, outputs: Union[List[np.ndarray], np.ndarray], scale: float, pad_x: int, pad_y: int, w_orig: int, h_orig: int) -> List[Dict[str, Any]]:
+        """Parses YOLO raw outputs (supporting float32, int8, uint8, and multi-head NPU shapes) and applies NMS."""
+        if outputs is None:
+            return []
+
+        if not isinstance(outputs, list):
+            output_list = [outputs]
+        else:
+            output_list = outputs
+
+        if len(output_list) == 0:
             return []
 
         if not hasattr(self, '_postprocess_logged'):
             self._postprocess_logged = True
-            print(f"[YOLO DETECTOR DEBUG] Raw output: shape={output.shape}, dtype={output.dtype}, min={output.min()}, max={output.max()}")
+            print(f"[YOLO DETECTOR DEBUG] output_list count={len(output_list)}, shapes={[o.shape for o in output_list if o is not None]}")
+
+        # Search for tensor containing expected YOLO feature channels (84, 85, 80)
+        target_tensor = None
+        for o in output_list:
+            if o is None:
+                continue
+            s = np.squeeze(o).shape
+            if len(s) >= 2 and (84 in s or 85 in s or 80 in s):
+                target_tensor = o
+                break
+
+        if target_tensor is None:
+            target_tensor = output_list[0]
+
+        output = target_tensor
 
         # Convert int8/uint8 quantized NPU output to float32
         is_quantized = False

@@ -4,7 +4,7 @@ PoseEstimator: 17-Keypoint Body Pose Estimation Module for Axelera Metis.
 
 import cv2
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from src.inference.voyager_engine import VoyagerEngine
 
 # COCO 17 Keypoint Labels
@@ -68,7 +68,7 @@ class PoseEstimator:
         input_tensor, scale, (pad_x, pad_y) = self._preprocess(frame)
         outputs = self.engine.run(input_tensor)
 
-        poses = self._postprocess(outputs[0], scale, pad_x, pad_y, w_orig, h_orig)
+        poses = self._postprocess(outputs, scale, pad_x, pad_y, w_orig, h_orig)
         return poses
 
     def _preprocess(self, frame: np.ndarray):
@@ -90,14 +90,37 @@ class PoseEstimator:
 
         return input_tensor, scale, (pad_x, pad_y)
 
-    def _postprocess(self, output: np.ndarray, scale: float, pad_x: int, pad_y: int, w_orig: int, h_orig: int) -> List[Dict[str, Any]]:
-        """Parses YOLO-Pose tensor outputs into bounding boxes and keypoints (supports float32, int8, uint8)."""
-        if output is None:
+    def _postprocess(self, outputs: Union[List[np.ndarray], np.ndarray], scale: float, pad_x: int, pad_y: int, w_orig: int, h_orig: int) -> List[Dict[str, Any]]:
+        """Parses YOLO-Pose tensor outputs into bounding boxes and keypoints (supports float32, int8, uint8, and multi-head NPU shapes)."""
+        if outputs is None:
+            return []
+
+        if not isinstance(outputs, list):
+            output_list = [outputs]
+        else:
+            output_list = outputs
+
+        if len(output_list) == 0:
             return []
 
         if not hasattr(self, '_postprocess_logged'):
             self._postprocess_logged = True
-            print(f"[POSE ESTIMATOR DEBUG] Raw output: shape={output.shape}, dtype={output.dtype}, min={output.min()}, max={output.max()}")
+            print(f"[POSE ESTIMATOR DEBUG] output_list count={len(output_list)}, shapes={[o.shape for o in output_list if o is not None]}")
+
+        # Search for tensor containing expected YOLO pose feature channels (56, 57, 17)
+        target_tensor = None
+        for o in output_list:
+            if o is None:
+                continue
+            s = np.squeeze(o).shape
+            if len(s) >= 2 and (56 in s or 57 in s or 17 in s):
+                target_tensor = o
+                break
+
+        if target_tensor is None:
+            target_tensor = output_list[0]
+
+        output = target_tensor
 
         is_quantized = False
         if output.dtype in [np.int8, np.int16]:
