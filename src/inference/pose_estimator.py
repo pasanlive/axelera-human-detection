@@ -34,11 +34,11 @@ class PoseEstimator:
             num_cores=config.get("num_cores", 4)
         )
 
-        # High-level official Ultralytics YOLO pose inference engine
+        # High-level official Ultralytics YOLO pose inference engine (loads ONNX / PyTorch format)
         self.ultralytics_model = None
         try:
             from ultralytics import YOLO
-            model_candidates = [config.get("axm_path"), config.get("onnx_path"), self.model_name]
+            model_candidates = [config.get("onnx_path"), self.model_name]
             for model_src in model_candidates:
                 if model_src and (os.path.exists(str(model_src)) or str(model_src).endswith('.pt')):
                     try:
