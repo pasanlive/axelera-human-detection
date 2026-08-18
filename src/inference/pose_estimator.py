@@ -2,6 +2,7 @@
 PoseEstimator: 17-Keypoint Body Pose Estimation Module for Axelera Metis.
 """
 
+import os
 import cv2
 import numpy as np
 from typing import List, Dict, Any, Optional, Union
@@ -33,14 +34,24 @@ class PoseEstimator:
             num_cores=config.get("num_cores", 4)
         )
 
+        # High-level official Ultralytics YOLO pose inference engine
         self.ultralytics_model = None
-        if self.engine.get_backend() == "virtual":
-            try:
-                from ultralytics import YOLO
-                print(f"[POSE ESTIMATOR] Loading PyTorch pose model '{self.model_name}' via Ultralytics engine...")
+        try:
+            from ultralytics import YOLO
+            model_candidates = [self.model_name, config.get("onnx_path")]
+            for model_src in model_candidates:
+                if model_src and os.path.exists(str(model_src)):
+                    try:
+                        print(f"[POSE ESTIMATOR] Loading YOLO pose model '{model_src}' via Ultralytics engine...")
+                        self.ultralytics_model = YOLO(model_src)
+                        break
+                    except Exception:
+                        continue
+            if self.ultralytics_model is None:
+                print(f"[POSE ESTIMATOR] Loading default PyTorch pose model '{self.model_name}'...")
                 self.ultralytics_model = YOLO(self.model_name)
-            except Exception as e:
-                print(f"[POSE ESTIMATOR NOTICE] Ultralytics PyTorch load: {e}")
+        except Exception as e:
+            print(f"[POSE ESTIMATOR NOTICE] Ultralytics engine load notice: {e}")
 
     def estimate_pose(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         """

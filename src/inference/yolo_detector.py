@@ -2,6 +2,7 @@
 YOLODetector: Human / Object Detection Module using Axelera Metis or Ultralytics.
 """
 
+import os
 import cv2
 import numpy as np
 from typing import List, Tuple, Dict, Any, Optional, Union
@@ -25,15 +26,24 @@ class YOLODetector:
             num_cores=config.get("num_cores", 4)
         )
         
-        # High-level Ultralytics PyTorch fallback if available and engine is virtual
+        # High-level official Ultralytics YOLO inference engine
         self.ultralytics_model = None
-        if self.engine.get_backend() == "virtual":
-            try:
-                from ultralytics import YOLO
-                print(f"[YOLO DETECTOR] Loading PyTorch model '{self.model_name}' via Ultralytics engine...")
+        try:
+            from ultralytics import YOLO
+            model_candidates = [self.model_name, config.get("onnx_path")]
+            for model_src in model_candidates:
+                if model_src and os.path.exists(str(model_src)):
+                    try:
+                        print(f"[YOLO DETECTOR] Loading YOLO model '{model_src}' via Ultralytics engine...")
+                        self.ultralytics_model = YOLO(model_src)
+                        break
+                    except Exception:
+                        continue
+            if self.ultralytics_model is None:
+                print(f"[YOLO DETECTOR] Loading default PyTorch model '{self.model_name}'...")
                 self.ultralytics_model = YOLO(self.model_name)
-            except Exception as e:
-                print(f"[YOLO DETECTOR NOTICE] Ultralytics PyTorch load: {e}")
+        except Exception as e:
+            print(f"[YOLO DETECTOR NOTICE] Ultralytics engine load notice: {e}")
 
     def preprocess(self, frame: np.ndarray) -> Tuple[np.ndarray, float, Tuple[int, int]]:
         """Letterbox resize image to target input size."""
