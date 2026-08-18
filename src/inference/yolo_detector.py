@@ -70,8 +70,16 @@ class YOLODetector:
         Runs human detection on input image frame.
         :return: List of dicts containing bbox [x1, y1, x2, y2], confidence, class_id, label
         """
+        if self.engine.get_backend() == "axelera_voyager":
+            # Direct Axelera Metis AIPU NPU Execution Pathway
+            h_orig, w_orig = frame.shape[:2]
+            input_tensor, scale, (pad_x, pad_y) = self.preprocess(frame)
+            outputs = self.engine.run(input_tensor)
+            detections = self._postprocess(outputs, scale, pad_x, pad_y, w_orig, h_orig)
+            return detections
+
         if self.ultralytics_model is not None:
-            # Ultralytics native inference
+            # Fallback PyTorch / ONNX inference pathway
             results = self.ultralytics_model(frame, conf=self.conf_thresh, verbose=False)[0]
             detections = []
             if results.boxes is not None:
@@ -88,12 +96,9 @@ class YOLODetector:
                         })
             return detections
 
-        # Voyager / ONNX tensor pathway
         h_orig, w_orig = frame.shape[:2]
         input_tensor, scale, (pad_x, pad_y) = self.preprocess(frame)
         outputs = self.engine.run(input_tensor)
-
-        # Parse YOLO raw output tensors
         detections = self._postprocess(outputs, scale, pad_x, pad_y, w_orig, h_orig)
         return detections
 

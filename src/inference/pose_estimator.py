@@ -57,7 +57,16 @@ class PoseEstimator:
         Runs pose estimation across the entire frame or crops.
         :return: List of dicts with 'bbox', 'confidence', and 'keypoints' np.ndarray (17, 3) [x, y, conf]
         """
+        if self.engine.get_backend() == "axelera_voyager":
+            # Direct Axelera Metis AIPU NPU Execution Pathway
+            h_orig, w_orig = frame.shape[:2]
+            input_tensor, scale, (pad_x, pad_y) = self._preprocess(frame)
+            outputs = self.engine.run(input_tensor)
+            poses = self._postprocess(outputs, scale, pad_x, pad_y, w_orig, h_orig)
+            return poses
+
         if self.ultralytics_model is not None:
+            # Fallback PyTorch / ONNX inference pathway
             results = self.ultralytics_model(frame, conf=self.conf_thresh, verbose=False)[0]
             poses = []
             if results.keypoints is not None and results.boxes is not None:
@@ -73,11 +82,9 @@ class PoseEstimator:
                     })
             return poses
 
-        # Voyager tensor execution path
         h_orig, w_orig = frame.shape[:2]
         input_tensor, scale, (pad_x, pad_y) = self._preprocess(frame)
         outputs = self.engine.run(input_tensor)
-
         poses = self._postprocess(outputs, scale, pad_x, pad_y, w_orig, h_orig)
         return poses
 
