@@ -38,18 +38,17 @@ class PoseEstimator:
         self.ultralytics_model = None
         try:
             from ultralytics import YOLO
-            model_candidates = [self.model_name, config.get("onnx_path")]
+            model_candidates = [config.get("axm_path"), config.get("onnx_path"), self.model_name]
             for model_src in model_candidates:
-                if model_src and os.path.exists(str(model_src)):
+                if model_src and (os.path.exists(str(model_src)) or str(model_src).endswith('.pt')):
                     try:
                         print(f"[POSE ESTIMATOR] Loading YOLO pose model '{model_src}' via Ultralytics engine...")
                         self.ultralytics_model = YOLO(model_src)
+                        print(f"[POSE ESTIMATOR SUCCESS] Active pose engine loaded using '{model_src}'.")
                         break
-                    except Exception:
+                    except Exception as e:
+                        print(f"[POSE ESTIMATOR NOTICE] Candidate '{model_src}' load notice: {e}")
                         continue
-            if self.ultralytics_model is None:
-                print(f"[POSE ESTIMATOR] Loading default PyTorch pose model '{self.model_name}'...")
-                self.ultralytics_model = YOLO(self.model_name)
         except Exception as e:
             print(f"[POSE ESTIMATOR NOTICE] Ultralytics engine load notice: {e}")
 
