@@ -106,18 +106,21 @@ class YOLODetector:
 
         output = np.squeeze(output)
 
-        # Handle 3D output shapes from NPU (e.g. [1, 84, 5376] or [514, 528, 84])
+        # Handle 3D output shapes from NPU (e.g. [84, H, W] or [1, 84, N] or [H, W, 84])
         if len(output.shape) == 3:
-            if output.shape[-1] in [84, 85, 80, 56, 1] or output.shape[-1] < 100:
-                output = output.reshape(-1, output.shape[-1])
-            elif output.shape[0] in [84, 85, 80, 56, 1] or output.shape[0] < 100:
-                output = output.reshape(output.shape[0], -1).T
+            s0, s1, s2 = output.shape
+            if s0 in [84, 85, 80, 56, 1] or s0 < s1:
+                output = output.reshape(s0, -1).T
+            elif s2 in [84, 85, 80, 56, 1]:
+                output = output.reshape(-1, s2)
+            else:
+                output = output.reshape(-1, s2)
 
         if len(output.shape) != 2:
             return []
 
         d0, d1 = output.shape
-        if d0 < d1:
+        if d0 in [84, 85, 80, 56] or (d0 < d1 and d0 < 100):
             output = output.T
 
         w_target, h_target = self.input_size
