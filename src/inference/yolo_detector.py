@@ -93,6 +93,10 @@ class YOLODetector:
         if output is None:
             return []
 
+        if not hasattr(self, '_postprocess_logged'):
+            self._postprocess_logged = True
+            print(f"[YOLO DETECTOR DEBUG] Raw output: shape={output.shape}, dtype={output.dtype}, min={output.min()}, max={output.max()}")
+
         # Convert int8/uint8 quantized NPU output to float32
         is_quantized = False
         if output.dtype in [np.int8, np.int16]:

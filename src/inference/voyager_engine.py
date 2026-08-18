@@ -429,6 +429,10 @@ class VoyagerEngine:
                     else:
                         raise ae
 
+                if not hasattr(self, '_debug_logged'):
+                    self._debug_logged = True
+                    print(f"[AXELERA NPU ENGINE] Input tensor: shape={input_tensor.shape}, dtype={input_tensor.dtype}, min={input_tensor.min():.3f}, max={input_tensor.max():.3f}")
+
                 self.session.run()
 
                 num_outputs = 1
@@ -450,6 +454,11 @@ class VoyagerEngine:
                     except Exception:
                         pass
                 if outputs:
+                    if not hasattr(self, '_debug_out_logged'):
+                        self._debug_out_logged = True
+                        for idx, o in enumerate(outputs):
+                            o_arr = np.array(o)
+                            print(f"[AXELERA NPU ENGINE] Output {idx}: shape={o_arr.shape}, dtype={o_arr.dtype}, min={o_arr.min()}, max={o_arr.max()}")
                     return outputs
             elif hasattr(self.session, "run"):
                 outputs = self.session.run(input_tensor)

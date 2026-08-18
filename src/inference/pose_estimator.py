@@ -95,6 +95,10 @@ class PoseEstimator:
         if output is None:
             return []
 
+        if not hasattr(self, '_postprocess_logged'):
+            self._postprocess_logged = True
+            print(f"[POSE ESTIMATOR DEBUG] Raw output: shape={output.shape}, dtype={output.dtype}, min={output.min()}, max={output.max()}")
+
         is_quantized = False
         if output.dtype in [np.int8, np.int16]:
             output = (output.astype(np.float32) + 128.0) / 255.0
