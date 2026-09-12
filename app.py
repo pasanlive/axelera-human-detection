@@ -21,6 +21,7 @@ from src.pipeline import MultiCameraPipeline
 from src.utils.face_db import FaceDatabase
 from src.inference.face_recognizer import FaceRecognizer
 from src.web.server import WebServer
+from src.utils.auto_updater import AutoUpdater
 
 def load_config(config_path: str) -> dict:
     """Loads system YAML configuration file."""
@@ -97,6 +98,25 @@ def main():
     pipeline = MultiCameraPipeline(config)
     pipeline.start()
 
+    # Application restart callback for Auto-Updater
+    def restart_application():
+        print("[AUTO-UPDATER] Gracefully stopping pipeline and restarting application...")
+        try:
+            pipeline.stop()
+        except Exception:
+            pass
+        if not args.headless:
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
+        time.sleep(1.0)
+        python = sys.executable
+        os.execv(python, [python] + sys.argv)
+
+    # Initialize GitHub Auto-Updater
+    auto_updater = AutoUpdater(config, config_path=args.config, restart_callback=restart_application)
+
     # Start Remote Web Dashboard Server
     web_server = None
     if args.web:
@@ -104,7 +124,7 @@ def main():
         use_https = False if args.no_https else web_cfg.get("https", True)
         cert_file = args.cert or web_cfg.get("cert_file", "data/ssl/cert.pem")
         key_file = args.key or web_cfg.get("key_file", "data/ssl/key.pem")
-        web_server = WebServer(pipeline, host=args.host, port=args.port, use_https=use_https, cert_file=cert_file, key_file=key_file)
+        web_server = WebServer(pipeline, host=args.host, port=args.port, use_https=use_https, cert_file=cert_file, key_file=key_file, auto_updater=auto_updater)
         web_server.start_background()
 
     window_name = config.get("visualization", {}).get("window_name", "Axelera Metis Multi-Camera System")
@@ -155,6 +175,8 @@ def main():
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Stopping pipeline...")
     finally:
+        if auto_updater:
+            auto_updater.stop()
         pipeline.stop()
         if not args.headless:
             try:

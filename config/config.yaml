@@ -34,6 +34,7 @@ cameras:
 
 models:
   human_detector:
+    enabled: true
     model_name: "yolov8n.pt"
     axm_path: "models/axm/yolov8n.axm"
     onnx_path: "models/onnx/yolov8n.onnx"
@@ -43,6 +44,7 @@ models:
     person_class_id: 0     # COCO person class ID
 
   pose_estimator:
+    enabled: true
     model_name: "yolov8n-pose.pt"
     axm_path: "models/axm/yolov8n-pose.axm"
     onnx_path: "models/onnx/yolov8n-pose.onnx"
@@ -51,6 +53,7 @@ models:
     num_keypoints: 17
 
   face_recognizer:
+    enabled: true
     detector_axm: "models/axm/yolov8n-face.axm"
     detector_onnx: "models/onnx/yolov8n-face.onnx"
     embedder_axm: "models/axm/arcface_mobilefacenet.axm"
@@ -76,3 +79,10 @@ visualization:
   draw_fps: true
   draw_tracks: true
   window_name: "Axelera Metis Multi-Camera Detection System"
+
+auto_update:
+  enabled: true
+  branch: "live"                # GitHub branch to track (e.g. "live" or "main")
+  check_interval: "daily"       # Options: "hourly", "daily", "weekly"
+  install_time: "immediately"   # Options: "immediately" or "HH:MM" (e.g. "02:00")
+  remote: "origin"

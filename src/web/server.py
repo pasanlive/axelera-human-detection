@@ -119,9 +119,15 @@ def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
         if backend_name == 'axelera_voyager':
             is_npu_active = True
 
-    if is_running and is_npu_active:
+    active_models_ratio = 1.0
+    if pipeline and hasattr(pipeline, 'enabled_models'):
+        total_m = len(pipeline.enabled_models)
+        enabled_m = sum(1 for v in pipeline.enabled_models.values() if v)
+        active_models_ratio = (enabled_m / total_m) if total_m > 0 else 1.0
+
+    if is_running and is_npu_active and active_models_ratio > 0:
         aipu_cores = 4
-        base_load = min(96.0, max(50.0, 48.0 + (cpu_percent * 0.45)))
+        base_load = min(96.0, max(20.0, (48.0 + (cpu_percent * 0.45)) * active_models_ratio))
         c0_load = round(min(99.0, base_load + 2.4), 1)
         c1_load = round(min(99.0, base_load - 1.2), 1)
         c2_load = round(min(99.0, base_load + 1.8), 1)
@@ -354,6 +360,7 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
 
             telemetry = get_system_telemetry(srv.pipeline)
             hw_name = get_hardware_backend_name(srv.pipeline)
+            models_status = srv.pipeline.get_models_status() if hasattr(srv.pipeline, 'get_models_status') else []
 
             payload = {
                 "status": "online" if srv.pipeline.is_running else "offline",
@@ -363,9 +370,26 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
                 "cameras": cam_list,
                 "persons_detected": srv.total_persons,
                 "faces_recognized": srv.total_faces,
-                "telemetry": telemetry
+                "telemetry": telemetry,
+                "models": models_status
             }
             self.wfile.write(json.dumps(payload).encode('utf-8'))
+
+        elif self.path == '/api/models':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            models_status = srv.pipeline.get_models_status() if hasattr(srv.pipeline, 'get_models_status') else []
+            self.wfile.write(json.dumps({"models": models_status}).encode('utf-8'))
+
+        elif self.path == '/api/update/status':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            status = srv.auto_updater.get_status() if (hasattr(srv, 'auto_updater') and srv.auto_updater) else {"enabled": False, "status": "unavailable"}
+            self.wfile.write(json.dumps(status).encode('utf-8'))
 
         elif self.path == '/api/identities':
             self.send_response(200)
@@ -392,13 +416,82 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         srv = NativeHTTPHandler.server_ref
-        if self.path == '/api/toggle' and srv:
+        if self.path == '/api/update/config' and srv:
+            length = int(self.headers.get('content-length', 0))
+            body = self.rfile.read(length)
+            try:
+                data = json.loads(body.decode('utf-8'))
+                if hasattr(srv, 'auto_updater') and srv.auto_updater:
+                    srv.auto_updater.update_config(data)
+                    status = srv.auto_updater.get_status()
+                else:
+                    status = {"enabled": False, "status": "unavailable"}
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "status": status}).encode('utf-8'))
+            except Exception as e:
+                self.send_error(400, str(e))
+        elif self.path == '/api/update/check' and srv:
+            try:
+                res = srv.auto_updater.check_for_updates() if (hasattr(srv, 'auto_updater') and srv.auto_updater) else {"success": False, "error": "Auto-updater not initialized"}
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps(res).encode('utf-8'))
+            except Exception as e:
+                self.send_error(500, str(e))
+        elif self.path == '/api/update/install' and srv:
+            try:
+                res = srv.auto_updater.apply_update_and_restart() if (hasattr(srv, 'auto_updater') and srv.auto_updater) else {"success": False, "error": "Auto-updater not initialized"}
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps(res).encode('utf-8'))
+            except Exception as e:
+                self.send_error(500, str(e))
+        elif self.path == '/api/models/toggle' and srv:
+            length = int(self.headers.get('content-length', 0))
+            body = self.rfile.read(length)
+            try:
+                data = json.loads(body.decode('utf-8'))
+                model_id = data.get('model_id')
+                enabled = data.get('enabled', True)
+                cam_id = data.get('camera_id', 'all')
+
+                if hasattr(srv.pipeline, 'set_model_enabled'):
+                    srv.pipeline.set_model_enabled(model_id, enabled, cam_id)
+
+                vis = getattr(srv.pipeline, 'visualizer', None)
+                if vis:
+                    if model_id == 'human_detector': vis.draw_boxes = enabled
+                    elif model_id == 'pose_estimator': vis.draw_pose = enabled
+                    elif model_id == 'face_recognizer': vis.draw_faces = enabled
+
+                models_status = srv.pipeline.get_models_status() if hasattr(srv.pipeline, 'get_models_status') else []
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "model_id": model_id, "enabled": enabled, "models": models_status}).encode('utf-8'))
+            except Exception as e:
+                self.send_error(400, str(e))
+        elif self.path == '/api/toggle' and srv:
             length = int(self.headers.get('content-length', 0))
             body = self.rfile.read(length)
             try:
                 data = json.loads(body.decode('utf-8'))
                 feature = data.get('feature')
                 enabled = data.get('enabled', True)
+
+                if hasattr(srv.pipeline, 'set_model_enabled'):
+                    if feature == 'boxes': srv.pipeline.set_model_enabled('human_detector', enabled)
+                    elif feature == 'pose': srv.pipeline.set_model_enabled('pose_estimator', enabled)
+                    elif feature == 'faces': srv.pipeline.set_model_enabled('face_recognizer', enabled)
+
                 vis = getattr(srv.pipeline, 'visualizer', None)
                 if vis:
                     if feature == 'boxes': vis.draw_boxes = enabled
@@ -465,8 +558,9 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
 class WebServer:
     """Web Application Server providing remote local-network streaming and API telemetry with HTTPS SSL support."""
 
-    def __init__(self, pipeline, host: str = "0.0.0.0", port: int = 8000, use_https: bool = True, cert_file: Optional[str] = "data/ssl/cert.pem", key_file: Optional[str] = "data/ssl/key.pem"):
+    def __init__(self, pipeline, host: str = "0.0.0.0", port: int = 8000, use_https: bool = True, cert_file: Optional[str] = "data/ssl/cert.pem", key_file: Optional[str] = "data/ssl/key.pem", auto_updater: Optional[Any] = None):
         self.pipeline = pipeline
+        self.auto_updater = auto_updater
         self.host = host
         self.port = port
         self.use_https = use_https
@@ -558,6 +652,7 @@ class WebServer:
 
             telemetry = get_system_telemetry(self.pipeline)
             hw_name = get_hardware_backend_name(self.pipeline)
+            models_status = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
 
             return jsonify({
                 "status": "online" if self.pipeline.is_running else "offline",
@@ -567,14 +662,75 @@ class WebServer:
                 "cameras": cam_list,
                 "persons_detected": self.total_persons,
                 "faces_recognized": self.total_faces,
-                "telemetry": telemetry
+                "telemetry": telemetry,
+                "models": models_status
             })
+
+        @self.app.route('/api/models', methods=['GET'])
+        def api_get_models():
+            models = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
+            return jsonify({"models": models})
+
+        @self.app.route('/api/models/toggle', methods=['POST'])
+        def api_toggle_model():
+            data = request.json or {}
+            model_id = data.get('model_id')
+            enabled = data.get('enabled', True)
+            cam_id = data.get('camera_id', 'all')
+
+            if hasattr(self.pipeline, 'set_model_enabled'):
+                self.pipeline.set_model_enabled(model_id, enabled, cam_id)
+
+            vis = getattr(self.pipeline, 'visualizer', None)
+            if vis:
+                if model_id == 'human_detector': vis.draw_boxes = enabled
+                elif model_id == 'pose_estimator': vis.draw_pose = enabled
+                elif model_id == 'face_recognizer': vis.draw_faces = enabled
+
+            models = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
+            return jsonify({"success": True, "model_id": model_id, "enabled": enabled, "models": models})
+
+        @self.app.route('/api/update/status', methods=['GET'])
+        def api_update_status():
+            status = self.auto_updater.get_status() if self.auto_updater else {"enabled": False, "status": "unavailable"}
+            return jsonify(status)
+
+        @self.app.route('/api/update/config', methods=['POST'])
+        def api_update_config():
+            data = request.json or {}
+            if self.auto_updater:
+                self.auto_updater.update_config(data)
+                status = self.auto_updater.get_status()
+            else:
+                status = {"enabled": False, "status": "unavailable"}
+            return jsonify({"success": True, "status": status})
+
+        @self.app.route('/api/update/check', methods=['POST'])
+        def api_update_check():
+            if self.auto_updater:
+                res = self.auto_updater.check_for_updates()
+            else:
+                res = {"success": False, "error": "Auto-updater not initialized"}
+            return jsonify(res)
+
+        @self.app.route('/api/update/install', methods=['POST'])
+        def api_update_install():
+            if self.auto_updater:
+                res = self.auto_updater.apply_update_and_restart()
+            else:
+                res = {"success": False, "error": "Auto-updater not initialized"}
+            return jsonify(res)
 
         @self.app.route('/api/toggle', methods=['POST'])
         def api_toggle():
             data = request.json or {}
             feature = data.get('feature')
             enabled = data.get('enabled', True)
+
+            if hasattr(self.pipeline, 'set_model_enabled'):
+                if feature == 'boxes': self.pipeline.set_model_enabled('human_detector', enabled)
+                elif feature == 'pose': self.pipeline.set_model_enabled('pose_estimator', enabled)
+                elif feature == 'faces': self.pipeline.set_model_enabled('face_recognizer', enabled)
 
             vis = getattr(self.pipeline, 'visualizer', None)
             if vis:

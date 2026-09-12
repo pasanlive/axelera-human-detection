@@ -101,5 +101,228 @@ class TestAxeleraSystem(unittest.TestCase):
 
         pipeline.stop()
 
+    def test_pipeline_model_enabling_disabling(self):
+        """Verifies that only enabled models use inferencing and disabled models are strictly bypassed."""
+        from unittest.mock import MagicMock
+        config = {
+            "hardware": {"device": "virtual"},
+            "cameras": [
+                {"id": "cam_01", "name": "Test Cam 1", "source": "synthetic", "enabled": True}
+            ],
+            "models": {
+                "human_detector": {"enabled": True, "conf_threshold": 0.4, "input_size": [640, 640]},
+                "pose_estimator": {"enabled": True, "conf_threshold": 0.4, "input_size": [640, 640]},
+                "face_recognizer": {"enabled": True, "match_threshold": 0.6, "input_size": [112, 112]}
+            },
+            "performance": {"pose_interval": 1, "face_interval": 1},
+            "tracking": {"enabled": True},
+            "face_db": {"path": "data/test_db.json"},
+            "visualization": {"draw_fps": True}
+        }
+        pipeline = MultiCameraPipeline(config)
+        pipeline.start()
+        import time
+        time.sleep(0.1)
+
+        # Check initial models status
+        models_status = pipeline.get_models_status()
+        self.assertEqual(len(models_status), 3)
+        for m in models_status:
+            self.assertTrue(m["enabled"])
+            self.assertTrue(m["inferencing"])
+
+        # Mock the underlying inferencing methods to track calls
+        mock_det = [{"bbox": [50.0, 50.0, 150.0, 200.0], "confidence": 0.9, "label": "Person"}]
+        pipeline.detector.detect = MagicMock(return_value=mock_det)
+        pipeline.pose_estimator.estimate_pose = MagicMock(return_value=[])
+        pipeline.face_recognizer.recognize_faces_in_frame = MagicMock(return_value=[])
+
+        # Step 1: All enabled -> all should be called
+        pipeline.process_step()
+        self.assertEqual(pipeline.detector.detect.call_count, 1)
+        self.assertEqual(pipeline.pose_estimator.estimate_pose.call_count, 1)
+        self.assertEqual(pipeline.face_recognizer.recognize_faces_in_frame.call_count, 1)
+
+        # Reset mocks
+        pipeline.detector.detect.reset_mock()
+        pipeline.pose_estimator.estimate_pose.reset_mock()
+        pipeline.face_recognizer.recognize_faces_in_frame.reset_mock()
+
+        # Step 2: Disable all models -> NO inferencing should be executed!
+        pipeline.set_model_enabled("human_detector", False)
+        pipeline.set_model_enabled("pose_estimator", False)
+        pipeline.set_model_enabled("face_recognizer", False)
+
+        pipeline.process_step()
+        self.assertEqual(pipeline.detector.detect.call_count, 0, "Detector inference should NOT run when disabled!")
+        self.assertEqual(pipeline.pose_estimator.estimate_pose.call_count, 0, "Pose inference should NOT run when disabled!")
+        self.assertEqual(pipeline.face_recognizer.recognize_faces_in_frame.call_count, 0, "Face recognizer inference should NOT run when disabled!")
+
+        # Step 3: Selectively enable ONLY pose_estimator
+        pipeline.set_model_enabled("pose_estimator", True)
+        pipeline.process_step()
+        self.assertEqual(pipeline.detector.detect.call_count, 0, "Detector should still NOT run")
+        self.assertEqual(pipeline.pose_estimator.estimate_pose.call_count, 1, "Pose inference should run when enabled")
+        self.assertEqual(pipeline.face_recognizer.recognize_faces_in_frame.call_count, 0, "Face inference should still NOT run")
+
+        pipeline.stop()
+
+    def test_web_server_model_api(self):
+        """Tests the WebServer /api/models and /api/models/toggle REST endpoints."""
+        from src.web.server import WebServer
+        config = {
+            "hardware": {"device": "virtual"},
+            "cameras": [],
+            "models": {
+                "human_detector": {"enabled": True, "conf_threshold": 0.45, "input_size": [512, 512]},
+                "pose_estimator": {"enabled": True, "conf_threshold": 0.50, "input_size": [512, 512]},
+                "face_recognizer": {"enabled": True, "match_threshold": 0.60, "input_size": [112, 112]}
+            },
+            "face_db": {"path": "data/test_db.json"}
+        }
+        pipeline = MultiCameraPipeline(config)
+        web_server = WebServer(pipeline, host="127.0.0.1", port=8000, use_https=False)
+
+        if web_server.app:
+            client = web_server.app.test_client()
+
+            # 1. GET /api/models
+            res = client.get('/api/models')
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertIn('models', data)
+            self.assertEqual(len(data['models']), 3)
+
+            # 2. POST /api/models/toggle -> disable human_detector
+            toggle_res = client.post('/api/models/toggle', json={"model_id": "human_detector", "enabled": False})
+            self.assertEqual(toggle_res.status_code, 200)
+            toggle_data = toggle_res.get_json()
+            self.assertTrue(toggle_data['success'])
+            self.assertFalse(pipeline.is_model_enabled("human_detector"))
+
+            # 3. GET /api/status contains updated models
+            status_res = client.get('/api/status')
+            self.assertEqual(status_res.status_code, 200)
+            status_data = status_res.get_json()
+            self.assertIn('models', status_data)
+            det_model = next(m for m in status_data['models'] if m['id'] == 'human_detector')
+            self.assertFalse(det_model['enabled'])
+
+            # 4. POST /api/models/toggle -> re-enable human_detector
+            client.post('/api/models/toggle', json={"model_id": "human_detector", "enabled": True})
+            self.assertTrue(pipeline.is_model_enabled("human_detector"))
+
+    def test_auto_updater_and_web_api(self):
+        """Tests AutoUpdater configuration, intervals, git check mocks, and WebServer update endpoints."""
+        from unittest.mock import patch
+        from src.utils.auto_updater import AutoUpdater, CHECK_INTERVALS_SEC
+        from src.web.server import WebServer
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_cfg_path = os.path.join(tmpdir, "test_config.yaml")
+            initial_cfg = {
+                "hardware": {"device": "virtual"},
+                "cameras": [],
+                "models": {
+                    "human_detector": {"enabled": True, "conf_threshold": 0.45, "input_size": [512, 512]},
+                    "pose_estimator": {"enabled": True, "conf_threshold": 0.50, "input_size": [512, 512]},
+                    "face_recognizer": {"enabled": True, "match_threshold": 0.60, "input_size": [112, 112]}
+                },
+                "face_db": {"path": "data/test_db.json"},
+                "auto_update": {
+                    "enabled": True,
+                    "branch": "live",
+                    "check_interval": "daily",
+                    "install_time": "immediately",
+                    "remote": "origin"
+                }
+            }
+            with open(tmp_cfg_path, "w") as f:
+                yaml.safe_dump(initial_cfg, f)
+
+            restart_called = []
+            def dummy_restart():
+                restart_called.append(True)
+
+            updater = AutoUpdater(initial_cfg, config_path=tmp_cfg_path, restart_callback=dummy_restart)
+            self.assertTrue(updater.enabled)
+            self.assertEqual(updater.branch, "live")
+            self.assertEqual(updater.check_interval, "daily")
+            self.assertEqual(updater.install_time, "immediately")
+
+            # Test check intervals mapping
+            self.assertEqual(CHECK_INTERVALS_SEC["hourly"], 3600)
+            self.assertEqual(CHECK_INTERVALS_SEC["daily"], 86400)
+            self.assertEqual(CHECK_INTERVALS_SEC["weekly"], 604800)
+
+            # Test update_config
+            updater.update_config({
+                "enabled": False,
+                "check_interval": "weekly",
+                "install_time": "03:00",
+                "branch": "release-v1"
+            })
+            self.assertFalse(updater.enabled)
+            self.assertEqual(updater.check_interval, "weekly")
+            self.assertEqual(updater.install_time, "03:00")
+            self.assertEqual(updater.branch, "release-v1")
+
+            # Verify persisted to YAML
+            with open(tmp_cfg_path, "r") as f:
+                saved_yaml = yaml.safe_load(f)
+            self.assertFalse(saved_yaml["auto_update"]["enabled"])
+            self.assertEqual(saved_yaml["auto_update"]["check_interval"], "weekly")
+            self.assertEqual(saved_yaml["auto_update"]["install_time"], "03:00")
+            self.assertEqual(saved_yaml["auto_update"]["branch"], "release-v1")
+
+            # Test get_status
+            status = updater.get_status()
+            self.assertFalse(status["enabled"])
+            self.assertEqual(status["check_interval"], "weekly")
+            self.assertEqual(status["install_time"], "03:00")
+            self.assertEqual(status["branch"], "release-v1")
+            self.assertIn("current_commit", status)
+
+            # Test WebServer REST integration
+            pipeline = MultiCameraPipeline(initial_cfg)
+            web_server = WebServer(pipeline, auto_updater=updater, host="127.0.0.1", port=8000, use_https=False)
+            if web_server.app:
+                client = web_server.app.test_client()
+
+                # GET /api/update/status
+                res = client.get('/api/update/status')
+                self.assertEqual(res.status_code, 200)
+                data = res.get_json()
+                self.assertEqual(data["branch"], "release-v1")
+                self.assertEqual(data["check_interval"], "weekly")
+
+                # POST /api/update/config
+                post_res = client.post('/api/update/config', json={
+                    "enabled": True,
+                    "check_interval": "hourly",
+                    "install_time": "02:00"
+                })
+                self.assertEqual(post_res.status_code, 200)
+                self.assertTrue(updater.enabled)
+                self.assertEqual(updater.check_interval, "hourly")
+                self.assertEqual(updater.install_time, "02:00")
+
+                # POST /api/update/check with mock
+                with patch.object(updater, 'check_for_updates', return_value={"success": True, "branch": "release-v1", "update_pending": False}):
+                    chk_res = client.post('/api/update/check')
+                    self.assertEqual(chk_res.status_code, 200)
+                    chk_data = chk_res.get_json()
+                    self.assertTrue(chk_data["success"])
+
+                # POST /api/update/install with mock
+                with patch.object(updater, 'apply_update_and_restart', return_value={"success": True, "message": "Restarting"}):
+                    inst_res = client.post('/api/update/install')
+                    self.assertEqual(inst_res.status_code, 200)
+                    inst_data = inst_res.get_json()
+                    self.assertTrue(inst_data["success"])
+
+            updater.stop()
+
 if __name__ == "__main__":
     unittest.main()
+

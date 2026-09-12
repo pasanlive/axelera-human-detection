@@ -557,6 +557,289 @@
             display: block;
         }
 
+        /* Admin Button & Badge */
+        .btn-admin {
+            padding: 0.45rem 1rem;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            border: 1px solid rgba(139, 92, 246, 0.4);
+            border-radius: 8px;
+            color: #fff;
+            font-weight: 600;
+            font-size: 0.85rem;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            box-shadow: 0 0 15px rgba(139, 92, 246, 0.25);
+            transition: all 0.2s ease;
+        }
+        .btn-admin:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 0 20px rgba(139, 92, 246, 0.45);
+        }
+        .badge-model-count {
+            background: rgba(0, 0, 0, 0.35);
+            padding: 2px 7px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-family: var(--font-mono);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+
+        /* Live Video HUD */
+        .video-hud-overlay {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: rgba(10, 14, 23, 0.9);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            font-size: 0.8rem;
+            overflow-x: auto;
+        }
+        .hud-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.25rem 0.6rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            font-size: 0.75rem;
+            transition: all 0.2s ease;
+        }
+        .hud-chip.active {
+            background: rgba(0, 242, 254, 0.08);
+            border-color: rgba(0, 242, 254, 0.3);
+            color: #fff;
+        }
+        .hud-chip.disabled {
+            opacity: 0.5;
+            background: rgba(255, 255, 255, 0.02);
+            border-color: rgba(255, 255, 255, 0.05);
+        }
+        .hud-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--text-muted);
+        }
+        .hud-chip.active .hud-dot {
+            background: var(--accent-success);
+            box-shadow: 0 0 8px var(--accent-success);
+        }
+        .hud-chip.disabled .hud-dot {
+            background: #64748b;
+            box-shadow: none;
+        }
+        .hud-status {
+            font-size: 0.7rem;
+            padding: 1px 4px;
+            border-radius: 3px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .hud-chip.active .hud-status {
+            color: var(--accent-success);
+        }
+        .hud-chip.disabled .hud-status {
+            color: var(--text-muted);
+        }
+
+        /* Admin Modal */
+        .admin-modal-card {
+            max-width: 980px;
+            width: 95%;
+        }
+        .admin-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+            padding: 0.75rem 1rem;
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .toolbar-left, .toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .btn-tool {
+            padding: 0.45rem 0.85rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s ease;
+        }
+        .btn-enable-all {
+            background: rgba(0, 230, 118, 0.15);
+            color: var(--accent-success);
+            border: 1px solid rgba(0, 230, 118, 0.3);
+        }
+        .btn-enable-all:hover {
+            background: rgba(0, 230, 118, 0.25);
+        }
+        .btn-disable-all {
+            background: rgba(255, 82, 82, 0.15);
+            color: var(--accent-danger);
+            border: 1px solid rgba(255, 82, 82, 0.3);
+        }
+        .btn-disable-all:hover {
+            background: rgba(255, 82, 82, 0.25);
+        }
+        .form-select {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: var(--text-main);
+            padding: 0.4rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            outline: none;
+        }
+        .form-select:focus {
+            border-color: var(--accent-primary);
+        }
+
+        /* Model Cards Grid */
+        .model-cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.25rem;
+            margin-bottom: 1.25rem;
+        }
+        .model-card {
+            background: rgba(18, 24, 38, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.85rem;
+            transition: all 0.25s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .model-card.active-model {
+            border-color: rgba(0, 242, 254, 0.4);
+            box-shadow: 0 0 20px rgba(0, 242, 254, 0.08);
+        }
+        .model-card.disabled-model {
+            opacity: 0.65;
+            border-color: rgba(255, 255, 255, 0.04);
+            background: rgba(12, 16, 26, 0.8);
+        }
+        .model-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+        .model-card-title-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        .model-task-badge {
+            display: inline-block;
+            align-self: flex-start;
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(0, 242, 254, 0.12);
+            color: var(--accent-primary);
+            border: 1px solid rgba(0, 242, 254, 0.25);
+        }
+        .model-name {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: #fff;
+        }
+        .model-card-desc {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            line-height: 1.35;
+        }
+        .model-status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            padding: 0.3rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            align-self: flex-start;
+        }
+        .model-status-pill.status-active {
+            background: rgba(0, 230, 118, 0.12);
+            color: var(--accent-success);
+            border: 1px solid rgba(0, 230, 118, 0.3);
+        }
+        .model-status-pill.status-disabled {
+            background: rgba(255, 82, 82, 0.1);
+            color: #94a3b8;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .model-specs-table {
+            width: 100%;
+            font-size: 0.75rem;
+            border-collapse: collapse;
+            margin-top: 0.25rem;
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .model-specs-table td {
+            padding: 0.4rem 0.6rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        }
+        .model-specs-table tr:last-child td {
+            border-bottom: none;
+        }
+        .model-specs-label {
+            color: var(--text-muted);
+            width: 42%;
+        }
+        .model-specs-val {
+            font-family: var(--font-mono);
+            color: #e2e8f0;
+            text-align: right;
+            word-break: break-all;
+        }
+        .admin-footer-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            padding-top: 1rem;
+            margin-top: 0.5rem;
+            gap: 1rem;
+        }
+        .sub-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .btn-text-link {
+            background: none;
+            border: none;
+            color: var(--accent-primary);
+            font-size: 0.8rem;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .btn-text-link:hover {
+            text-decoration: underline;
+        }
+
         footer {
             padding: 1rem 2rem;
             text-align: center;
@@ -577,6 +860,10 @@
             </div>
         </div>
         <div class="header-actions">
+            <button class="btn-admin" id="btn-open-admin" onclick="openAdminModal()">
+                <span>⚙️ Admin Panel</span>
+                <span class="badge-model-count" id="header-models-badge">3/3 Models Active</span>
+            </button>
             <button class="btn-primary" style="padding: 0.45rem 1rem;" onclick="openEnrollModal()">👤 Enroll Face Profile</button>
             <div class="status-badge">
                 <div class="pulse-dot"></div>
@@ -593,6 +880,24 @@
                     <div style="font-weight: 600; font-size: 0.95rem;">Live RTSP Stream Processing</div>
                     <div class="stream-selector" id="stream-selector">
                         <button class="btn-select active" onclick="switchStream('grid')">Multi-Grid</button>
+                    </div>
+                </div>
+                <div class="video-hud-overlay" id="video-hud-overlay">
+                    <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600; letter-spacing: 0.5px; margin-right: 0.25rem;">INFERENCE:</div>
+                    <div class="hud-chip active" id="hud-human_detector">
+                        <span class="hud-dot"></span>
+                        <span style="font-weight: 600;">YOLOv8 Det</span>
+                        <span class="hud-status" id="hud-status-human_detector">Active</span>
+                    </div>
+                    <div class="hud-chip active" id="hud-pose_estimator">
+                        <span class="hud-dot"></span>
+                        <span style="font-weight: 600;">YOLOv8 Pose</span>
+                        <span class="hud-status" id="hud-status-pose_estimator">Active</span>
+                    </div>
+                    <div class="hud-chip active" id="hud-face_recognizer">
+                        <span class="hud-dot"></span>
+                        <span style="font-weight: 600;">ArcFace Rec</span>
+                        <span class="hud-status" id="hud-status-face_recognizer">Active</span>
                     </div>
                 </div>
                 <div class="video-wrapper">
@@ -690,32 +995,44 @@
 
         <!-- Sidebar -->
         <div class="sidebar">
-            <!-- Control Panel -->
+            <!-- Model Inference & Stream Controls -->
             <div class="panel">
-                <div class="panel-title">Stream Controls</div>
+                <div class="panel-title">
+                    <span>AI Model Pipeline</span>
+                    <button class="btn-text-link" onclick="openAdminModal()">⚙️ Admin Panel</button>
+                </div>
                 <div class="control-group">
                     <div class="toggle-row">
-                        <span>Bounding Boxes</span>
+                        <div>
+                            <div style="font-weight: 500; font-size: 0.9rem;">Human Detection (YOLOv8)</div>
+                            <div class="sub-label" id="det-sub-status">Active NPU Inferencing</div>
+                        </div>
                         <label class="switch">
-                            <input type="checkbox" id="toggle-boxes" checked onchange="toggleFeature('boxes', this.checked)">
+                            <input type="checkbox" id="toggle-human_detector" checked onchange="toggleModel('human_detector', this.checked)">
                             <span class="slider"></span>
                         </label>
                     </div>
                     <div class="toggle-row">
-                        <span>Pose Keypoints</span>
+                        <div>
+                            <div style="font-weight: 500; font-size: 0.9rem;">Pose Estimation (YOLOv8-Pose)</div>
+                            <div class="sub-label" id="pose-sub-status">Active NPU Inferencing</div>
+                        </div>
                         <label class="switch">
-                            <input type="checkbox" id="toggle-pose" checked onchange="toggleFeature('pose', this.checked)">
+                            <input type="checkbox" id="toggle-pose_estimator" checked onchange="toggleModel('pose_estimator', this.checked)">
                             <span class="slider"></span>
                         </label>
                     </div>
                     <div class="toggle-row">
-                        <span>Face Recognition</span>
+                        <div>
+                            <div style="font-weight: 500; font-size: 0.9rem;">Face Recognition (ArcFace)</div>
+                            <div class="sub-label" id="face-sub-status">Active NPU Inferencing</div>
+                        </div>
                         <label class="switch">
-                            <input type="checkbox" id="toggle-faces" checked onchange="toggleFeature('faces', this.checked)">
+                            <input type="checkbox" id="toggle-face_recognizer" checked onchange="toggleModel('face_recognizer', this.checked)">
                             <span class="slider"></span>
                         </label>
                     </div>
-                    <button class="btn-primary" onclick="openEnrollModal()">👤 Add New Face Profile</button>
+                    <button class="btn-primary" style="background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: #fff;" onclick="openAdminModal()">⚙️ Manage Models in Admin Panel</button>
                     <button class="btn-secondary" onclick="downloadSnapshot()">📸 Capture Frame Snapshot</button>
                 </div>
             </div>
@@ -732,6 +1049,141 @@
             </div>
         </div>
     </main>
+
+    <!-- AI Model Admin Panel Modal -->
+    <div class="modal-overlay" id="admin-modal">
+        <div class="modal-card admin-modal-card">
+            <div class="modal-title">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span style="font-size: 1.5rem;">⚙️</span>
+                    <div>
+                        <div style="font-size: 1.25rem; font-weight: 700;">AI Model Management & Stream Administration</div>
+                        <div style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal;">Configure deep learning models applied to the video stream. Only enabled models perform inferencing.</div>
+                    </div>
+                </div>
+                <button class="btn-close" onclick="closeAdminModal()">&times;</button>
+            </div>
+
+            <!-- Global Action Toolbar -->
+            <div class="admin-toolbar">
+                <div class="toolbar-left">
+                    <button class="btn-tool btn-enable-all" onclick="setAllModels(true)">⚡ Enable All Models</button>
+                    <button class="btn-tool btn-disable-all" onclick="setAllModels(false)">🛑 Standby Mode (Disable All)</button>
+                </div>
+                <div class="toolbar-right">
+                    <label style="font-size: 0.8rem; color: var(--text-muted);">Apply to Stream:</label>
+                    <select id="admin-stream-target" class="form-select" onchange="onAdminStreamChange()">
+                        <option value="all">All Camera Streams</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Notification banner inside admin modal -->
+            <div id="admin-status-banner" class="status-banner" style="display: none;"></div>
+
+            <!-- Model Cards Container -->
+            <div class="model-cards-grid" id="admin-models-list">
+                <!-- Dynamically populated from /api/models -->
+            </div>
+
+            <!-- Automatic GitHub Updates Section -->
+            <div class="update-admin-panel" style="margin-top: 1.5rem; background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(0, 242, 254, 0.25); border-radius: 12px; padding: 1.25rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+                    <div>
+                        <div style="font-size: 1.1rem; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 0.5rem;">
+                            <span>🔄</span> Automatic GitHub Updates & Continuous Deployment
+                        </div>
+                        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;">
+                            Periodically monitors GitHub for latest commits on the live branch, pulls updates, and restarts the system.
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                        <span style="font-size: 0.85rem; font-weight: 500;">Service Status:</span>
+                        <label class="switch">
+                            <input type="checkbox" id="auto-update-enabled" checked onchange="onAutoUpdateToggle(this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Update Config Controls Grid -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.25rem;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label" style="font-size: 0.8rem;">Checking Period</label>
+                        <select id="update-check-interval" class="form-select" style="width: 100%; padding: 0.55rem 0.75rem;">
+                            <option value="hourly">Hourly (Every 1 hour)</option>
+                            <option value="daily" selected>Daily (Every 24 hours)</option>
+                            <option value="weekly">Weekly (Every 7 days)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label" style="font-size: 0.8rem;">Preferred Installation Time</label>
+                        <select id="update-install-time" class="form-select" style="width: 100%; padding: 0.55rem 0.75rem;" onchange="onInstallTimeChange(this.value)">
+                            <option value="immediately" selected>Immediately upon detection</option>
+                            <option value="00:00">00:00 (Midnight)</option>
+                            <option value="01:00">01:00 AM</option>
+                            <option value="02:00">02:00 AM (Recommended)</option>
+                            <option value="03:00">03:00 AM</option>
+                            <option value="04:00">04:00 AM</option>
+                            <option value="custom">Custom Time (HH:MM)...</option>
+                        </select>
+                        <input type="text" id="update-install-time-custom" class="form-input" placeholder="HH:MM (e.g. 02:30)" style="display: none; margin-top: 0.4rem; padding: 0.4rem 0.6rem; font-size: 0.8rem;">
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label" style="font-size: 0.8rem;">Tracked GitHub Branch</label>
+                        <input type="text" id="update-branch-input" class="form-input" value="live" placeholder="e.g. live or main" style="padding: 0.55rem 0.75rem; font-size: 0.8rem; font-family: var(--font-mono);">
+                    </div>
+                </div>
+
+                <!-- Update Telemetry Box -->
+                <div style="background: rgba(0, 0, 0, 0.35); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.06); padding: 1rem; margin-bottom: 1.25rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem; font-size: 0.85rem;">
+                            <span>Current Commit: <b id="updater-curr-commit" style="font-family: var(--font-mono); color: var(--accent-primary);">--</b></span>
+                            <span style="color: var(--text-muted);">&bull;</span>
+                            <span>Remote HEAD: <b id="updater-remote-commit" style="font-family: var(--font-mono); color: var(--text-main);">--</b></span>
+                        </div>
+                        <div id="updater-status-badge" class="model-status-pill status-active">
+                            ✓ System up to date
+                        </div>
+                    </div>
+
+                    <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted); flex-wrap: wrap; gap: 0.5rem;">
+                        <div>Last Checked: <span id="updater-last-check" style="color: #cbd5e1;">--</span></div>
+                        <div>Next Scheduled Check: <span id="updater-next-check" style="color: #cbd5e1;">--</span></div>
+                    </div>
+
+                    <!-- Pending Commits Changelog Container -->
+                    <div id="updater-changelog-box" style="display: none; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+                        <div style="font-size: 0.8rem; font-weight: 600; color: var(--accent-warning); margin-bottom: 0.4rem;">Pending New Commits:</div>
+                        <div id="updater-commits-list" style="font-family: var(--font-mono); font-size: 0.75rem; color: #e2e8f0; max-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.25rem;"></div>
+                    </div>
+                </div>
+
+                <!-- Update Action Toolbar -->
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <button class="btn-tool btn-enable-all" onclick="manualCheckUpdate()" id="btn-manual-check" style="padding: 0.5rem 1rem;">
+                            🔍 Check for Updates Now
+                        </button>
+                        <button class="btn-primary" onclick="manualInstallUpdate()" id="btn-manual-install" style="display: none; padding: 0.5rem 1rem; width: auto; font-size: 0.85rem; background: linear-gradient(135deg, #00e676, #00b0ff); color: #000; font-weight: 700;">
+                            🚀 Pull Update & Restart Now
+                        </button>
+                    </div>
+                    <button class="btn-secondary" onclick="saveAutoUpdateConfig()" id="btn-save-update-cfg" style="padding: 0.5rem 1rem;">
+                        💾 Save Update Settings
+                    </button>
+                </div>
+            </div>
+
+            <div class="admin-footer-info">
+                <span>💡 <b>Edge Optimization:</b> Disabled models completely bypass inferencing in the pipeline, releasing Axelera AIPU compute and reducing memory bandwidth.</span>
+                <button class="btn-secondary" style="padding: 0.45rem 1.2rem;" onclick="closeAdminModal()">Done</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Face Enrollment Modal -->
     <div class="modal-overlay" id="enroll-modal">
@@ -790,6 +1242,196 @@
         let activeTab = 'file';
         let capturedBase64 = null;
         let webcamStream = null;
+        let currentModels = [];
+        let adminTargetStream = 'all';
+
+        function openAdminModal() {
+            document.getElementById('admin-modal').classList.add('active');
+            fetchModels();
+            fetchUpdateStatus();
+        }
+
+        function closeAdminModal() {
+            document.getElementById('admin-modal').classList.remove('active');
+        }
+
+        function showAdminToast(message, isError = false) {
+            const banner = document.getElementById('admin-status-banner');
+            if (!banner) return;
+            banner.className = 'status-banner ' + (isError ? 'error' : 'success');
+            banner.innerText = message;
+            banner.style.display = 'block';
+            setTimeout(() => { banner.style.display = 'none'; }, 3000);
+        }
+
+        function fetchModels() {
+            fetch('/api/models')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.models) {
+                        currentModels = data.models;
+                        renderAdminModels(currentModels);
+                        updateModelHUD(currentModels);
+                    }
+                })
+                .catch(err => console.error('Error fetching models:', err));
+        }
+
+        function renderAdminModels(models) {
+            const container = document.getElementById('admin-models-list');
+            if (!container) return;
+
+            let html = '';
+            models.forEach(m => {
+                const isActive = m.enabled;
+                const statusPillClass = isActive ? 'status-active' : 'status-disabled';
+                const statusText = isActive ? '🟢 NPU Inferencing Active' : '⚪ Inference Bypassed (0 TOPS)';
+                const cardClass = isActive ? 'model-card active-model' : 'model-card disabled-model';
+
+                html += `
+                    <div class="${cardClass}" id="card-${m.id}">
+                        <div class="model-card-header">
+                            <div class="model-card-title-group">
+                                <span class="model-task-badge">${m.task || 'AI INFERENCE'}</span>
+                                <span class="model-name">${m.name}</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="admin-toggle-${m.id}" ${isActive ? 'checked' : ''} onchange="toggleModel('${m.id}', this.checked)">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="model-card-desc">${m.description}</div>
+
+                        <div class="model-status-pill ${statusPillClass}" id="pill-${m.id}">
+                            ${statusText}
+                        </div>
+
+                        <table class="model-specs-table">
+                            <tr>
+                                <td class="model-specs-label">Execution Engine</td>
+                                <td class="model-specs-val">${m.backend || 'Axelera Voyager'}</td>
+                            </tr>
+                            <tr>
+                                <td class="model-specs-label">Model Weights</td>
+                                <td class="model-specs-val">${m.weights || 'Default'}</td>
+                            </tr>
+                            <tr>
+                                <td class="model-specs-label">Input Shape</td>
+                                <td class="model-specs-val">${m.input_size ? m.input_size.join('x') : '512x512'}</td>
+                            </tr>
+                            <tr>
+                                <td class="model-specs-label">Threshold</td>
+                                <td class="model-specs-val">${m.conf_threshold !== undefined ? m.conf_threshold + ' Conf' : (m.match_threshold !== undefined ? m.match_threshold + ' Sim' : '--')}</td>
+                            </tr>
+                            <tr>
+                                <td class="model-specs-label">Cadence</td>
+                                <td class="model-specs-val">${m.fps_cadence || 'Every frame'}</td>
+                            </tr>
+                        </table>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+        }
+
+        function toggleModel(modelId, enabled) {
+            const targetCam = document.getElementById('admin-stream-target') ? document.getElementById('admin-stream-target').value : 'all';
+
+            // Optimistic update of controls
+            const sidebarToggle = document.getElementById('toggle-' + modelId);
+            if (sidebarToggle) sidebarToggle.checked = enabled;
+
+            const adminToggle = document.getElementById('admin-toggle-' + modelId);
+            if (adminToggle) adminToggle.checked = enabled;
+
+            const subStatus = document.getElementById(modelId === 'human_detector' ? 'det-sub-status' : (modelId === 'pose_estimator' ? 'pose-sub-status' : 'face-sub-status'));
+            if (subStatus) {
+                subStatus.innerText = enabled ? 'Active NPU Inferencing' : 'Inference Bypassed (Off)';
+                subStatus.style.color = enabled ? 'var(--accent-success)' : 'var(--text-muted)';
+            }
+
+            fetch('/api/models/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_id: modelId, enabled: enabled, camera_id: targetCam })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.models) {
+                    currentModels = data.models;
+                    renderAdminModels(currentModels);
+                    updateModelHUD(currentModels);
+                }
+                showAdminToast(`${enabled ? '✓ Enabled' : '⏸ Disabled'} inferencing for ${modelId.replace('_', ' ')}.`);
+            })
+            .catch(err => {
+                console.error('Error toggling model:', err);
+                showAdminToast('Error toggling model inference: ' + err, true);
+            });
+        }
+
+        function setAllModels(enabled) {
+            const modelIds = ['human_detector', 'pose_estimator', 'face_recognizer'];
+            const promises = modelIds.map(mId => {
+                return fetch('/api/models/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model_id: mId, enabled: enabled, camera_id: adminTargetStream })
+                }).then(r => r.json());
+            });
+
+            Promise.all(promises).then(results => {
+                fetchModels();
+                showAdminToast(enabled ? '⚡ All AI models enabled for inference.' : '🛑 Standby Mode: All model inference stopped.');
+            }).catch(err => {
+                console.error(err);
+                showAdminToast('Failed to apply bulk model change: ' + err, true);
+            });
+        }
+
+        function onAdminStreamChange() {
+            adminTargetStream = document.getElementById('admin-stream-target').value;
+            fetchModels();
+        }
+
+        function updateModelHUD(models) {
+            if (!models || models.length === 0) return;
+
+            let activeCount = 0;
+            models.forEach(m => {
+                if (m.enabled) activeCount++;
+
+                const chip = document.getElementById('hud-' + m.id);
+                const statusEl = document.getElementById('hud-status-' + m.id);
+                if (chip) {
+                    if (m.enabled) {
+                        chip.className = 'hud-chip active';
+                        if (statusEl) statusEl.innerText = 'Active';
+                    } else {
+                        chip.className = 'hud-chip disabled';
+                        if (statusEl) statusEl.innerText = 'Off';
+                    }
+                }
+
+                const sideCb = document.getElementById('toggle-' + m.id);
+                if (sideCb && sideCb !== document.activeElement) {
+                    sideCb.checked = m.enabled;
+                }
+
+                const subStatus = document.getElementById(m.id === 'human_detector' ? 'det-sub-status' : (m.id === 'pose_estimator' ? 'pose-sub-status' : 'face-sub-status'));
+                if (subStatus) {
+                    subStatus.innerText = m.enabled ? 'Active NPU Inferencing' : 'Inference Bypassed (Off)';
+                    subStatus.style.color = m.enabled ? 'var(--accent-success)' : 'var(--text-muted)';
+                }
+            });
+
+            const badge = document.getElementById('header-models-badge');
+            if (badge) {
+                badge.innerText = `${activeCount}/${models.length} Models Active`;
+                badge.style.color = activeCount === models.length ? 'var(--accent-success)' : (activeCount > 0 ? 'var(--accent-primary)' : 'var(--accent-danger)');
+            }
+        }
 
         function switchStream(feedId) {
             currentFeed = feedId;
@@ -1166,6 +1808,11 @@
                         }
                     }
 
+                    if (data.models) {
+                        currentModels = data.models;
+                        updateModelHUD(data.models);
+                    }
+
                     if (data.cameras && data.cameras.length > 0) {
                         const selector = document.getElementById('stream-selector');
                         let html = `<button class="btn-select ${currentFeed === 'grid' ? 'active' : ''}" onclick="switchStream('grid')">Multi-Grid</button>`;
@@ -1173,14 +1820,241 @@
                             html += `<button class="btn-select ${currentFeed === cam.id ? 'active' : ''}" onclick="switchStream('${cam.id}')">${cam.name}</button>`;
                         });
                         selector.innerHTML = html;
+
+                        const adminSelect = document.getElementById('admin-stream-target');
+                        if (adminSelect && adminSelect.options.length <= 1) {
+                            data.cameras.forEach(cam => {
+                                const opt = document.createElement('option');
+                                opt.value = cam.id;
+                                opt.innerText = `${cam.name} (${cam.id})`;
+                                adminSelect.appendChild(opt);
+                            });
+                        }
                     }
                 })
                 .catch(err => console.error(err));
         }
 
+        // --- Auto-Update Management ---
+        function onInstallTimeChange(val) {
+            const customInput = document.getElementById('update-install-time-custom');
+            if (customInput) {
+                customInput.style.display = (val === 'custom') ? 'block' : 'none';
+            }
+        }
+
+        function onAutoUpdateToggle(checked) {
+            saveAutoUpdateConfig({ enabled: checked });
+        }
+
+        function fetchUpdateStatus() {
+            fetch('/api/update/status')
+                .then(res => res.json())
+                .then(data => {
+                    renderUpdateStatus(data);
+                })
+                .catch(err => console.error('Error fetching update status:', err));
+        }
+
+        function renderUpdateStatus(data) {
+            if (!data) return;
+
+            // Update form controls if user is not actively typing/focused
+            if (data.config) {
+                const enabledToggle = document.getElementById('auto-update-enabled');
+                if (enabledToggle && document.activeElement !== enabledToggle) {
+                    enabledToggle.checked = !!data.config.enabled;
+                }
+
+                const intervalSelect = document.getElementById('update-check-interval');
+                if (intervalSelect && document.activeElement !== intervalSelect) {
+                    intervalSelect.value = data.config.check_interval || 'daily';
+                }
+
+                const installSelect = document.getElementById('update-install-time');
+                const customInput = document.getElementById('update-install-time-custom');
+                const instTime = data.config.install_time || 'immediately';
+                if (installSelect && document.activeElement !== installSelect && document.activeElement !== customInput) {
+                    const standardOptions = ['immediately', '00:00', '01:00', '02:00', '03:00', '04:00'];
+                    if (standardOptions.includes(instTime)) {
+                        installSelect.value = instTime;
+                        if (customInput) customInput.style.display = 'none';
+                    } else {
+                        installSelect.value = 'custom';
+                        if (customInput) {
+                            customInput.style.display = 'block';
+                            customInput.value = instTime;
+                        }
+                    }
+                }
+
+                const branchInput = document.getElementById('update-branch-input');
+                if (branchInput && document.activeElement !== branchInput) {
+                    branchInput.value = data.config.branch || 'live';
+                }
+            }
+
+            // Update telemetry UI
+            const currEl = document.getElementById('updater-curr-commit');
+            if (currEl) currEl.innerText = data.current_commit || 'unknown';
+
+            const remoteEl = document.getElementById('updater-remote-commit');
+            if (remoteEl) remoteEl.innerText = data.remote_commit || (data.current_commit || '--');
+
+            const lastEl = document.getElementById('updater-last-check');
+            if (lastEl) lastEl.innerText = data.last_check_time ? new Date(data.last_check_time).toLocaleString() : 'Never';
+
+            const nextEl = document.getElementById('updater-next-check');
+            if (nextEl) nextEl.innerText = data.next_check_time ? new Date(data.next_check_time).toLocaleString() : (data.config && data.config.enabled ? 'Scheduled' : 'Disabled');
+
+            // Badge, action buttons & commit changelog
+            const badge = document.getElementById('updater-status-badge');
+            const installBtn = document.getElementById('btn-manual-install');
+            const changelogBox = document.getElementById('updater-changelog-box');
+            const commitsList = document.getElementById('updater-commits-list');
+
+            if (data.update_pending) {
+                if (badge) {
+                    badge.className = 'model-status-pill status-active';
+                    badge.style.background = 'rgba(255, 179, 0, 0.2)';
+                    badge.style.borderColor = '#ffb300';
+                    badge.style.color = '#ffca28';
+                    badge.innerText = `⚡ ${data.pending_commits_count || 1} update(s) available`;
+                }
+                if (installBtn) installBtn.style.display = 'inline-block';
+
+                if (changelogBox && commitsList) {
+                    changelogBox.style.display = 'block';
+                    if (data.pending_commits && data.pending_commits.length > 0) {
+                        commitsList.innerHTML = data.pending_commits.map(c => `<div>• <b>${c.hash}</b> - ${c.message} <span style="color:var(--text-muted);">(${c.author})</span></div>`).join('');
+                    } else {
+                        commitsList.innerHTML = `<div>• Commit ${data.remote_commit} available on remote</div>`;
+                    }
+                }
+            } else {
+                if (badge) {
+                    badge.className = 'model-status-pill status-active';
+                    badge.style.background = '';
+                    badge.style.borderColor = '';
+                    badge.style.color = '';
+                    badge.innerText = '✓ System up to date';
+                }
+                if (installBtn) installBtn.style.display = 'none';
+                if (changelogBox) changelogBox.style.display = 'none';
+            }
+        }
+
+        function saveAutoUpdateConfig(extraOverrides = {}) {
+            const enabledToggle = document.getElementById('auto-update-enabled');
+            const intervalSelect = document.getElementById('update-check-interval');
+            const installSelect = document.getElementById('update-install-time');
+            const customInput = document.getElementById('update-install-time-custom');
+            const branchInput = document.getElementById('update-branch-input');
+
+            let installTime = installSelect ? installSelect.value : 'immediately';
+            if (installTime === 'custom' && customInput && customInput.value.trim()) {
+                installTime = customInput.value.trim();
+            }
+
+            const payload = {
+                enabled: enabledToggle ? enabledToggle.checked : true,
+                check_interval: intervalSelect ? intervalSelect.value : 'daily',
+                install_time: installTime,
+                branch: branchInput ? branchInput.value.trim() : 'live',
+                ...extraOverrides
+            };
+
+            const saveBtn = document.getElementById('btn-save-update-cfg');
+            if (saveBtn) saveBtn.innerText = '💾 Saving...';
+
+            fetch('/api/update/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (saveBtn) saveBtn.innerText = '💾 Save Update Settings';
+                if (data.status === 'ok' || data.success) {
+                    showAdminToast('Auto-update configuration saved successfully');
+                    fetchUpdateStatus();
+                } else {
+                    showAdminToast('Failed to save update config: ' + (data.message || 'Error'), true);
+                }
+            })
+            .catch(err => {
+                if (saveBtn) saveBtn.innerText = '💾 Save Update Settings';
+                console.error('Error saving update config:', err);
+                showAdminToast('Error saving update configuration', true);
+            });
+        }
+
+        function manualCheckUpdate() {
+            const checkBtn = document.getElementById('btn-manual-check');
+            if (checkBtn) {
+                checkBtn.disabled = true;
+                checkBtn.innerText = '⏳ Checking GitHub...';
+            }
+
+            fetch('/api/update/check', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    if (checkBtn) {
+                        checkBtn.disabled = false;
+                        checkBtn.innerText = '🔍 Check for Updates Now';
+                    }
+                    if (data.update_pending) {
+                        showAdminToast(`New update found! ${data.pending_commits_count || 1} commit(s) ahead on remote.`);
+                    } else if (data.status === 'ok') {
+                        showAdminToast('System is currently up to date on branch ' + (data.branch || ''));
+                    } else {
+                        showAdminToast('Check completed: ' + (data.message || data.status), !data.update_pending);
+                    }
+                    fetchUpdateStatus();
+                })
+                .catch(err => {
+                    if (checkBtn) {
+                        checkBtn.disabled = false;
+                        checkBtn.innerText = '🔍 Check for Updates Now';
+                    }
+                    console.error('Error checking updates:', err);
+                    showAdminToast('Failed to check for updates', true);
+                });
+        }
+
+        function manualInstallUpdate() {
+            if (!confirm('This will pull the latest branch changes and restart the application. Are you sure?')) {
+                return;
+            }
+
+            const installBtn = document.getElementById('btn-manual-install');
+            if (installBtn) {
+                installBtn.disabled = true;
+                installBtn.innerText = '🚀 Updating & Restarting...';
+            }
+
+            fetch('/api/update/install', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    showAdminToast('Update triggered: ' + (data.message || 'Restarting application...'));
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
+                })
+                .catch(err => {
+                    console.error('Error triggering update:', err);
+                    showAdminToast('Update command sent. Reconnecting in 5s...');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
+                });
+        }
+
         setInterval(fetchTelemetry, 2000);
         fetchTelemetry();
+        fetchModels();
         fetchIdentities();
+        fetchUpdateStatus();
     </script>
 </body>
 </html>
