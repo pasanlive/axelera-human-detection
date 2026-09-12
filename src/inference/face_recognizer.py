@@ -75,32 +75,36 @@ class FaceRecognizer:
         crops_to_process = []
         
         if person_bboxes:
-            # Detect face within top portion (upper 35%) of each human bounding box crop
-            for bbox in person_bboxes:
+            # Sort person bboxes by area descending and cap to top 10 candidates to prevent flood
+            sorted_boxes = sorted(person_bboxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]), reverse=True)[:10]
+            for bbox in sorted_boxes:
                 x1, y1, x2, y2 = map(int, bbox)
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(w_frame, x2), min(h_frame, y2)
                 
                 # Head region heuristic: top 35% of body box
                 head_height = int((y2 - y1) * 0.35)
-                if head_height > 20 and (x2 - x1) > 20:
+                if head_height >= 25 and (x2 - x1) >= 25:
                     head_crop = frame[y1:y1 + head_height, x1:x2]
                     crops_to_process.append(([x1, y1, x2, y1 + head_height], head_crop))
         elif self.cascade_detector is not None:
             # Global cascade face detection on full frame
             try:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = self.cascade_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-                for (x, y, w, h) in faces:
+                faces = self.cascade_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(35, 35))
+                for (x, y, w, h) in faces[:10]:
                     crops_to_process.append(([x, y, x + w, y + h], frame[y:y + h, x:x + w]))
             except Exception:
                 pass
 
-        for bbox, face_crop in crops_to_process:
-            if face_crop is None or face_crop.shape[0] < 15 or face_crop.shape[1] < 15:
+        for bbox, face_crop in crops_to_process[:10]:
+            if face_crop is None or face_crop.shape[0] < 20 or face_crop.shape[1] < 20:
                 continue
 
             embedding = self.extract_embedding(face_crop)
+            if embedding is None or np.all(embedding == 0):
+                continue
+
             name, similarity = self.face_db.match(embedding, threshold=self.match_thresh)
 
             results.append({
