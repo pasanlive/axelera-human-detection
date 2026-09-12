@@ -422,6 +422,8 @@
             opacity: 0;
             pointer-events: none;
             transition: opacity 0.3s ease;
+            overflow-y: auto;
+            padding: 2rem 1rem;
         }
 
         .modal-overlay.active {
@@ -436,6 +438,9 @@
             border-radius: 20px;
             width: 90%;
             max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+            margin: auto;
             padding: 1.75rem;
             display: flex;
             flex-direction: column;
@@ -650,6 +655,30 @@
         .admin-modal-card {
             max-width: 980px;
             width: 95%;
+            max-height: 90vh;
+            overflow-y: auto;
+            overflow-x: hidden;
+            margin: auto;
+            scrollbar-width: thin;
+            scrollbar-color: var(--accent-primary) rgba(0, 0, 0, 0.3);
+        }
+        .admin-modal-card::-webkit-scrollbar,
+        .modal-card::-webkit-scrollbar {
+            width: 8px;
+        }
+        .admin-modal-card::-webkit-scrollbar-track,
+        .modal-card::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.6);
+            border-radius: 4px;
+        }
+        .admin-modal-card::-webkit-scrollbar-thumb,
+        .modal-card::-webkit-scrollbar-thumb {
+            background: rgba(0, 242, 254, 0.4);
+            border-radius: 4px;
+        }
+        .admin-modal-card::-webkit-scrollbar-thumb:hover,
+        .modal-card::-webkit-scrollbar-thumb:hover {
+            background: rgba(0, 242, 254, 0.8);
         }
         .admin-toolbar {
             display: flex;
