@@ -1358,10 +1358,63 @@
                                 <td class="model-specs-val">${m.fps_cadence || 'Every frame'}</td>
                             </tr>
                         </table>
+
+                        ${m.id === 'human_detector' ? `
+                        <div style="margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+                            <div style="font-size: 0.75rem; font-weight: 600; color: var(--accent-primary); margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.5px;">⚡ Performance Profile & Stream Capacity</div>
+                            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.5rem;">
+                                <select id="detector-profile-select" class="form-select" style="flex: 1; min-width: 140px; font-size: 0.75rem; padding: 0.35rem 0.5rem;">
+                                    <option value="ultra_light" ${m.model_profile === 'ultra_light' ? 'selected' : ''}>⚡ Ultra-Light (YOLO11n 320x320)</option>
+                                    <option value="balanced" ${m.model_profile === 'balanced' ? 'selected' : ''}>⚖️ Balanced (YOLOv8n 512x512)</option>
+                                    <option value="high_precision" ${m.model_profile === 'high_precision' ? 'selected' : ''}>🎯 High Precision (640x640)</option>
+                                </select>
+                                <select id="detector-cadence-select" class="form-select" style="min-width: 110px; font-size: 0.75rem; padding: 0.35rem 0.5rem;">
+                                    <option value="1" ${m.detect_interval === 1 ? 'selected' : ''}>Every frame (1:1)</option>
+                                    <option value="2" ${m.detect_interval === 2 ? 'selected' : ''}>Every 2 frames</option>
+                                    <option value="3" ${m.detect_interval === 3 ? 'selected' : ''}>Every 3 frames</option>
+                                    <option value="4" ${m.detect_interval === 4 ? 'selected' : ''}>Every 4 frames</option>
+                                </select>
+                                <button id="btn-apply-detector-config" class="btn-tool btn-enable-all" style="font-size: 0.75rem; padding: 0.35rem 0.75rem;" onclick="applyDetectorConfig()">⚡ Apply</button>
+                            </div>
+                            <div style="font-size: 0.7rem; color: var(--text-muted);">
+                                Ultra-Light cuts compute by 61% and cadence cuts load by 50–67%, enabling 4–8+ simultaneous camera streams.
+                            </div>
+                        </div>
+                        ` : ''}
                     </div>
                 `;
             });
             container.innerHTML = html;
+        }
+
+        function applyDetectorConfig() {
+            const profile = document.getElementById('detector-profile-select').value;
+            const interval = parseInt(document.getElementById('detector-cadence-select').value, 10) || 2;
+            const btn = document.getElementById('btn-apply-detector-config');
+            if (btn) btn.innerHTML = '⏳ Applying...';
+
+            fetch('/api/models/configure_detector', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ profile: profile, detect_interval: interval })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (btn) btn.innerHTML = '✓ Applied';
+                setTimeout(() => { if (btn) btn.innerHTML = '⚡ Apply'; }, 2000);
+                if (data.models) {
+                    currentModels = data.models;
+                    renderAdminModels(currentModels);
+                    updateModelHUD(currentModels);
+                } else {
+                    fetchModels();
+                }
+                showAdminToast(`Detector configured to ${profile.toUpperCase()} (Cadence: Every ${interval} frames)`);
+            })
+            .catch(err => {
+                if (btn) btn.innerHTML = '⚠️ Failed';
+                showAdminToast('Failed to configure detector: ' + err, true);
+            });
         }
 
         function toggleModel(modelId, enabled) {

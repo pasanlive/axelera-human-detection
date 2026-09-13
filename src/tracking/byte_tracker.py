@@ -87,6 +87,20 @@ class ByteTracker:
 
         return detections
 
+    def get_active_tracks(self) -> List[Dict[str, Any]]:
+        """Returns currently active tracks formatted as detection dictionaries for cadence-skipped frames."""
+        results = []
+        for t in self.tracks:
+            if t.time_since_update <= 3:
+                results.append({
+                    "bbox": list(t.bbox),
+                    "confidence": float(t.score),
+                    "track_id": int(t.track_id),
+                    "label": "Person",
+                    "class_id": 0
+                })
+        return results
+
     def _compute_iou_matrix(self, boxes1: List[List[float]], boxes2: List[List[float]]) -> np.ndarray:
         """Calculates pairwise IOU matrix between two lists of bounding boxes [x1, y1, x2, y2]."""
         matrix = np.zeros((len(boxes1), len(boxes2)), dtype=np.float32)

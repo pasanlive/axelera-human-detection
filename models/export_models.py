@@ -13,7 +13,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
-def export_yolo_to_onnx(model_name: str, output_dir: str, imgsz: int = 640):
+def export_yolo_to_onnx(model_name: str, output_dir: str, imgsz: int = 640, output_filename: str = None):
     """Exports Ultralytics YOLO PyTorch model to ONNX format."""
     print(f"[EXPORT] Downloading and exporting {model_name} to ONNX (imgsz={imgsz})...")
     try:
@@ -21,7 +21,8 @@ def export_yolo_to_onnx(model_name: str, output_dir: str, imgsz: int = 640):
         model = YOLO(model_name)
         onnx_path = model.export(format="onnx", imgsz=imgsz, dynamic=False, opset=12)
         
-        output_path = Path(output_dir) / f"{Path(model_name).stem}.onnx"
+        target_name = output_filename or f"{Path(model_name).stem}.onnx"
+        output_path = Path(output_dir) / target_name
         os.makedirs(output_dir, exist_ok=True)
         if Path(onnx_path).resolve() != output_path.resolve():
             import shutil
@@ -126,24 +127,30 @@ def main():
     parser.add_argument("--onnx-dir", type=str, default="models/onnx", help="Directory for ONNX exports")
     parser.add_argument("--axm-dir", type=str, default="models/axm", help="Directory for AXM compiles")
     parser.add_argument("--target", type=str, default="metis-111c", help="Axelera hardware target chip")
-    parser.add_argument("--imgsz", type=int, default=512, help="YOLO input resolution (512 fits 4MB L1 SRAM cache)")
+    parser.add_argument("--profile", type=str, default="all", choices=["ultra_light", "balanced", "all"], help="Model preset profile to export")
+    parser.add_argument("--imgsz", type=int, default=None, help="Custom YOLO input resolution (e.g. 320, 512, 640)")
     args = parser.parse_args()
 
     onnx_dir = getattr(args, 'onnx_dir', 'models/onnx')
     axm_dir = getattr(args, 'axm_dir', 'models/axm')
-    imgsz = getattr(args, 'imgsz', 512)
-
-    models_to_export = [
-        ("yolov8n.pt", imgsz),
-        ("yolov8n-pose.pt", imgsz)
-    ]
 
     print("==========================================================")
     print("      Axelera Metis 111C Model Exporter & Compiler        ")
     print("==========================================================")
 
-    for model_name, sz in models_to_export:
-        onnx_file = export_yolo_to_onnx(model_name, onnx_dir, imgsz=sz)
+    models_to_export = []
+    if args.profile in ["ultra_light", "all"]:
+        # Ultra-light models: YOLO11n @ 320x320 and YOLOv8n @ 320x320
+        models_to_export.append(("yolo11n.pt", 320, "yolo11n_320.onnx"))
+        models_to_export.append(("yolov8n.pt", 320, "yolov8n_320.onnx"))
+
+    if args.profile in ["balanced", "all"]:
+        # Standard balanced models: YOLOv8n @ 512x512 and YOLOv8n-pose @ 512x512
+        models_to_export.append(("yolov8n.pt", 512, "yolov8n.onnx"))
+        models_to_export.append(("yolov8n-pose.pt", 512, "yolov8n-pose.onnx"))
+
+    for model_name, sz, fname in models_to_export:
+        onnx_file = export_yolo_to_onnx(model_name, onnx_dir, imgsz=sz, output_filename=fname)
         if onnx_file:
             compile_axm_with_voyager(onnx_file, axm_dir, target_chip=args.target, input_shape=f"1,3,{sz},{sz}")
 

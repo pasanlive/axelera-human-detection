@@ -5,7 +5,7 @@ Pipeline: End-to-End Multi-Camera Detection, Pose, and Face Recognition System O
 import time
 import cv2
 import numpy as np
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Union, Tuple
 
 from src.camera.stream_manager import StreamManager
 from src.inference.yolo_detector import YOLODetector
@@ -43,6 +43,13 @@ class MultiCameraPipeline:
             "face_recognizer": models_cfg.get("face_recognizer", {}).get("enabled", True),
         }
         self.camera_model_overrides: Dict[str, Dict[str, bool]] = {}
+
+        # Performance optimization intervals
+        perf_cfg = config.get("performance", {})
+        self.detect_interval = max(1, int(perf_cfg.get("detect_interval", 1)))
+        self.pose_interval = max(1, int(perf_cfg.get("pose_interval", 1)))
+        self.face_interval = max(1, int(perf_cfg.get("face_interval", 1)))
+        self.cached_detections: Dict[str, List[Dict[str, Any]]] = {}
 
         # 1. Initialize Face Database
         db_path = config.get("face_db", {}).get("path", "data/face_db.json")
@@ -95,7 +102,13 @@ class MultiCameraPipeline:
 
         # Clear cached data when disabling to immediately release stale inference
         if not enabled:
-            if model_name == "pose_estimator":
+            if model_name == "human_detector":
+                if cam_id and cam_id != "all":
+                    self.cached_detections[cam_id] = []
+                else:
+                    for cid in self.cached_detections:
+                        self.cached_detections[cid] = []
+            elif model_name == "pose_estimator":
                 if cam_id and cam_id != "all":
                     self.cached_poses[cam_id] = []
                 else:
@@ -107,6 +120,25 @@ class MultiCameraPipeline:
                 else:
                     for cid in self.face_cache:
                         self.face_cache[cid] = {}
+
+    def reload_detector_model(self, model_profile: str, model_name: str, input_size: List[int], axm_path: Optional[str] = None, onnx_path: Optional[str] = None, detect_interval: Optional[int] = None):
+        """Hot-reloads human detection model with ultra-light or custom configuration."""
+        det_cfg = self.config.setdefault("models", {}).setdefault("human_detector", {})
+        det_cfg["model_profile"] = model_profile
+        det_cfg["model_name"] = model_name
+        det_cfg["input_size"] = list(input_size)
+        if axm_path is not None:
+            det_cfg["axm_path"] = axm_path
+        if onnx_path is not None:
+            det_cfg["onnx_path"] = onnx_path
+        if detect_interval is not None:
+            self.detect_interval = max(1, int(detect_interval))
+            self.config.setdefault("performance", {})["detect_interval"] = self.detect_interval
+
+        self.detector.reload_model(det_cfg)
+        for cid in self.cached_detections:
+            self.cached_detections[cid] = []
+        print(f"[PIPELINE ADMIN] Detector reloaded: profile={model_profile}, model={model_name}, input_size={input_size}, interval={self.detect_interval}")
 
     def get_models_status(self) -> List[Dict[str, Any]]:
         """Returns status, specs, and telemetry of all registered AI inference models."""
@@ -123,19 +155,29 @@ class MultiCameraPipeline:
         pose_backend = getattr(getattr(self.pose_estimator, 'engine', None), 'backend', 'Unknown')
         face_backend = getattr(getattr(self.face_recognizer, 'embedder_engine', None), 'backend', 'Unknown')
 
+        model_name_str = str(det_cfg.get("model_name", "yolov8n.pt")).lower()
+        if "yolo11" in model_name_str or "320" in str(det_cfg.get("input_size")):
+            det_display_name = "YOLO11 Ultra-Light Detector"
+        else:
+            det_display_name = "YOLOv8 Human Detector"
+
+        det_cadence = "Every frame (1:1)" if self.detect_interval == 1 else f"Every {self.detect_interval} frames (Optimized)"
+
         return [
             {
                 "id": "human_detector",
-                "name": "YOLOv8 Human Detector",
+                "name": det_display_name,
                 "task": "Object Detection",
                 "description": "Detects persons with bounding box localization & confidence scoring",
                 "enabled": det_enabled,
                 "inferencing": det_enabled and self.is_running,
                 "backend": det_backend,
                 "weights": det_cfg.get("axm_path") or det_cfg.get("model_name", "yolov8n.pt"),
+                "model_profile": det_cfg.get("model_profile", "ultra_light" if "320" in str(det_cfg.get("input_size")) or "yolo11" in model_name_str else "balanced"),
                 "input_size": det_cfg.get("input_size", [512, 512]),
                 "conf_threshold": det_cfg.get("conf_threshold", 0.45),
-                "fps_cadence": "Every frame (1:1)",
+                "fps_cadence": det_cadence,
+                "detect_interval": self.detect_interval,
                 "icon": "user-check"
             },
             {
@@ -178,6 +220,7 @@ class MultiCameraPipeline:
                 track_thresh=self.config.get("tracking", {}).get("track_thresh", 0.5)
             )
             self.frame_counters[cam_id] = 0
+            self.cached_detections[cam_id] = []
             self.cached_poses[cam_id] = []
             self.face_cache[cam_id] = {}
 
@@ -202,16 +245,25 @@ class MultiCameraPipeline:
 
             # Step A: Human Detection (Only execute inferencing if model is enabled)
             if self.is_model_enabled("human_detector", cam_id):
-                detections = self.detector.detect(frame)
+                should_detect = (curr_frame_idx % self.detect_interval == 0) or not self.cached_detections.get(cam_id)
+                if should_detect:
+                    raw_detections = self.detector.detect(frame)
+                    # Step B: Object Tracking (ByteTrack)
+                    if cam_id in self.trackers:
+                        detections = self.trackers[cam_id].update(raw_detections) if raw_detections else []
+                    else:
+                        detections = raw_detections
+                    self.cached_detections[cam_id] = detections
+                else:
+                    # Intermediate frame: ByteTrack prediction / cached detection reuse
+                    if cam_id in self.trackers:
+                        active_tracks = self.trackers[cam_id].get_active_tracks()
+                        detections = active_tracks if active_tracks else self.cached_detections.get(cam_id, [])
+                    else:
+                        detections = self.cached_detections.get(cam_id, [])
             else:
                 detections = []
-
-            # Step B: Object Tracking (ByteTrack)
-            if cam_id in self.trackers:
-                if detections:
-                    detections = self.trackers[cam_id].update(detections)
-                else:
-                    detections = []
+                self.cached_detections[cam_id] = []
 
             # Step C: Pose Estimation (Only execute inferencing if model is enabled)
             if self.is_model_enabled("pose_estimator", cam_id):

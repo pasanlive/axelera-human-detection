@@ -79,8 +79,15 @@ class YOLODetector:
             return detections
 
         if self.ultralytics_model is not None:
-            # Fallback PyTorch / ONNX inference pathway
-            results = self.ultralytics_model(frame, conf=self.conf_thresh, verbose=False)[0]
+            # Fallback PyTorch / ONNX inference pathway with optimized input resolution and person-only filter
+            img_sz = self.input_size[0] if isinstance(self.input_size, (tuple, list)) else 640
+            results = self.ultralytics_model(
+                frame,
+                conf=self.conf_thresh,
+                imgsz=img_sz,
+                classes=[self.person_class_id],
+                verbose=False
+            )[0]
             detections = []
             if results.boxes is not None:
                 for box in results.boxes:
@@ -101,6 +108,38 @@ class YOLODetector:
         outputs = self.engine.run(input_tensor)
         detections = self._postprocess(outputs, scale, pad_x, pad_y, w_orig, h_orig)
         return detections
+
+    def reload_model(self, config: Dict[str, Any]):
+        """Hot-reloads model configuration, weights, and input dimensions without restarting pipeline."""
+        self.config = config
+        self.conf_thresh = config.get("conf_threshold", self.conf_thresh)
+        self.iou_thresh = config.get("iou_threshold", self.iou_thresh)
+        self.input_size = tuple(config.get("input_size", self.input_size))
+        self.person_class_id = config.get("person_class_id", self.person_class_id)
+        self.model_name = config.get("model_name", self.model_name)
+
+        self.engine = VoyagerEngine(
+            axm_path=config.get("axm_path"),
+            onnx_path=config.get("onnx_path"),
+            chip_id=config.get("chip_id", 0),
+            num_cores=config.get("num_cores", 4)
+        )
+        self.ultralytics_model = None
+        try:
+            from ultralytics import YOLO
+            model_candidates = [config.get("onnx_path"), self.model_name]
+            for model_src in model_candidates:
+                if model_src and (os.path.exists(str(model_src)) or str(model_src).endswith('.pt')):
+                    try:
+                        print(f"[YOLO DETECTOR] Reloading model '{model_src}' (input_size={self.input_size})...")
+                        self.ultralytics_model = YOLO(model_src)
+                        print(f"[YOLO DETECTOR SUCCESS] Active detector engine reloaded using '{model_src}'.")
+                        break
+                    except Exception as e:
+                        print(f"[YOLO DETECTOR NOTICE] Candidate '{model_src}' reload notice: {e}")
+                        continue
+        except Exception as e:
+            print(f"[YOLO DETECTOR NOTICE] Ultralytics engine reload notice: {e}")
 
     def _postprocess(self, outputs: Union[List[np.ndarray], np.ndarray], scale: float, pad_x: int, pad_y: int, w_orig: int, h_orig: int) -> List[Dict[str, Any]]:
         """Parses YOLO raw outputs (supporting float32, int8, uint8, and multi-head NPU shapes) and applies NMS."""

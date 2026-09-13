@@ -1,88 +1,84 @@
-# System Configuration for Axelera Metis Multi-Camera Pipeline
-
-hardware:
-  device: "axelera"        # Options: "axelera" (NPU Metis 111C), "onnx" (CPU/GPU ONNXRuntime fallback), "pytorch"
-  chip_id: 0               # Metis device index
-  num_cores: 4             # Utilize all 4 Metis AIPU cores (100% resources)
-  voyager_sdk: true
-
-web:
+auto_update:
+  branch: live
+  check_interval: daily
   enabled: true
-  host: "0.0.0.0"
-  port: 8000
-  https: true
-  cert_file: "data/ssl/cert.pem"
-  key_file: "data/ssl/key.pem"
-
-performance:
-  pose_interval: 1         # Run pose estimation every N frames for maximum FPS
-  face_interval: 1         # Run face recognition every N frames per track ID
-  rtsp_transport: "tcp"    # Low-latency TCP stream transport
-  buffer_size: 1           # Drop stale software frames (0 latency buffer)
-
+  install_time: immediately
+  remote: origin
 cameras:
-  - id: "cam_01"
-    name: "Front Entrance"
-    source: "rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream"            # Webcam index or RTSP URL e.g. "rtsp://admin:pass@192.168.1.100:554/stream1"
-    enabled: true
-    fps_limit: 30
-  - id: "cam_02"
-    name: "Lobby East"
-    source: "rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream"            # Synthetic stream, video file, or camera index
-    enabled: false
-    fps_limit: 30
-
+- enabled: true
+  fps_limit: 30
+  id: cam_01
+  name: Front Entrance
+  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
+- enabled: false
+  fps_limit: 30
+  id: cam_02
+  name: Lobby East
+  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
+face_db:
+  path: data/face_db.json
+hardware:
+  chip_id: 0
+  device: axelera
+  num_cores: 4
+  voyager_sdk: true
 models:
-  human_detector:
-    enabled: true
-    model_name: "yolov8n.pt"
-    axm_path: "models/axm/yolov8n.axm"
-    onnx_path: "models/onnx/yolov8n.onnx"
-    conf_threshold: 0.45
-    iou_threshold: 0.45
-    input_size: [512, 512]
-    person_class_id: 0     # COCO person class ID
-
-  pose_estimator:
-    enabled: true
-    model_name: "yolov8n-pose.pt"
-    axm_path: "models/axm/yolov8n-pose.axm"
-    onnx_path: "models/onnx/yolov8n-pose.onnx"
-    conf_threshold: 0.50
-    input_size: [512, 512]
-    num_keypoints: 17
-
   face_recognizer:
+    conf_threshold: 0.5
+    detector_axm: models/axm/yolov8n-face.axm
+    detector_onnx: models/onnx/yolov8n-face.onnx
+    embedder_axm: models/axm/arcface_mobilefacenet.axm
+    embedder_onnx: models/onnx/arcface_mobilefacenet.onnx
     enabled: true
-    detector_axm: "models/axm/yolov8n-face.axm"
-    detector_onnx: "models/onnx/yolov8n-face.onnx"
-    embedder_axm: "models/axm/arcface_mobilefacenet.axm"
-    embedder_onnx: "models/onnx/arcface_mobilefacenet.onnx"
-    conf_threshold: 0.50
-    input_size: [112, 112]
-    match_threshold: 0.60  # Cosine similarity threshold for face recognition match
-
+    input_size:
+    - 112
+    - 112
+    match_threshold: 0.6
+  human_detector:
+    axm_path: models/axm/yolo11n_320.axm
+    conf_threshold: 0.45
+    enabled: true
+    input_size:
+    - 320
+    - 320
+    iou_threshold: 0.45
+    model_name: yolo11n.pt
+    model_profile: ultra_light
+    onnx_path: models/onnx/yolo11n_320.onnx
+    person_class_id: 0
+  pose_estimator:
+    axm_path: models/axm/yolov8n-pose.axm
+    conf_threshold: 0.5
+    enabled: true
+    input_size:
+    - 512
+    - 512
+    model_name: yolov8n-pose.pt
+    num_keypoints: 17
+    onnx_path: models/onnx/yolov8n-pose.onnx
+performance:
+  buffer_size: 1
+  detect_interval: 2
+  face_interval: 3
+  pose_interval: 2
+  rtsp_transport: tcp
 tracking:
   enabled: true
-  tracker_type: "bytetrack"
-  track_thresh: 0.5
-  track_buffer: 30
   match_thresh: 0.8
-
-face_db:
-  path: "data/face_db.json"
-
+  track_buffer: 30
+  track_thresh: 0.5
+  tracker_type: bytetrack
 visualization:
   draw_boxes: true
-  draw_pose: true
   draw_faces: true
   draw_fps: true
+  draw_pose: true
   draw_tracks: true
-  window_name: "Axelera Metis Multi-Camera Detection System"
-
-auto_update:
+  window_name: Axelera Metis Multi-Camera Detection System
+web:
+  cert_file: data/ssl/cert.pem
   enabled: true
-  branch: "live"                # GitHub branch to track (e.g. "live" or "main")
-  check_interval: "daily"       # Options: "hourly", "daily", "weekly"
-  install_time: "immediately"   # Options: "immediately" or "HH:MM" (e.g. "02:00")
-  remote: "origin"
+  host: 0.0.0.0
+  https: true
+  key_file: data/ssl/key.pem
+  port: 8000

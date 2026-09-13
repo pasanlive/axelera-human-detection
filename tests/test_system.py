@@ -16,6 +16,7 @@ from src.inference.pose_estimator import PoseEstimator
 from src.tracking.byte_tracker import ByteTracker
 from src.utils.visualization import Visualizer
 from src.pipeline import MultiCameraPipeline
+from src.web.server import WebServer
 
 class TestAxeleraSystem(unittest.TestCase):
 
@@ -322,6 +323,60 @@ class TestAxeleraSystem(unittest.TestCase):
                     self.assertTrue(inst_data["success"])
 
             updater.stop()
+
+    def test_ultra_light_detector_and_cadence(self):
+        """Tests ultra-light human detection model reload, 320x320 resolution, and cadence optimization."""
+        config = {
+            "hardware": {"device": "virtual"},
+            "cameras": [
+                {"id": "cam_01", "name": "Test Cam 1", "source": "synthetic", "enabled": True}
+            ],
+            "performance": {"detect_interval": 2},
+            "models": {
+                "human_detector": {
+                    "model_profile": "ultra_light",
+                    "model_name": "yolo11n.pt",
+                    "onnx_path": "models/onnx/yolo11n_320.onnx",
+                    "input_size": [320, 320],
+                    "conf_threshold": 0.45
+                },
+                "pose_estimator": {"enabled": False},
+                "face_recognizer": {"enabled": False}
+            },
+            "tracking": {"enabled": True},
+            "face_db": {"path": "data/test_db.json"}
+        }
+
+        pipeline = MultiCameraPipeline(config)
+        pipeline.start()
+        self.assertEqual(pipeline.detect_interval, 2)
+        self.assertEqual(pipeline.detector.input_size, (320, 320))
+
+        # Test reload_detector_model
+        pipeline.reload_detector_model(
+            model_profile="ultra_light",
+            model_name="yolo11n.pt",
+            input_size=[320, 320],
+            detect_interval=3
+        )
+        self.assertEqual(pipeline.detect_interval, 3)
+        self.assertEqual(pipeline.detector.input_size, (320, 320))
+
+        # Test WebServer configure_detector REST endpoint
+        web_server = WebServer(pipeline, host="127.0.0.1", port=8000, use_https=False)
+        if web_server.app:
+            client = web_server.app.test_client()
+            res = client.post('/api/models/configure_detector', json={
+                "profile": "ultra_light",
+                "detect_interval": 2
+            })
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertTrue(data["success"])
+            self.assertEqual(data["profile"], "ultra_light")
+            self.assertEqual(pipeline.detect_interval, 2)
+
+        pipeline.stop()
 
 if __name__ == "__main__":
     unittest.main()

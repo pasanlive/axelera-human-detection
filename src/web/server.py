@@ -478,7 +478,69 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": True, "model_id": model_id, "enabled": enabled, "models": models_status}).encode('utf-8'))
             except Exception as e:
-                self.send_error(400, str(e))
+                self.send_error(500, str(e))
+        elif self.path == '/api/models/configure_detector' and srv:
+            length = int(self.headers.get('content-length', 0))
+            body = self.rfile.read(length)
+            try:
+                data = json.loads(body.decode('utf-8'))
+                profile = data.get('profile', 'ultra_light')
+                detect_interval = int(data.get('detect_interval', 2))
+
+                if profile == 'ultra_light':
+                    model_name = 'yolo11n.pt'
+                    input_size = [320, 320]
+                    axm_path = 'models/axm/yolo11n_320.axm'
+                    onnx_path = 'models/onnx/yolo11n_320.onnx'
+                elif profile == 'high_precision':
+                    model_name = 'yolov8n.pt'
+                    input_size = [640, 640]
+                    axm_path = 'models/axm/yolov8n.axm'
+                    onnx_path = 'models/onnx/yolov8n.onnx'
+                else:  # balanced
+                    profile = 'balanced'
+                    model_name = 'yolov8n.pt'
+                    input_size = [512, 512]
+                    axm_path = 'models/axm/yolov8n.axm'
+                    onnx_path = 'models/onnx/yolov8n.onnx'
+
+                if hasattr(srv.pipeline, 'reload_detector_model'):
+                    srv.pipeline.reload_detector_model(
+                        model_profile=profile,
+                        model_name=model_name,
+                        input_size=input_size,
+                        axm_path=axm_path,
+                        onnx_path=onnx_path,
+                        detect_interval=detect_interval
+                    )
+
+                # Persist to config.yaml if possible
+                try:
+                    import yaml
+                    cfg_path = getattr(srv.auto_updater, 'config_path', 'config/config.yaml') if srv.auto_updater else 'config/config.yaml'
+                    if os.path.exists(cfg_path):
+                        with open(cfg_path, 'r') as f:
+                            disk_cfg = yaml.safe_load(f) or {}
+                        disk_cfg.setdefault('performance', {})['detect_interval'] = detect_interval
+                        det_cfg = disk_cfg.setdefault('models', {}).setdefault('human_detector', {})
+                        det_cfg['model_profile'] = profile
+                        det_cfg['model_name'] = model_name
+                        det_cfg['input_size'] = input_size
+                        det_cfg['axm_path'] = axm_path
+                        det_cfg['onnx_path'] = onnx_path
+                        with open(cfg_path, 'w') as f:
+                            yaml.safe_dump(disk_cfg, f, default_flow_style=False)
+                except Exception as save_err:
+                    print(f"[CONFIG SAVE NOTICE] Failed to update config.yaml: {save_err}")
+
+                models_status = srv.pipeline.get_models_status() if hasattr(srv.pipeline, 'get_models_status') else []
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "profile": profile, "models": models_status}).encode('utf-8'))
+            except Exception as e:
+                self.send_error(500, str(e))
         elif self.path == '/api/toggle' and srv:
             length = int(self.headers.get('content-length', 0))
             body = self.rfile.read(length)
@@ -689,6 +751,61 @@ class WebServer:
 
             models = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
             return jsonify({"success": True, "model_id": model_id, "enabled": enabled, "models": models})
+
+        @self.app.route('/api/models/configure_detector', methods=['POST'])
+        def api_configure_detector():
+            data = request.json or {}
+            profile = data.get('profile', 'ultra_light')
+            detect_interval = int(data.get('detect_interval', 2))
+
+            if profile == 'ultra_light':
+                model_name = 'yolo11n.pt'
+                input_size = [320, 320]
+                axm_path = 'models/axm/yolo11n_320.axm'
+                onnx_path = 'models/onnx/yolo11n_320.onnx'
+            elif profile == 'high_precision':
+                model_name = 'yolov8n.pt'
+                input_size = [640, 640]
+                axm_path = 'models/axm/yolov8n.axm'
+                onnx_path = 'models/onnx/yolov8n.onnx'
+            else:  # balanced
+                profile = 'balanced'
+                model_name = 'yolov8n.pt'
+                input_size = [512, 512]
+                axm_path = 'models/axm/yolov8n.axm'
+                onnx_path = 'models/onnx/yolov8n.onnx'
+
+            if hasattr(self.pipeline, 'reload_detector_model'):
+                self.pipeline.reload_detector_model(
+                    model_profile=profile,
+                    model_name=model_name,
+                    input_size=input_size,
+                    axm_path=axm_path,
+                    onnx_path=onnx_path,
+                    detect_interval=detect_interval
+                )
+
+            # Persist to config.yaml if possible
+            try:
+                import yaml
+                cfg_path = getattr(self.auto_updater, 'config_path', 'config/config.yaml') if self.auto_updater else 'config/config.yaml'
+                if os.path.exists(cfg_path):
+                    with open(cfg_path, 'r') as f:
+                        disk_cfg = yaml.safe_load(f) or {}
+                    disk_cfg.setdefault('performance', {})['detect_interval'] = detect_interval
+                    det_cfg = disk_cfg.setdefault('models', {}).setdefault('human_detector', {})
+                    det_cfg['model_profile'] = profile
+                    det_cfg['model_name'] = model_name
+                    det_cfg['input_size'] = input_size
+                    det_cfg['axm_path'] = axm_path
+                    det_cfg['onnx_path'] = onnx_path
+                    with open(cfg_path, 'w') as f:
+                        yaml.safe_dump(disk_cfg, f, default_flow_style=False)
+            except Exception as save_err:
+                print(f"[CONFIG SAVE NOTICE] Failed to update config.yaml: {save_err}")
+
+            models_status = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
+            return jsonify({"success": True, "profile": profile, "models": models_status})
 
         @self.app.route('/api/update/status', methods=['GET'])
         def api_update_status():
