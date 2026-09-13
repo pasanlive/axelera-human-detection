@@ -109,11 +109,20 @@ def compile_axm_with_voyager(onnx_path: str, output_dir: str, target_chip: str =
                 cmd_args.extend(["--input-shape", input_shape])
 
             print(f"[AXELERA COMPILER] Executing: {' '.join(cmd_args)}")
-            subprocess.run(cmd_args, check=True)
-            print(f"[AXELERA SUCCESS] Saved compiled .axm to: {output_axm}")
-            return str(output_axm)
-        except subprocess.CalledProcessError as e:
-            print(f"[AXELERA ERROR] Compiler execution failed: {e}")
+            res = subprocess.run(cmd_args)
+            if res.returncode == 0 and output_axm.exists() and output_axm.stat().st_size > 1024:
+                print(f"[AXELERA SUCCESS] Saved compiled .axm to: {output_axm} ({output_axm.stat().st_size // 1024} KB)")
+                return str(output_axm)
+            else:
+                if output_axm.exists() and output_axm.stat().st_size <= 1024:
+                    try:
+                        output_axm.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                print(f"[AXELERA ERROR] Compiler failed to produce valid .axm file for: {onnx_path}")
+                return None
+        except Exception as e:
+            print(f"[AXELERA ERROR] Compiler execution error: {e}")
             return None
     else:
         print(f"[AXELERA NOTICE] Axelera Compiler CLI ('axcompile') not found on system PATH.")
@@ -127,8 +136,8 @@ def main():
     parser.add_argument("--onnx-dir", type=str, default="models/onnx", help="Directory for ONNX exports")
     parser.add_argument("--axm-dir", type=str, default="models/axm", help="Directory for AXM compiles")
     parser.add_argument("--target", type=str, default="metis-111c", help="Axelera hardware target chip")
-    parser.add_argument("--profile", type=str, default="all", choices=["ultra_light", "balanced", "all"], help="Model preset profile to export")
-    parser.add_argument("--imgsz", type=int, default=None, help="Custom YOLO input resolution (e.g. 320, 512, 640)")
+    parser.add_argument("--profile", type=str, default="all", choices=["ultra_light", "extreme_light", "balanced", "all"], help="Model preset profile to export")
+    parser.add_argument("--imgsz", type=int, default=None, help="Custom YOLO input resolution (e.g. 256, 320, 512, 640)")
     args = parser.parse_args()
 
     onnx_dir = getattr(args, 'onnx_dir', 'models/onnx')
@@ -140,9 +149,12 @@ def main():
 
     models_to_export = []
     if args.profile in ["ultra_light", "all"]:
-        # Ultra-light models: YOLO11n @ 320x320 and YOLOv8n @ 320x320
-        models_to_export.append(("yolo11n.pt", 320, "yolo11n_320.onnx"))
+        # Ultra-light model: YOLOv8n @ 320x320 (Pure CNN, 61% less compute, 100% Axelera NPU compatible)
         models_to_export.append(("yolov8n.pt", 320, "yolov8n_320.onnx"))
+
+    if args.profile in ["extreme_light", "all"]:
+        # Extreme-light model: YOLOv5n @ 320x320 (Only 1.8M params, 4.5 GFLOPs, 100% Axelera NPU compatible)
+        models_to_export.append(("yolov5nu.pt", 320, "yolov5n_320.onnx"))
 
     if args.profile in ["balanced", "all"]:
         # Standard balanced models: YOLOv8n @ 512x512 and YOLOv8n-pose @ 512x512

@@ -1364,7 +1364,8 @@
                             <div style="font-size: 0.75rem; font-weight: 600; color: var(--accent-primary); margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.5px;">⚡ Performance Profile & Stream Capacity</div>
                             <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.5rem;">
                                 <select id="detector-profile-select" class="form-select" style="flex: 1; min-width: 140px; font-size: 0.75rem; padding: 0.35rem 0.5rem;">
-                                    <option value="ultra_light" ${m.model_profile === 'ultra_light' ? 'selected' : ''}>⚡ Ultra-Light (YOLO11n 320x320)</option>
+                                    <option value="ultra_light" ${m.model_profile === 'ultra_light' ? 'selected' : ''}>⚡ Ultra-Light (YOLOv8n 320x320)</option>
+                                    <option value="extreme_light" ${m.model_profile === 'extreme_light' ? 'selected' : ''}>🚀 Extreme-Light (YOLOv5n 320x320)</option>
                                     <option value="balanced" ${m.model_profile === 'balanced' ? 'selected' : ''}>⚖️ Balanced (YOLOv8n 512x512)</option>
                                     <option value="high_precision" ${m.model_profile === 'high_precision' ? 'selected' : ''}>🎯 High Precision (640x640)</option>
                                 </select>

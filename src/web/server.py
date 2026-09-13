@@ -487,11 +487,16 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
                 profile = data.get('profile', 'ultra_light')
                 detect_interval = int(data.get('detect_interval', 2))
 
-                if profile == 'ultra_light':
-                    model_name = 'yolo11n.pt'
+                if profile == 'extreme_light':
+                    model_name = 'yolov5nu.pt'
                     input_size = [320, 320]
-                    axm_path = 'models/axm/yolo11n_320.axm'
-                    onnx_path = 'models/onnx/yolo11n_320.onnx'
+                    axm_path = 'models/axm/yolov5n_320.axm'
+                    onnx_path = 'models/onnx/yolov5n_320.onnx'
+                elif profile == 'ultra_light':
+                    model_name = 'yolov8n.pt'
+                    input_size = [320, 320]
+                    axm_path = 'models/axm/yolov8n_320.axm'
+                    onnx_path = 'models/onnx/yolov8n_320.onnx'
                 elif profile == 'high_precision':
                     model_name = 'yolov8n.pt'
                     input_size = [640, 640]
@@ -758,11 +763,16 @@ class WebServer:
             profile = data.get('profile', 'ultra_light')
             detect_interval = int(data.get('detect_interval', 2))
 
-            if profile == 'ultra_light':
-                model_name = 'yolo11n.pt'
+            if profile == 'extreme_light':
+                model_name = 'yolov5nu.pt'
                 input_size = [320, 320]
-                axm_path = 'models/axm/yolo11n_320.axm'
-                onnx_path = 'models/onnx/yolo11n_320.onnx'
+                axm_path = 'models/axm/yolov5n_320.axm'
+                onnx_path = 'models/onnx/yolov5n_320.onnx'
+            elif profile == 'ultra_light':
+                model_name = 'yolov8n.pt'
+                input_size = [320, 320]
+                axm_path = 'models/axm/yolov8n_320.axm'
+                onnx_path = 'models/onnx/yolov8n_320.onnx'
             elif profile == 'high_precision':
                 model_name = 'yolov8n.pt'
                 input_size = [640, 640]

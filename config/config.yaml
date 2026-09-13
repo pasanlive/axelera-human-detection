@@ -35,16 +35,16 @@ models:
     - 112
     match_threshold: 0.6
   human_detector:
-    axm_path: models/axm/yolo11n_320.axm
+    axm_path: models/axm/yolov8n_320.axm
     conf_threshold: 0.45
     enabled: true
     input_size:
     - 320
     - 320
     iou_threshold: 0.45
-    model_name: yolo11n.pt
+    model_name: yolov8n.pt
     model_profile: ultra_light
-    onnx_path: models/onnx/yolo11n_320.onnx
+    onnx_path: models/onnx/yolov8n_320.onnx
     person_class_id: 0
   pose_estimator:
     axm_path: models/axm/yolov8n-pose.axm
