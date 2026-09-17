@@ -311,12 +311,6 @@ class VoyagerEngine:
         print(f"[ENGINE NOTICE] Initializing Virtual Engine mode (Simulation).")
         self.backend = "virtual"
 
-    def run(self, input_tensor: np.ndarray) -> List[np.ndarray]:
-        """
-        Executes model inference on the given input tensor.
-        :param input_tensor: Preprocessed numpy array (e.g., shape [1, 3, H, W] float32 or uint8)
-        :return: List of output numpy tensors from the model.
-        """
     def _prepare_input_tensor(self, input_tensor: np.ndarray) -> np.ndarray:
         """Adapts input tensor layout (NCHW->NHWC), dtype (float32->int8/uint8), and shape padding for Metis AIPU."""
         target_shape = None
@@ -460,18 +454,21 @@ class VoyagerEngine:
                             o_arr = np.array(o)
                             print(f"[AXELERA NPU ENGINE] Output {idx}: shape={o_arr.shape}, dtype={o_arr.dtype}, min={o_arr.min()}, max={o_arr.max()}")
                     return outputs
-            elif hasattr(self.session, "run"):
-                outputs = self.session.run(input_tensor)
-            elif hasattr(self.session, "forward"):
-                outputs = self.session.forward(input_tensor)
-            elif hasattr(self.session, "predict"):
-                outputs = self.session.predict(input_tensor)
-            elif hasattr(self.session, "execute"):
-                outputs = self.session.execute(input_tensor)
-            elif callable(self.session):
-                outputs = self.session(input_tensor)
             else:
-                raise RuntimeError(f"Axelera session object '{type(self.session).__name__}' has no recognized execution method")
+                # For all other axelera session types, apply tensor preparation first
+                input_tensor = self._prepare_input_tensor(input_tensor)
+                if hasattr(self.session, "run"):
+                    outputs = self.session.run(input_tensor)
+                elif hasattr(self.session, "forward"):
+                    outputs = self.session.forward(input_tensor)
+                elif hasattr(self.session, "predict"):
+                    outputs = self.session.predict(input_tensor)
+                elif hasattr(self.session, "execute"):
+                    outputs = self.session.execute(input_tensor)
+                elif callable(self.session):
+                    outputs = self.session(input_tensor)
+                else:
+                    raise RuntimeError(f"Axelera session object '{type(self.session).__name__}' has no recognized execution method")
 
             if not isinstance(outputs, list):
                 outputs = [outputs]

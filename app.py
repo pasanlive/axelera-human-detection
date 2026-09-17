@@ -63,11 +63,12 @@ def main():
     parser.add_argument("--image", type=str, help="Image filepath for face enrollment")
     parser.add_argument("--list-faces", action="store_true", help="List enrolled face identities")
     parser.add_argument("--gui", action="store_true", help="Enable desktop OpenCV window display (default: False)")
-    parser.add_argument("--headless", action="store_true", default=True, help="Run without GUI window")
-    parser.add_argument("--web", action="store_true", default=True, help="Enable local network web dashboard interface")
+    parser.add_argument("--headless", action="store_true", default=False, help="Run without GUI window (default when --gui not set)")
+    parser.add_argument("--web", action="store_true", default=False, help="Enable local network web dashboard interface")
+    parser.add_argument("--no-web", action="store_true", help="Disable web dashboard interface")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Web server host IP address")
     parser.add_argument("--port", type=int, default=8000, help="Web server port")
-    parser.add_argument("--https", action="store_true", default=True, help="Enable HTTPS mode with self-signed SSL cert")
+    parser.add_argument("--https", action="store_true", default=False, help="Enable HTTPS mode with self-signed SSL cert")
     parser.add_argument("--no-https", action="store_true", help="Disable HTTPS mode and run plain HTTP server")
     parser.add_argument("--cert", type=str, default="data/ssl/cert.pem", help="SSL certificate filepath")
     parser.add_argument("--key", type=str, default="data/ssl/key.pem", help="SSL private key filepath")
@@ -117,9 +118,15 @@ def main():
     # Initialize GitHub Auto-Updater
     auto_updater = AutoUpdater(config, config_path=args.config, restart_callback=restart_application)
 
+    # Web dashboard: enabled via config or --web flag; disabled by --no-web
+    web_cfg = config.get("web", {})
+    web_enabled = web_cfg.get("enabled", True) and not getattr(args, 'no_web', False)
+    if getattr(args, 'web', False):
+        web_enabled = True
+
     # Start Remote Web Dashboard Server
     web_server = None
-    if args.web:
+    if web_enabled:
         web_cfg = config.get("web", {})
         use_https = False if args.no_https else web_cfg.get("https", True)
         cert_file = args.cert or web_cfg.get("cert_file", "data/ssl/cert.pem")

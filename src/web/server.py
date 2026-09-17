@@ -748,11 +748,16 @@ class WebServer:
             if hasattr(self.pipeline, 'set_model_enabled'):
                 self.pipeline.set_model_enabled(model_id, enabled, cam_id)
 
+            # Sync visualizer draw flags for relevant models
             vis = getattr(self.pipeline, 'visualizer', None)
             if vis:
-                if model_id == 'human_detector': vis.draw_boxes = enabled
-                elif model_id == 'pose_estimator': vis.draw_pose = enabled
-                elif model_id == 'face_recognizer': vis.draw_faces = enabled
+                if model_id == 'human_detector':            vis.draw_boxes  = enabled
+                elif model_id in ('pose_estimator', 'keypoint_detector'): vis.draw_pose = enabled
+                elif model_id == 'face_recognizer':         vis.draw_faces  = enabled
+                elif model_id == 'license_plate_recognizer': vis.draw_plates = enabled
+                elif model_id == 'zone_crossing':           vis.draw_zones  = enabled
+                # For model zoo detectors, also update draw_boxes
+                elif model_id in ('yolo11n_detector', 'yolov5n_detector'): vis.draw_boxes = enabled
 
             models = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
             return jsonify({"success": True, "model_id": model_id, "enabled": enabled, "models": models})
@@ -773,6 +778,11 @@ class WebServer:
                 input_size = [320, 320]
                 axm_path = 'models/axm/yolov8n_320.axm'
                 onnx_path = 'models/onnx/yolov8n_320.onnx'
+            elif profile == 'yolo11_ultra_light':
+                model_name = 'yolo11n.pt'
+                input_size = [320, 320]
+                axm_path = 'models/axm/yolo11n_320.axm'
+                onnx_path = 'models/onnx/yolo11n_320.onnx'
             elif profile == 'high_precision':
                 model_name = 'yolov8n.pt'
                 input_size = [640, 640]
@@ -816,6 +826,88 @@ class WebServer:
 
             models_status = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
             return jsonify({"success": True, "profile": profile, "models": models_status})
+
+        # ── Zone Crossing API ─────────────────────────────────────────────────
+
+        @self.app.route('/api/zones', methods=['GET'])
+        def api_get_zones():
+            cam_id = request.args.get('cam_id')
+            zone_crossing = getattr(self.pipeline, '_zone_crossing', None)
+            if zone_crossing:
+                counts = zone_crossing.get_zone_counts(cam_id)
+                return jsonify({"zones": counts, "enabled": self.pipeline.is_model_enabled('zone_crossing')})
+            return jsonify({"zones": {}, "enabled": False})
+
+        @self.app.route('/api/zone_events', methods=['GET'])
+        def api_get_zone_events():
+            cam_id = request.args.get('cam_id')
+            limit = int(request.args.get('limit', 50))
+            since_ts = request.args.get('since_ts')
+            if since_ts:
+                try:
+                    since_ts = float(since_ts)
+                except (ValueError, TypeError):
+                    since_ts = None
+            zone_crossing = getattr(self.pipeline, '_zone_crossing', None)
+            if zone_crossing:
+                events = zone_crossing.get_events(cam_id=cam_id, since_ts=since_ts, limit=limit)
+                return jsonify({"events": events, "count": len(events)})
+            return jsonify({"events": [], "count": 0})
+
+        @self.app.route('/api/zones/config', methods=['POST'])
+        def api_configure_zones():
+            data = request.json or {}
+            new_zones = data.get('zones', [])
+
+            # Update in-memory config
+            self.pipeline.config.setdefault('zone_crossing', {})['zones'] = new_zones
+
+            # Re-initialize zone crossing detector with new definitions
+            from src.analytics.zone_crossing import ZoneCrossingDetector
+            self.pipeline._zone_crossing = ZoneCrossingDetector(new_zones)
+
+            # Persist to config.yaml
+            try:
+                import yaml
+                cfg_path = getattr(self.auto_updater, 'config_path', 'config/config.yaml') if self.auto_updater else 'config/config.yaml'
+                if os.path.exists(cfg_path):
+                    with open(cfg_path, 'r') as f:
+                        disk_cfg = yaml.safe_load(f) or {}
+                    disk_cfg.setdefault('zone_crossing', {})['zones'] = new_zones
+                    with open(cfg_path, 'w') as f:
+                        yaml.safe_dump(disk_cfg, f, default_flow_style=False)
+            except Exception as e:
+                print(f"[CONFIG SAVE NOTICE] Failed to persist zone config: {e}")
+
+            return jsonify({"success": True, "zone_count": len(new_zones)})
+
+        # ── License Plate API ─────────────────────────────────────────────────
+
+        @self.app.route('/api/plates', methods=['GET'])
+        def api_get_plates():
+            cam_id = request.args.get('cam_id')
+            limit = int(request.args.get('limit', 50))
+            plate_db = getattr(self.pipeline, 'plate_db', None)
+            if plate_db:
+                events = plate_db.get_recent_events(cam_id=cam_id, limit=limit)
+                return jsonify({"events": events, "count": len(events)})
+            return jsonify({"events": [], "count": 0})
+
+        @self.app.route('/api/plates/unique', methods=['GET'])
+        def api_get_unique_plates():
+            plate_db = getattr(self.pipeline, 'plate_db', None)
+            if plate_db:
+                plates = plate_db.list_unique_plates()
+                return jsonify({"plates": plates, "count": len(plates)})
+            return jsonify({"plates": [], "count": 0})
+
+        @self.app.route('/api/plates/<plate_text>', methods=['DELETE'])
+        def api_delete_plate(plate_text):
+            import urllib.parse
+            plate_text = urllib.parse.unquote(plate_text)
+            plate_db = getattr(self.pipeline, 'plate_db', None)
+            success = plate_db.remove_plate(plate_text) if plate_db else False
+            return jsonify({"success": success, "plate_text": plate_text})
 
         @self.app.route('/api/update/status', methods=['GET'])
         def api_update_status():
