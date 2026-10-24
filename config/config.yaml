@@ -55,6 +55,7 @@ voyager:
   rtsp_transport: tcp
   rtsp_latency_ms: 200
   low_latency: false
+  specified_frame_rate: 0 # 0 = match camera rate without duplicating frames (prevents videorate buffer duplication crash)
   reconnect_interval_s: 5
   thresholds:
     person_conf: 0.4

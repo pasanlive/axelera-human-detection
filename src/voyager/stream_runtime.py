@@ -248,10 +248,15 @@ class VoyagerRuntime(BaseRuntime):
             self._rebuild(plan)
 
     def _pipeline_kwargs(self, plan: CapacityPlan) -> Dict[str, Any]:
+        # For live IP/RTSP streams, specified_frame_rate must default to 0 (matching input frame rate).
+        # When set to a positive integer, GStreamer's videorate duplicates frames during network jitter
+        # or preroll. Because duplicated GstBuffers share metadata, re-entering libinplace_addstreamid.so
+        # throws "inplace_addstreamid: meta_key already exists" and crashes the process.
+        fps = int(self.vcfg.get("specified_frame_rate", 0))
         return dict(
             pipe_type="gst",
             aipu_cores=self.aipu_cores,
-            specified_frame_rate=int(plan.fps),
+            specified_frame_rate=fps,
             low_latency=self.low_latency,
             rtsp_latency=self.rtsp_latency,
         )
@@ -273,9 +278,9 @@ class VoyagerRuntime(BaseRuntime):
         self._stopping = False
         import re as _re
 
-        shown = [_re.sub(r"//[^@/]+@", "//***@", s) for s in first.sources]
+        rate_str = f"fps={self.vcfg['specified_frame_rate']}" if self.vcfg.get("specified_frame_rate", 0) else f"budget_fps={plan.fps} (camera-rate)"
         self.on_event(None, "info", f"Building Voyager stream: network={first.network} sources={shown} "
-                                    f"hw_decode={self.allow_hw_codec} fps={plan.fps} cores={self.aipu_cores}")
+                                    f"hw_decode={self.allow_hw_codec} {rate_str} cores={self.aipu_cores}")
         t0 = time.time()
         try:
             stream = sdk.create_inference_stream(

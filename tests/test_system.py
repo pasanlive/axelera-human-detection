@@ -449,6 +449,26 @@ class TestWebApi(unittest.TestCase):
             updater.stop()
             pipeline.preview.stop()
 
+    def test_voyager_runtime_pipeline_kwargs(self):
+        """Verifies that VoyagerRuntime defaults specified_frame_rate to 0 to prevent videorate duplication."""
+        from unittest.mock import patch
+        from src.voyager.stream_runtime import VoyagerRuntime
+        from src.voyager.capacity_planner import CapacityPlan, TIERS
+
+        with patch("src.voyager.sdk.sdk_modules", return_value=SimpleNamespace()):
+            runtime = VoyagerRuntime({"low_latency": False, "aipu_cores": 4, "rtsp_latency_ms": 200},
+                                     lambda r: None, lambda *a: None)
+            dummy_plan = SimpleNamespace(fps=25)
+            kwargs = runtime._pipeline_kwargs(dummy_plan)
+            self.assertEqual(kwargs["specified_frame_rate"], 0)
+            self.assertFalse(kwargs["low_latency"])
+            self.assertEqual(kwargs["aipu_cores"], 4)
+
+            # Explicit override
+            runtime_custom = VoyagerRuntime({"specified_frame_rate": 15}, lambda r: None, lambda *a: None)
+            self.assertEqual(runtime_custom._pipeline_kwargs(dummy_plan)["specified_frame_rate"], 15)
+
 
 if __name__ == "__main__":
     unittest.main()
+
