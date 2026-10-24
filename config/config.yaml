@@ -39,7 +39,7 @@ models:
   pose_estimator:
     enabled: true
   face_recognizer:
-    enabled: true
+    enabled: false
     match_threshold: 0.55
   license_plate_recognizer:
     enabled: false
