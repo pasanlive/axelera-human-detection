@@ -76,7 +76,7 @@ capacity:
   host_results_per_s: 400
   expected_faces: 2
   expected_plates: 1
-  enable_tiling: true
+  enable_tiling: false
   tile_overlap_pct: 10
   max_fps: 25
   model_fps:

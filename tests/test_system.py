@@ -133,7 +133,17 @@ class TestCapacityPlanner(unittest.TestCase):
                 self.assertGreaterEqual(plan.fps, plan.tier.min_fps)
 
     def test_one_camera_gets_top_quality(self):
+        # Tiling is opt-in (native abort on SDK 1.6.0), so the default top tier is `high`.
         plan = CapacityPlanner().plan(_cams(1))
+        self.assertEqual(plan.tier.name, "high")
+        self.assertEqual(plan.fps, 25)
+        self.assertEqual(plan.groups[0].sources[0], "rtsp://cam0/main")
+        self.assertEqual(plan.groups[0].network, "upside-yolov8spose")
+
+    def test_one_camera_tiled_when_opted_in(self):
+        from src.voyager.capacity_planner import CapacityBudgets
+
+        plan = CapacityPlanner(CapacityBudgets(enable_tiling=True)).plan(_cams(1))
         self.assertEqual(plan.tier.name, "ultra")
         self.assertEqual(plan.fps, 25)
         self.assertTrue(plan.groups[0].sources[0].startswith("tile[size=640,overlap=10]:rtsp://cam0/main"))

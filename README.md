@@ -177,7 +177,7 @@ Model IDs: `human_detector`, `pose_estimator`, `face_recognizer`, `license_plate
 
 ## ⚠️ Known limitations / to validate on the board
 
-- Tiling (`ultra`) combined with keypoint models has not been verified on 1.6.0. If it fails, the runtime disables tiling automatically and re-plans.
+- Tiling (`ultra` tier) is **off by default** (`capacity.enable_tiling: false`). On SDK 1.6.0 + RK3588, a tiled pose→face cascade aborts natively on the first frame (`inplace_addstreamid: meta_key already exists`), with both HW and SW decode. Python can't catch this, so tiling must stay opt-in until it's fixed in the SDK.
 - Running several pipelines at once (mixed feature groups) on the 4 AIPU cores is not yet benchmarked.
 - The LPRNet Model Zoo weights are trained on CCPD (Chinese plates). Retrain them for local plates.
 - AIPU load is **estimated** (planned utilisation × achieved/planned FPS) because 1.6.0 has no per-core utilisation tracer.

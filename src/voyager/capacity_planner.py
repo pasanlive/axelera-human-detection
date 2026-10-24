@@ -93,7 +93,9 @@ class CapacityBudgets:
     host_results_per_s: float = 400.0
     expected_faces: float = 2.0
     expected_plates: float = 1.0
-    enable_tiling: bool = True
+    # Off by default: on SDK 1.6.0 a tiled cascade (pose -> face) aborts natively with
+    # "inplace_addstreamid: meta_key already exists" on the first frame. Opt-in only.
+    enable_tiling: bool = False
     tile_overlap_pct: int = 10
     max_fps: int = 25
 
