@@ -271,6 +271,12 @@ class VoyagerRuntime(BaseRuntime):
             _aipu_cores=self.aipu_cores, pipe_type="gst",
         )
         self._stopping = False
+        import re as _re
+
+        shown = [_re.sub(r"//[^@/]+@", "//***@", s) for s in first.sources]
+        self.on_event(None, "info", f"Building Voyager stream: network={first.network} sources={shown} "
+                                    f"hw_decode={self.allow_hw_codec} fps={plan.fps} cores={self.aipu_cores}")
+        t0 = time.time()
         try:
             stream = sdk.create_inference_stream(
                 network=self.network_yaml(first.spec),
@@ -301,8 +307,8 @@ class VoyagerRuntime(BaseRuntime):
             self._register_group(g, pm)
         self._thread = threading.Thread(target=self._consume, args=(stream,), name="voyager-consumer", daemon=True)
         self._thread.start()
-        self.on_event(None, "info", f"Voyager stream started: tier={plan.tier.name} fps={plan.fps} "
-                                    f"pipelines={[g.network for g in plan.groups]}")
+        self.on_event(None, "info", f"Voyager stream started in {time.time() - t0:.1f}s: tier={plan.tier.name} "
+                                    f"fps={plan.fps} pipelines={[g.network for g in plan.groups]}")
 
     def _register_group(self, group: PipelineGroup, pm: Any) -> None:
         self._pipes[group.network] = pm

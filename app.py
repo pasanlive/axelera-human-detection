@@ -116,15 +116,6 @@ def main():
         pipeline.preview.stop()
         return
 
-    try:
-        pipeline.start()
-    except Exception as e:
-        if e.__class__.__name__ == "NetworkNotCompiledError":
-            print(e, file=sys.stderr)
-            pipeline.preview.stop()
-            sys.exit(1)
-        raise
-
     shutdown = threading.Event()
 
     # Application restart callback for Auto-Updater
@@ -140,6 +131,8 @@ def main():
 
     auto_updater = AutoUpdater(config, config_path=args.config, restart_callback=restart_application)
 
+    # Dashboard first: building the Voyager stream (model load, GStreamer preroll, RTSP
+    # connect) can take a while or hang, and the dashboard must stay reachable meanwhile.
     web_cfg = config.get("web", {})
     web_enabled = (web_cfg.get("enabled", True) and not args.no_web) or args.web
     if web_enabled:
@@ -155,16 +148,52 @@ def main():
         )
         web_server.start_background()
 
+    start_state: dict = {"done": False, "error": None, "t0": time.time()}
+
+    def _start_pipeline():
+        try:
+            pipeline.start()
+        except BaseException as e:  # noqa: BLE001 - reported by the main loop
+            start_state["error"] = e
+        finally:
+            start_state["done"] = True
+
+    threading.Thread(target=_start_pipeline, name="pipeline-start", daemon=True).start()
+
     signal.signal(signal.SIGTERM, lambda *_: shutdown.set())
-    print("\n[RUNNING] Inference is running on the Metis AIPU. Press Ctrl+C to stop.\n")
+    print("\n[STARTING] Building Voyager inference stream in the background. Press Ctrl+C to stop.\n")
+    announced = False
     try:
         while not shutdown.is_set():
             shutdown.wait(5.0)
+            err = start_state["error"]
+            if err is not None:
+                if err.__class__.__name__ == "NetworkNotCompiledError":
+                    print(err, file=sys.stderr)
+                else:
+                    import traceback
+                    traceback.print_exception(type(err), err, err.__traceback__)
+                    print("[FATAL] Voyager stream failed to start (see above).", file=sys.stderr)
+                os._exit(1)
+            if not start_state["done"]:
+                waited = int(time.time() - start_state["t0"])
+                print(f"[STARTING] Still building Voyager stream ({waited}s) - loading models / "
+                      f"GStreamer preroll / RTSP connect...")
+                if waited >= 60 and waited % 30 < 5:
+                    print("[STARTING] >60s usually means the RTSP source is unreachable or the decoder "
+                          "is stuck. Check the camera URL, try --no-hw-decode, or run with GST_DEBUG=3.")
+                continue
+            if not announced:
+                print("\n[RUNNING] Inference is running on the Metis AIPU.\n")
+                announced = True
             stats = pipeline.get_stats()
             plan = pipeline.plan
             if plan is not None:
+                cams = pipeline.get_camera_status() if hasattr(pipeline, "get_camera_status") else []
+                waiting = [c["id"] for c in cams if c.get("enabled") and c.get("state") not in ("live",)]
                 print(f"[STATUS] tier={plan.tier.name} target={plan.fps}fps/cam achieved={stats['total_fps']}fps total "
-                      f"persons={stats['persons']} known_faces={stats['faces_recognized']}")
+                      f"persons={stats['persons']} known_faces={stats['faces_recognized']}"
+                      + (f" waiting_for_frames={waiting}" if waiting else ""))
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Stopping pipeline...")
     finally:
