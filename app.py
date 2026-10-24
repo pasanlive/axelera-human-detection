@@ -79,6 +79,7 @@ def main():
     parser.add_argument("--print-plan", action="store_true", help="Print the capacity plan and exit")
     parser.add_argument("--no-hw-decode", action="store_true", help="Force software video decode (diagnostics)")
     parser.add_argument("--no-tiling", action="store_true", help="Disable tiled (ultra) inference (diagnostics)")
+    parser.add_argument("--headless", action="store_true", help="Run in strict headless mode (unsets DISPLAY and disables GUI probes)")
     parser.add_argument("--web", action="store_true", default=False, help="Enable local network web dashboard interface")
     parser.add_argument("--no-web", action="store_true", help="Disable web dashboard interface")
     parser.add_argument("--host", type=str, default=None, help="Web server host IP address")
@@ -88,6 +89,12 @@ def main():
     parser.add_argument("--key", type=str, default=None, help="SSL private key filepath")
     args = parser.parse_args()
 
+    if args.headless or not os.environ.get("DISPLAY"):
+        # Explicit headless mode: prevent X11 auth warnings and Pyglet display probe errors
+        os.environ.pop("DISPLAY", None)
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        os.environ["MPLBACKEND"] = "Agg"
+
     config = load_config(args.config)
     # Runtime-only overrides (not persisted unless the dashboard later saves config).
     if args.no_hw_decode:
@@ -96,6 +103,8 @@ def main():
     if args.no_tiling:
         config.setdefault("capacity", {})["enable_tiling"] = False
         print("[DIAG] Tiled inference disabled")
+    if args.headless:
+        print("[DIAG] Strict headless mode active (DISPLAY disabled)")
 
     if args.enroll:
         if not args.image:
