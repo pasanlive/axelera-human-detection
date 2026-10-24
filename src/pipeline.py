@@ -1,192 +1,187 @@
 """
 Pipeline: End-to-End Multi-Camera Detection, Pose, and Face Recognition System Orchestrator.
+
+Architecture (Voyager SDK "Option A" - the SDK owns the video pipeline):
+
+    cameras ──► CapacityPlanner ──► VoyagerRuntime (InferenceStream, 1 pipeline / feature group)
+                                         │  decode (RK3588 MPP) → preprocess → INT8 on Metis AIPU
+                                         │  → C++ decoders/NMS → OC-SORT tracker
+                                         ▼
+                              on_result(cam, FrameAnalysis)   (metadata only)
+                                         │
+             face DB matching · identity voting · LPR logging · zone crossing
+                                         │
+                              PreviewHub (render only what is being watched)
+
+No model ever runs on the host CPU. Toggling face recognition / LPR changes the
+network composition and triggers a re-plan; the pose/detector toggles only
+control what is drawn (one YOLOv8-pose model provides boxes AND keypoints).
 """
 
-import time
-import cv2
-import numpy as np
-from typing import Dict, Any, List, Optional, Union, Tuple
+from __future__ import annotations
 
-from src.camera.stream_manager import StreamManager
-from src.inference.yolo_detector import YOLODetector
-from src.inference.pose_estimator import PoseEstimator
-from src.inference.face_recognizer import FaceRecognizer
+import os
+import threading
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import numpy as np
+
+from src.analytics.identity import TrackIdentityResolver
+from src.render.preview import GRID, PreviewHub
 from src.utils.face_db import FaceDatabase
 from src.utils.plate_db import PlateDatabase
-from src.tracking.byte_tracker import ByteTracker
 from src.utils.visualization import Visualizer
+from src.voyager.capacity_planner import (
+    PROFILES,
+    TIER_BY_NAME,
+    CameraSpec,
+    CapacityBudgets,
+    CapacityPlan,
+    CapacityPlanner,
+)
+from src.voyager.result_parser import FrameAnalysis
+
+# Models whose state changes the compiled network composition (=> re-plan).
+NETWORK_FEATURES = {"face_recognizer": "face", "license_plate_recognizer": "lpr"}
+MODEL_IDS = ("human_detector", "pose_estimator", "face_recognizer", "license_plate_recognizer", "zone_crossing")
+
+# Legacy dashboard/config profile names -> capacity tiers.
+LEGACY_PROFILE_MAP = {
+    "high_precision": "high",
+    "balanced": "standard",
+    "ultra_light": "balanced",
+    "yolo11_ultra_light": "balanced",
+    "extreme_light": "economy",
+}
+
+
+def _res(v: Any, default: Tuple[int, int]) -> Tuple[int, int]:
+    try:
+        return int(v[0]), int(v[1])
+    except Exception:
+        return default
 
 
 class MultiCameraPipeline:
-    """Orchestrates multi-camera acquisition, Axelera Metis model inference, tracking, and visualization."""
+    """Orchestrates multi-camera Voyager inference, analytics and preview rendering."""
 
-    # Pose backends are mutually exclusive — only one may be active at a time
-    POSE_MUTEX_GROUP = {"pose_estimator", "keypoint_detector"}
-
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], simulate: bool = False,
+                 runtime_factory: Optional[Callable[..., Any]] = None,
+                 config_path: Optional[str] = None):
         self.config = config
+        self.config_path = config_path
+        self.simulate = simulate
 
         print("==========================================================")
         print("  Initializing Axelera Metis Multi-Camera Pipeline System ")
         print("==========================================================")
 
-        # ── Performance settings (single parse, no duplication) ─────────────
-        perf_cfg = config.get("performance", {})
-        self.detect_interval = max(1, int(perf_cfg.get("detect_interval", 1)))
-        self.pose_interval   = max(1, int(perf_cfg.get("pose_interval", 2)))
-        self.face_interval   = max(1, int(perf_cfg.get("face_interval", 3)))
-
-        # ── Frame counters & caches ──────────────────────────────────────────
-        self.frame_counters: Dict[str, int] = {}
-        self.cached_detections: Dict[str, List[Dict[str, Any]]] = {}
-        self.cached_poses: Dict[str, List[Dict[str, Any]]] = {}
-        self.face_cache: Dict[str, Dict[int, Dict[str, Any]]] = {}
-
-        # ── Model enablement state ───────────────────────────────────────────
-        models_cfg = config.get("models", {})
+        models_cfg = config.get("models", {}) or {}
         self.enabled_models: Dict[str, bool] = {
-            "human_detector":           models_cfg.get("human_detector",           {}).get("enabled", True),
-            "pose_estimator":           models_cfg.get("pose_estimator",           {}).get("enabled", True),
-            "face_recognizer":          models_cfg.get("face_recognizer",          {}).get("enabled", True),
-            # Model zoo — disabled by default
-            "yolo11n_detector":         models_cfg.get("yolo11n_detector",         {}).get("enabled", False),
-            "yolov5n_detector":         models_cfg.get("yolov5n_detector",         {}).get("enabled", False),
-            "keypoint_detector":        models_cfg.get("keypoint_detector",        {}).get("enabled", False),
+            "human_detector":           models_cfg.get("human_detector", {}).get("enabled", True),
+            "pose_estimator":           models_cfg.get("pose_estimator", {}).get("enabled", True),
+            "face_recognizer":          models_cfg.get("face_recognizer", {}).get("enabled", True),
             "license_plate_recognizer": models_cfg.get("license_plate_recognizer", {}).get("enabled", False),
-            "zone_crossing":            config.get("zone_crossing",               {}).get("enabled", False),
+            "zone_crossing":            config.get("zone_crossing", {}).get("enabled", False),
         }
         self.camera_model_overrides: Dict[str, Dict[str, bool]] = {}
+        for cam in config.get("cameras", []) or []:
+            ov = cam.get("features") or {}
+            if ov:
+                self.camera_model_overrides[cam["id"]] = {k: bool(v) for k, v in ov.items() if k in MODEL_IDS}
 
-        # ── Face Database ────────────────────────────────────────────────────
-        db_path = config.get("face_db", {}).get("path", "data/face_db.json")
-        self.face_db = FaceDatabase(db_path=db_path)
+        self.match_threshold = float(models_cfg.get("face_recognizer", {}).get("match_threshold", 0.55))
+        self.plate_log_interval_s = float(models_cfg.get("license_plate_recognizer", {}).get("log_interval_s", 10.0))
 
-        # ── Plate Database ───────────────────────────────────────────────────
-        plate_db_path = config.get("plate_db", {}).get("path", "data/plate_db.json")
-        self.plate_db = PlateDatabase(db_path=plate_db_path)
+        # ── Databases ────────────────────────────────────────────────────────
+        self.face_db = FaceDatabase(db_path=config.get("face_db", {}).get("path", "data/face_db.json"))
+        self.plate_db = PlateDatabase(db_path=config.get("plate_db", {}).get("path", "data/plate_db.json"))
 
-        # ── Primary models (lazy: only load if enabled) ──────────────────────
-        hw_cfg = config.get("hardware", {})
-
-        print("[PIPELINE] Initializing YOLO Human Detector...")
-        self.detector = YOLODetector(models_cfg["human_detector"]) \
-            if self.enabled_models["human_detector"] else None
-
-        print("[PIPELINE] Initializing YOLO Pose Estimator...")
-        self.pose_estimator = PoseEstimator(models_cfg["pose_estimator"]) \
-            if self.enabled_models["pose_estimator"] else None
-
-        print("[PIPELINE] Initializing Face Recognizer...")
-        self.face_recognizer = FaceRecognizer(models_cfg["face_recognizer"], self.face_db) \
-            if self.enabled_models["face_recognizer"] else None
-
-        # ── Model zoo: lazily initialized on first enable ────────────────────
-        # Detector alternatives
-        self._yolo11n_detector: Optional[YOLODetector] = None
-        self._yolov5n_detector: Optional[YOLODetector] = None
-        # Pose alternative (mutually exclusive with pose_estimator)
-        self._keypoint_detector = None
-        # LPR
-        self._lpr: Optional[Any] = None
-        # Zone crossing (rule-based — no model)
+        # ── Analytics ────────────────────────────────────────────────────────
+        self.identity = TrackIdentityResolver()
         self._zone_crossing: Optional[Any] = None
-
-        # Eagerly initialize model zoo items that are already enabled in config
-        if self.enabled_models["yolo11n_detector"]:
-            self._ensure_yolo11n_detector()
-        if self.enabled_models["yolov5n_detector"]:
-            self._ensure_yolov5n_detector()
-        if self.enabled_models["keypoint_detector"]:
-            self._ensure_keypoint_detector()
-        if self.enabled_models["license_plate_recognizer"]:
-            self._ensure_lpr()
         if self.enabled_models["zone_crossing"]:
             self._ensure_zone_crossing()
+        self._plate_last_logged: Dict[Tuple[str, str], float] = {}
 
-        # ── Trackers per camera stream ────────────────────────────────────────
-        self.trackers: Dict[str, ByteTracker] = {}
+        # ── Capacity planning ────────────────────────────────────────────────
+        cap_cfg = config.get("capacity", {}) or {}
+        self.performance_profile = self._normalise_profile(cap_cfg.get("profile", "auto"))
+        self.planner = CapacityPlanner(CapacityBudgets.from_config(cap_cfg))
+        self.plan: Optional[CapacityPlan] = None
 
-        # ── Multi-Camera Stream Manager ───────────────────────────────────────
-        self.stream_manager = StreamManager(config.get("cameras", []))
-        self.stream_manager.initialize_cameras()
-
-        # ── Visualizer ────────────────────────────────────────────────────────
+        # ── Rendering ────────────────────────────────────────────────────────
         self.visualizer = Visualizer(config)
+        pv = config.get("preview", {}) or {}
+        self.preview = PreviewHub(
+            renderer=lambda frame, packet: self.visualizer.draw_frame(frame=frame, **packet),
+            preview_fps=pv.get("fps", 12), grid_fps=pv.get("grid_fps", 6),
+            max_width=pv.get("max_width", 1280), jpeg_quality=pv.get("jpeg_quality", 75),
+        )
 
+        # ── Runtime state ────────────────────────────────────────────────────
+        self._state_lock = threading.RLock()
+        self._latest: Dict[str, Dict[str, Any]] = {}  # cam -> {persons, faces, plates, ts}
+        self.events: List[Dict[str, Any]] = []
+        self._replan_lock = threading.Lock()
+        self._replan_evt = threading.Event()
+        self._replan_thread: Optional[threading.Thread] = None
         self.is_running = False
 
+        if runtime_factory is None:
+            if simulate:
+                from src.voyager.stream_runtime import SimulatedRuntime
+                runtime_factory = lambda on_result, on_event: SimulatedRuntime(on_result, on_event)  # noqa: E731
+            else:
+                from src.voyager.stream_runtime import VoyagerRuntime
+                vcfg = config.get("voyager", {}) or {}
+                runtime_factory = lambda on_result, on_event: VoyagerRuntime(vcfg, on_result, on_event)  # noqa: E731
+        self.runtime = runtime_factory(self._on_result, self._on_event)
+        print(f"[PIPELINE] Inference backend: {self.runtime.backend}")
+
     # ─────────────────────────────────────────────────────────────────────────
-    # Lazy initializers for model zoo components
+    # Helpers
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _ensure_yolo11n_detector(self):
-        if self._yolo11n_detector is None:
-            cfg = self.config.get("models", {}).get("yolo11n_detector", {})
-            if not cfg:
-                print("[PIPELINE] yolo11n_detector config not found.")
-                return
-            print("[PIPELINE] Lazy-loading YOLO11n Detector...")
-            self._yolo11n_detector = YOLODetector(cfg)
-
-    def _ensure_yolov5n_detector(self):
-        if self._yolov5n_detector is None:
-            cfg = self.config.get("models", {}).get("yolov5n_detector", {})
-            if not cfg:
-                print("[PIPELINE] yolov5n_detector config not found.")
-                return
-            print("[PIPELINE] Lazy-loading YOLOv5n Detector...")
-            self._yolov5n_detector = YOLODetector(cfg)
-
-    def _ensure_keypoint_detector(self):
-        if self._keypoint_detector is None:
-            cfg = self.config.get("models", {}).get("keypoint_detector", {})
-            if not cfg:
-                print("[PIPELINE] keypoint_detector config not found.")
-                return
-            print("[PIPELINE] Lazy-loading YOLO11n-Pose Keypoint Detector...")
-            from src.inference.keypoint_detector import KeypointDetector
-            self._keypoint_detector = KeypointDetector(cfg)
-
-    def _ensure_lpr(self):
-        if self._lpr is None:
-            cfg = self.config.get("models", {}).get("license_plate_recognizer", {})
-            if not cfg:
-                print("[PIPELINE] license_plate_recognizer config not found.")
-                return
-            print("[PIPELINE] Lazy-loading License Plate Recognizer...")
-            from src.inference.license_plate_recognizer import LicensePlateRecognizer
-            self._lpr = LicensePlateRecognizer(cfg, self.plate_db)
+    @staticmethod
+    def _normalise_profile(profile: str) -> str:
+        # Current tier names win: "balanced" is both a legacy alias and a tier.
+        if profile in PROFILES:
+            return profile
+        profile = LEGACY_PROFILE_MAP.get(profile, profile)
+        return profile if profile in PROFILES else "auto"
 
     def _ensure_zone_crossing(self):
         if self._zone_crossing is None:
-            zone_cfg = self.config.get("zone_crossing", {})
-            zones = zone_cfg.get("zones", [])
-            print(f"[PIPELINE] Lazy-loading Zone Crossing Detector ({len(zones)} zone(s))...")
+            zones = self.config.get("zone_crossing", {}).get("zones", []) or []
             from src.analytics.zone_crossing import ZoneCrossingDetector
             self._zone_crossing = ZoneCrossingDetector(zones)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Active detector / pose backend helpers
-    # ─────────────────────────────────────────────────────────────────────────
+    def _camera_cfgs(self, enabled_only: bool = True) -> List[Dict[str, Any]]:
+        cams = self.config.get("cameras", []) or []
+        return [c for c in cams if c.get("enabled", True) or not enabled_only]
 
-    def _get_active_detector(self):
-        """Returns the active human detector (model zoo overrides primary if enabled)."""
-        if self.enabled_models.get("yolo11n_detector") and self._yolo11n_detector:
-            return self._yolo11n_detector
-        if self.enabled_models.get("yolov5n_detector") and self._yolov5n_detector:
-            return self._yolov5n_detector
-        return self.detector  # primary YOLOv8n
+    def _camera_features(self, cam_id: str) -> frozenset:
+        return frozenset(feat for model, feat in NETWORK_FEATURES.items() if self.is_model_enabled(model, cam_id))
 
-    def _get_active_pose_backend(self):
-        """Returns the active pose backend. keypoint_detector takes priority if enabled."""
-        if self.enabled_models.get("keypoint_detector") and self._keypoint_detector:
-            return self._keypoint_detector
-        if self.enabled_models.get("pose_estimator") and self.pose_estimator:
-            return self.pose_estimator
-        return None
+    def camera_specs(self) -> List[CameraSpec]:
+        specs = []
+        for c in self._camera_cfgs():
+            specs.append(CameraSpec(
+                id=c["id"],
+                name=c.get("name", c["id"]),
+                source=c["source"],
+                source_sub=c.get("source_sub"),
+                main_resolution=_res(c.get("main_resolution"), (1920, 1080)),
+                sub_resolution=_res(c.get("sub_resolution"), (640, 360)),
+                native_fps=float(c.get("native_fps", 25)),
+                features=self._camera_features(c["id"]),
+            ))
+        return specs
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Model enable/disable with pose mutex
+    # Model enable/disable
     # ─────────────────────────────────────────────────────────────────────────
 
     def is_model_enabled(self, model_name: str, cam_id: Any = None) -> bool:
@@ -195,263 +190,367 @@ class MultiCameraPipeline:
             cam_overrides = self.camera_model_overrides[cam_id]
             if model_name in cam_overrides:
                 return cam_overrides[model_name]
-        return self.enabled_models.get(model_name, True)
+        return self.enabled_models.get(model_name, False)
 
     def set_model_enabled(self, model_name: str, enabled: bool, cam_id: Any = None):
-        """
-        Enables or disables model inference globally or for a specific camera.
-        Enforces the pose mutex: enabling one pose backend auto-disables the other.
-        Lazy-initializes model zoo components on first enable.
-        """
+        """Enables/disables a model globally or per camera. Face/LPR changes re-plan the network."""
+        if model_name not in MODEL_IDS:
+            raise ValueError(f"Unknown model '{model_name}'. Valid: {MODEL_IDS}")
+        enabled = bool(enabled)
         if cam_id and cam_id != "all":
-            if cam_id not in self.camera_model_overrides:
-                self.camera_model_overrides[cam_id] = {}
-            self.camera_model_overrides[cam_id][model_name] = enabled
+            self.camera_model_overrides.setdefault(cam_id, {})[model_name] = enabled
             print(f"[PIPELINE ADMIN] Model '{model_name}' on stream '{cam_id}' set to: {'ENABLED' if enabled else 'DISABLED'}")
         else:
-            # Pose mutex: enabling one pose backend disables the other
-            if enabled and model_name in self.POSE_MUTEX_GROUP:
-                for other in self.POSE_MUTEX_GROUP:
-                    if other != model_name and self.enabled_models.get(other):
-                        self.enabled_models[other] = False
-                        for c_id in self.camera_model_overrides:
-                            if other in self.camera_model_overrides[c_id]:
-                                del self.camera_model_overrides[c_id][other]
-                        self._clear_model_cache(other)
-                        print(f"[PIPELINE ADMIN] Pose mutex: '{other}' auto-disabled.")
-
             self.enabled_models[model_name] = enabled
-            for c_id in self.camera_model_overrides:
-                if model_name in self.camera_model_overrides[c_id]:
-                    del self.camera_model_overrides[c_id][model_name]
+            for overrides in self.camera_model_overrides.values():
+                overrides.pop(model_name, None)
             print(f"[PIPELINE ADMIN] Model '{model_name}' globally set to: {'ENABLED' if enabled else 'DISABLED'}")
 
-        # Lazy-load on first enable
-        if enabled:
-            if model_name == "yolo11n_detector":
-                self._ensure_yolo11n_detector()
-            elif model_name == "yolov5n_detector":
-                self._ensure_yolov5n_detector()
-            elif model_name == "keypoint_detector":
-                self._ensure_keypoint_detector()
-            elif model_name == "license_plate_recognizer":
-                self._ensure_lpr()
-            elif model_name == "zone_crossing":
-                self._ensure_zone_crossing()
-            elif model_name == "human_detector" and self.detector is None:
-                cfg = self.config.get("models", {}).get("human_detector", {})
-                if cfg:
-                    print("[PIPELINE] Lazy-loading primary YOLO Human Detector...")
-                    self.detector = YOLODetector(cfg)
-            elif model_name == "pose_estimator" and self.pose_estimator is None:
-                cfg = self.config.get("models", {}).get("pose_estimator", {})
-                if cfg:
-                    print("[PIPELINE] Lazy-loading primary YOLO Pose Estimator...")
-                    self.pose_estimator = PoseEstimator(cfg)
-            elif model_name == "face_recognizer" and self.face_recognizer is None:
-                cfg = self.config.get("models", {}).get("face_recognizer", {})
-                if cfg:
-                    print("[PIPELINE] Lazy-loading Face Recognizer...")
-                    self.face_recognizer = FaceRecognizer(cfg, self.face_db)
+        if model_name == "zone_crossing" and enabled:
+            self._ensure_zone_crossing()
+        if model_name == "face_recognizer" and not enabled:
+            self.identity.clear(None if not cam_id or cam_id == "all" else cam_id)
+        if model_name in NETWORK_FEATURES:
+            self.request_replan()
 
-        # Clear stale cache on disable
-        if not enabled:
-            self._clear_model_cache(model_name, cam_id if (cam_id and cam_id != "all") else None)
+    # ─────────────────────────────────────────────────────────────────────────
+    # Capacity planning
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def _clear_model_cache(self, model_name: str, cam_id: Optional[str] = None):
-        """Clears cached inference data when a model is disabled."""
-        def _clear_dict(d: dict):
-            if cam_id:
-                if cam_id in d:
-                    d[cam_id] = [] if isinstance(d.get(cam_id), list) else {}
-            else:
-                for k in d:
-                    d[k] = [] if isinstance(d.get(k), list) else {}
+    def compute_plan(self) -> CapacityPlan:
+        return self.planner.plan(self.camera_specs(), self.performance_profile)
 
-        if model_name in ("human_detector", "yolo11n_detector", "yolov5n_detector"):
-            _clear_dict(self.cached_detections)
-        elif model_name in ("pose_estimator", "keypoint_detector"):
-            _clear_dict(self.cached_poses)
-        elif model_name == "face_recognizer":
-            _clear_dict(self.face_cache)
+    def replan_now(self) -> CapacityPlan:
+        """Re-plans synchronously and applies the plan to the runtime if running."""
+        with self._replan_lock:
+            plan = self.compute_plan()
+            prev = self.plan
+            self.plan = plan
+            self.preview.set_camera_order([c.id for c in self.camera_specs()])
+            if plan.overloaded:
+                self._on_event(None, "warning", "Capacity overloaded: " + "; ".join(plan.reasons))
+            if self.is_running and (prev is None or prev.signature != plan.signature):
+                specs = {c.id: c for c in self.camera_specs()}
+                self.runtime.apply_plan(plan, specs)
+                print(f"[CAPACITY] tier={plan.tier.name} fps={plan.fps} cams={len(specs)} "
+                      f"aipu={plan.aipu_utilization:.0%} decode={plan.decode_utilization:.0%} "
+                      f"networks={plan.networks()}")
+            return plan
 
-    def reload_detector_model(self, model_profile: str, model_name: str,
-                               input_size: List[int],
-                               axm_path: Optional[str] = None,
-                               onnx_path: Optional[str] = None,
-                               detect_interval: Optional[int] = None):
-        """Hot-reloads human detection model configuration."""
-        det_cfg = self.config.setdefault("models", {}).setdefault("human_detector", {})
-        det_cfg["model_profile"] = model_profile
-        det_cfg["model_name"] = model_name
-        det_cfg["input_size"] = list(input_size)
-        if axm_path is not None:
-            det_cfg["axm_path"] = axm_path
-        if onnx_path is not None:
-            det_cfg["onnx_path"] = onnx_path
-        if detect_interval is not None:
-            self.detect_interval = max(1, int(detect_interval))
-            self.config.setdefault("performance", {})["detect_interval"] = self.detect_interval
+    def request_replan(self) -> None:
+        """Debounced asynchronous re-plan (stream rebuilds can take seconds)."""
+        if not self.is_running:
+            self.plan = self.compute_plan()
+            return
+        self._replan_evt.set()
 
-        self.detector = YOLODetector(det_cfg)
-        for cid in self.cached_detections:
-            self.cached_detections[cid] = []
-        print(f"[PIPELINE ADMIN] Detector reloaded: profile={model_profile}, model={model_name}, size={input_size}")
+    def _replan_worker(self):
+        while self.is_running:
+            if not self._replan_evt.wait(timeout=0.5):
+                continue
+            time.sleep(0.3)  # coalesce bursts of toggles
+            self._replan_evt.clear()
+            try:
+                self.replan_now()
+            except Exception as e:
+                self._on_event(None, "error", f"Re-plan failed: {e}")
+
+    def get_capacity_plan(self) -> Dict[str, Any]:
+        plan = self.plan or self.compute_plan()
+        d = plan.to_dict()
+        d["profiles"] = list(PROFILES)
+        d["camera_count"] = len(self._camera_cfgs())
+        return d
+
+    def set_performance_profile(self, profile: str) -> Dict[str, Any]:
+        profile = self._normalise_profile(profile)
+        self.performance_profile = profile
+        self.config.setdefault("capacity", {})["profile"] = profile
+        self._persist_config()
+        self.request_replan()
+        return self.get_capacity_plan()
+
+    def reload_detector_model(self, model_profile: str, *args, detect_interval: Optional[int] = None, **kwargs):
+        """Backward-compatible shim for the legacy detector-profile API."""
+        self.set_performance_profile(model_profile)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Camera management
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def add_camera(self, cam_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        if not cam_cfg.get("source"):
+            raise ValueError("Camera 'source' is required")
+        cams = self.config.setdefault("cameras", [])
+        cam_id = cam_cfg.get("id") or f"cam_{len(cams) + 1:02d}"
+        if any(c["id"] == cam_id for c in cams):
+            raise ValueError(f"Camera id '{cam_id}' already exists")
+        entry = {"id": cam_id, "name": cam_cfg.get("name", cam_id), "enabled": cam_cfg.get("enabled", True),
+                 "source": cam_cfg["source"]}
+        for k in ("source_sub", "main_resolution", "sub_resolution", "native_fps", "features"):
+            if cam_cfg.get(k) is not None:
+                entry[k] = cam_cfg[k]
+        cams.append(entry)
+        self._persist_config()
+        self.request_replan()
+        return entry
+
+    def remove_camera(self, cam_id: str) -> bool:
+        cams = self.config.get("cameras", []) or []
+        keep = [c for c in cams if c["id"] != cam_id]
+        if len(keep) == len(cams):
+            return False
+        self.config["cameras"] = keep
+        self.camera_model_overrides.pop(cam_id, None)
+        self.identity.clear(cam_id)
+        with self._state_lock:
+            self._latest.pop(cam_id, None)
+        self._persist_config()
+        self.request_replan()
+        return True
+
+    def set_camera_enabled(self, cam_id: str, enabled: bool) -> bool:
+        for c in self.config.get("cameras", []) or []:
+            if c["id"] == cam_id:
+                c["enabled"] = bool(enabled)
+                self._persist_config()
+                self.request_replan()
+                return True
+        return False
+
+    def get_camera_status(self) -> List[Dict[str, Any]]:
+        out = []
+        plan = self.plan
+        for c in self._camera_cfgs(enabled_only=False):
+            cid = c["id"]
+            group = plan.group_for(cid) if plan else None
+            state = self.runtime.camera_state.get(cid, "stopped" if not c.get("enabled", True) else "pending")
+            out.append({
+                "id": cid,
+                "name": c.get("name", cid),
+                "enabled": c.get("enabled", True),
+                "fps": round(float(self.runtime.camera_fps.get(cid, 0.0)), 1),
+                "is_opened": state == "live",
+                "state": state,
+                "stream": plan.camera_streams.get(cid) if plan else None,
+                "network": group.network if group else None,
+                "features": sorted(self._camera_features(cid)),
+            })
+        return out
+
+    def _persist_config(self):
+        if not self.config_path or not os.path.exists(self.config_path):
+            return
+        try:
+            import yaml
+            with open(self.config_path, "r") as f:
+                disk = yaml.safe_load(f) or {}
+            disk["cameras"] = self.config.get("cameras", [])
+            disk.setdefault("capacity", {})["profile"] = self.performance_profile
+            with open(self.config_path, "w") as f:
+                yaml.safe_dump(disk, f, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            print(f"[CONFIG SAVE NOTICE] Failed to persist config: {e}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Result handling (runs on the runtime consumer thread - keep it light)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _on_event(self, cam_id: Optional[str], kind: str, message: str):
+        ev = {"ts": time.time(), "camera_id": cam_id, "type": kind, "message": message}
+        with self._state_lock:
+            self.events.append(ev)
+            self.events = self.events[-200:]
+        print(f"[RUNTIME {kind.upper()}]{' ' + cam_id if cam_id else ''} {message}")
+
+    def _on_result(self, cam_id: str, fa: FrameAnalysis, get_image: Callable[[], Optional[np.ndarray]]):
+        now = fa.timestamp
+        persons = fa.persons
+        track_ids = [p["track_id"] for p in persons if p["track_id"] is not None]
+
+        # Faces → identities (vectorised gallery match + per-track voting)
+        faces_out: List[Dict[str, Any]] = []
+        if fa.faces and self.is_model_enabled("face_recognizer", cam_id):
+            with_emb = [f for f in fa.faces if f["embedding"] is not None]
+            matches = self.face_db.match_batch(np.stack([f["embedding"] for f in with_emb]),
+                                               self.match_threshold) if with_emb else []
+            for f, (name, sim) in zip(with_emb, matches):
+                tid = None
+                if f["person_index"] is not None and f["person_index"] < len(persons):
+                    tid = persons[f["person_index"]]["track_id"]
+                if tid is not None:
+                    name, sim = self.identity.update(cam_id, tid, name, sim, now)
+                    persons[f["person_index"]]["identity"] = name
+                faces_out.append({"bbox": f["bbox"], "name": name, "similarity": sim,
+                                  "track_id": tid, "embedding": f["embedding"]})
+        self.identity.purge(cam_id, track_ids, now)
+
+        # Plates → throttled logging
+        plates_out = fa.plates if self.is_model_enabled("license_plate_recognizer", cam_id) else []
+        for p in plates_out:
+            text = p.get("plate_text", "")
+            if len(text) >= 2:
+                key = (cam_id, text)
+                if now - self._plate_last_logged.get(key, 0.0) >= self.plate_log_interval_s:
+                    self._plate_last_logged[key] = now
+                    self.plate_db.log_plate(text, cam_id, p.get("confidence", 0.0), 1.0)
+
+        # Zone crossing on tracked centroids (zones are defined in main-stream pixels)
+        zone_on = self.is_model_enabled("zone_crossing", cam_id) and self._zone_crossing is not None
+        if zone_on and self._zone_crossing.has_zones_for_camera(cam_id):
+            sx, sy = self._zone_scale(cam_id, fa.frame_size)
+            for p in persons:
+                if p["track_id"] is not None:
+                    b = p["bbox"]
+                    self._zone_crossing.update(cam_id, p["track_id"],
+                                               ((b[0] + b[2]) / 2.0 * sx, (b[1] + b[3]) / 2.0 * sy))
+            self._zone_crossing.purge_stale_tracks(cam_id, track_ids)
+
+        with self._state_lock:
+            self._latest[cam_id] = {"ts": now, "persons": len(persons), "faces": faces_out,
+                                    "known_faces": sum(1 for f in faces_out if f["name"] != "Unknown"),
+                                    "plates": len(plates_out), "frame_size": fa.frame_size}
+
+        # Preview: only download/draw the frame when somebody is watching
+        if self.preview.wants_frame(cam_id, now):
+            frame = get_image()
+            if frame is not None:
+                self.preview.submit(cam_id, frame, self._render_packet(cam_id, persons, faces_out, plates_out,
+                                                                       zone_on, fa.frame_size))
+
+    def _zone_scale(self, cam_id: str, frame_size: Tuple[int, int]) -> Tuple[float, float]:
+        """Factor mapping decoded-frame pixels to main-stream pixels (zone coordinates)."""
+        fw, fh = frame_size
+        if not fw or not fh:
+            return 1.0, 1.0
+        cam_cfg = next((c for c in self._camera_cfgs(False) if c["id"] == cam_id), {})
+        mw, mh = _res(cam_cfg.get("main_resolution"), (fw, fh))
+        return mw / fw, mh / fh
+
+    def _render_packet(self, cam_id, persons, faces, plates, zone_on, frame_size=(0, 0)) -> Dict[str, Any]:
+        show_boxes = self.is_model_enabled("human_detector", cam_id)
+        show_pose = self.is_model_enabled("pose_estimator", cam_id)
+        cam_cfg = next((c for c in self._camera_cfgs(False) if c["id"] == cam_id), {})
+        return {
+            "detections": [{"bbox": p["bbox"], "confidence": p["confidence"], "track_id": p["track_id"]}
+                           for p in persons] if show_boxes else [],
+            "poses": [{"keypoints": p["keypoints"]} for p in persons
+                      if p.get("keypoints") is not None] if show_pose else [],
+            "faces": [{"bbox": f["bbox"], "name": f["name"], "similarity": f["similarity"]} for f in faces],
+            "plates": plates,
+            "zones": self._scaled_zones(cam_id, frame_size) if zone_on else [],
+            "zone_counts": self._zone_crossing.get_zone_counts(cam_id) if zone_on else {},
+            "stream_title": cam_cfg.get("name", cam_id),
+            "fps": float(self.runtime.camera_fps.get(cam_id, 0.0)),
+        }
+
+    def _scaled_zones(self, cam_id: str, frame_size: Tuple[int, int]) -> List[Dict[str, Any]]:
+        zones = self._zone_crossing.get_zones_for_camera(cam_id)
+        sx, sy = self._zone_scale(cam_id, frame_size)
+        if sx == 1.0 and sy == 1.0:
+            return zones
+        return [dict(z, points=[[int(x / sx), int(y / sy)] for x, y in z.get("points", [])]) for z in zones]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Enrollment
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def enroll_identity(self, name: str, image: Optional[np.ndarray] = None,
+                        cam_id: Optional[str] = None) -> Tuple[bool, str]:
+        """Enrolls from an uploaded image (runs RetinaFace+FaceNet on the AIPU) or from
+        the largest face currently visible on ``cam_id`` (no extra inference)."""
+        if not name:
+            return False, "Identity name is required"
+        emb = None
+        if image is not None:
+            try:
+                emb = self.runtime.embed_face_image(image)
+            except Exception as e:
+                return False, f"Enrollment inference failed: {e}"
+            if emb is None:
+                return False, "No face detected in the image"
+        else:
+            with self._state_lock:
+                cams = [cam_id] if cam_id and cam_id != "all" else list(self._latest)
+                faces = [f for c in cams for f in self._latest.get(c, {}).get("faces", [])
+                         if f.get("embedding") is not None]
+            if not faces:
+                return False, "No face with an embedding is currently visible (is face recognition enabled?)"
+            best = max(faces, key=lambda f: (f["bbox"][2] - f["bbox"][0]) * (f["bbox"][3] - f["bbox"][1]))
+            emb = best["embedding"]
+        self.face_db.add_identity(name, emb)
+        return True, f"Successfully enrolled '{name}'."
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Status
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def get_stats(self) -> Dict[str, Any]:
+        with self._state_lock:
+            latest = dict(self._latest)
+        return {
+            "persons": sum(v["persons"] for v in latest.values()),
+            "faces_recognized": sum(v["known_faces"] for v in latest.values()),
+            "plates": sum(v["plates"] for v in latest.values()),
+            "total_fps": round(sum(self.runtime.camera_fps.values()), 1),
+        }
+
+    def get_runtime_metrics(self) -> Dict[str, Any]:
+        return self.runtime.metrics()
 
     def get_models_status(self) -> List[Dict[str, Any]]:
-        """Returns status, specs, and telemetry of all registered AI inference models."""
-        models_cfg = self.config.get("models", {})
-        det_cfg   = models_cfg.get("human_detector", {})
-        pose_cfg  = models_cfg.get("pose_estimator", {})
-        face_cfg  = models_cfg.get("face_recognizer", {})
-        kpt_cfg   = models_cfg.get("keypoint_detector", {})
-        y11_cfg   = models_cfg.get("yolo11n_detector", {})
-        y5n_cfg   = models_cfg.get("yolov5n_detector", {})
-        lpr_cfg   = models_cfg.get("license_plate_recognizer", {})
+        """Returns status and specs of all inference models / analytics."""
+        plan = self.plan or self.compute_plan()
+        backend = self.runtime.backend
+        pose_model = plan.tier.pose_model
+        pose_label = "YOLOv8s-Pose" if pose_model == "yolov8spose" else "YOLOv8n-Pose"
+        cadence = f"{plan.fps} FPS/camera ({plan.tier.name})"
+        res = "640x640" + (" + SAHI tiles" if plan.tier.tiling else "")
+        running = self.is_running
+        zone_count = len(self.config.get("zone_crossing", {}).get("zones", []) or [])
 
-        def _backend(obj, attr="engine"):
-            return getattr(getattr(obj, attr, None), "backend", "Unknown") if obj else "Not Loaded"
-
-        det_en   = self.is_model_enabled("human_detector")
-        pose_en  = self.is_model_enabled("pose_estimator")
-        face_en  = self.is_model_enabled("face_recognizer")
-        kpt_en   = self.is_model_enabled("keypoint_detector")
-        y11_en   = self.is_model_enabled("yolo11n_detector")
-        y5n_en   = self.is_model_enabled("yolov5n_detector")
-        lpr_en   = self.is_model_enabled("license_plate_recognizer")
-        zone_en  = self.is_model_enabled("zone_crossing")
-
-        model_name_str = str(det_cfg.get("model_name", "yolov8n.pt")).lower()
-        det_display = "YOLO11 Ultra-Light Detector" if "yolo11" in model_name_str else "YOLOv8 Human Detector"
-        det_cadence = "Every frame (1:1)" if self.detect_interval == 1 else f"Every {self.detect_interval} frames"
-
-        zone_zone_count = len(self._zone_crossing.get_zones_for_camera(None) if False else []) \
-            if self._zone_crossing else 0
-        # Count total configured zones from config
-        zone_count = len(self.config.get("zone_crossing", {}).get("zones", []))
+        def st(mid):
+            return self.is_model_enabled(mid)
 
         return [
             {
-                "id": "human_detector",
-                "name": det_display,
-                "task": "Object Detection",
-                "description": "Primary human detector — bounding box localization & confidence scoring",
-                "enabled": det_en,
-                "inferencing": det_en and self.is_running,
-                "backend": _backend(self.detector),
-                "weights": det_cfg.get("axm_path") or det_cfg.get("model_name", "yolov8n.pt"),
-                "model_profile": det_cfg.get("model_profile", "ultra_light"),
-                "input_size": det_cfg.get("input_size", [320, 320]),
-                "conf_threshold": det_cfg.get("conf_threshold", 0.45),
-                "fps_cadence": det_cadence,
-                "detect_interval": self.detect_interval,
-                "icon": "user-check",
-                "category": "primary"
+                "id": "human_detector", "name": f"{pose_label} Person Detector", "task": "Object Detection",
+                "description": "Person boxes from the shared YOLOv8-pose model (INT8 on Metis) + OC-SORT tracking",
+                "enabled": st("human_detector"), "inferencing": running, "backend": backend,
+                "weights": f"{pose_model} (INT8 PTQ .axm)", "input_size": [640, 640], "resolution": res,
+                "conf_threshold": self.config.get("voyager", {}).get("thresholds", {}).get("person_conf", 0.4),
+                "fps_cadence": cadence, "model_profile": self.performance_profile, "capacity": plan.to_dict(),
+                "icon": "user-check", "category": "primary",
             },
             {
-                "id": "pose_estimator",
-                "name": "YOLOv8-Pose Estimator",
-                "task": "Pose Estimation",
-                "description": "17-keypoint skeletal joint tracking (YOLOv8n-Pose)",
-                "enabled": pose_en,
-                "inferencing": pose_en and self.is_running,
-                "backend": _backend(self.pose_estimator),
-                "weights": pose_cfg.get("axm_path") or pose_cfg.get("model_name", "yolov8n-pose.pt"),
-                "input_size": pose_cfg.get("input_size", [512, 512]),
-                "conf_threshold": pose_cfg.get("conf_threshold", 0.50),
-                "fps_cadence": f"Every {self.pose_interval} frames",
-                "icon": "activity",
-                "category": "primary",
-                "mutex_group": "pose"
+                "id": "pose_estimator", "name": f"{pose_label} Keypoints", "task": "Pose Estimation",
+                "description": "17-keypoint skeletons from the same model pass (toggle controls overlay only)",
+                "enabled": st("pose_estimator"), "inferencing": running, "backend": backend,
+                "weights": f"{pose_model} (INT8 PTQ .axm)", "input_size": [640, 640],
+                "fps_cadence": cadence, "icon": "activity", "category": "primary",
             },
             {
-                "id": "face_recognizer",
-                "name": "ArcFace Facial Recognizer",
-                "task": "Biometric Identification",
-                "description": "512-d facial embedding extraction and identity matching",
-                "enabled": face_en,
-                "inferencing": face_en and self.is_running,
-                "backend": _backend(self.face_recognizer, "embedder_engine"),
-                "weights": face_cfg.get("embedder_axm") or face_cfg.get("embedder_onnx", "arcface_mobilefacenet.onnx"),
-                "input_size": face_cfg.get("input_size", [112, 112]),
-                "match_threshold": face_cfg.get("match_threshold", 0.60),
-                "fps_cadence": f"Every {self.face_interval} frames",
-                "icon": "smile",
-                "category": "primary"
-            },
-            # ── Model Zoo ──────────────────────────────────────────────────────
-            {
-                "id": "yolo11n_detector",
-                "name": "YOLO11n Ultra-Light Detector",
-                "task": "Object Detection",
-                "description": "YOLO11n (C2PSA attention) @ 320×320 — model zoo alternative detector",
-                "enabled": y11_en,
-                "inferencing": y11_en and self.is_running,
-                "backend": _backend(self._yolo11n_detector),
-                "weights": y11_cfg.get("onnx_path", "models/onnx/yolo11n_320.onnx"),
-                "model_profile": "yolo11_ultra_light",
-                "input_size": y11_cfg.get("input_size", [320, 320]),
-                "conf_threshold": y11_cfg.get("conf_threshold", 0.45),
-                "icon": "cpu",
-                "category": "model_zoo"
+                "id": "face_recognizer", "name": "RetinaFace + FaceNet Recognizer", "task": "Biometric Identification",
+                "description": "RetinaFace-mb0.25 detection → face alignment → 512-d FaceNet embeddings on Metis",
+                "enabled": st("face_recognizer"), "inferencing": running and st("face_recognizer"),
+                "backend": backend, "weights": "retinaface-mb0.25 + facenet-vggface2 (INT8)",
+                "input_size": [160, 160], "match_threshold": self.match_threshold,
+                "fps_cadence": cadence, "icon": "smile", "category": "primary",
             },
             {
-                "id": "yolov5n_detector",
-                "name": "YOLOv5n Extreme-Light Detector",
-                "task": "Object Detection",
-                "description": "YOLOv5n @ 320×320 — 1.8M params, lowest compute footprint",
-                "enabled": y5n_en,
-                "inferencing": y5n_en and self.is_running,
-                "backend": _backend(self._yolov5n_detector),
-                "weights": y5n_cfg.get("onnx_path", "models/onnx/yolov5n_320.onnx"),
-                "model_profile": "extreme_light",
-                "input_size": y5n_cfg.get("input_size", [320, 320]),
-                "conf_threshold": y5n_cfg.get("conf_threshold", 0.45),
-                "icon": "zap",
-                "category": "model_zoo"
+                "id": "license_plate_recognizer", "name": "License Plate Recognition", "task": "OCR / Identification",
+                "description": "YOLOv8n plate detector → LPRNet OCR on Metis (zoo weights trained on CCPD plates)",
+                "enabled": st("license_plate_recognizer"),
+                "inferencing": running and st("license_plate_recognizer"), "backend": backend,
+                "weights": "yolov8n-license-plate + lprnet (INT8)", "input_size": [640, 640],
+                "fps_cadence": cadence, "icon": "hash", "category": "model_zoo",
             },
             {
-                "id": "keypoint_detector",
-                "name": "YOLO11n-Pose Keypoint Detector",
-                "task": "Pose Estimation",
-                "description": "YOLO11n-Pose @ 512×512 — model zoo alternative (mutually exclusive with YOLOv8-Pose)",
-                "enabled": kpt_en,
-                "inferencing": kpt_en and self.is_running,
-                "backend": _backend(self._keypoint_detector),
-                "weights": kpt_cfg.get("onnx_path", "models/onnx/yolo11n-pose_512.onnx"),
-                "input_size": kpt_cfg.get("input_size", [512, 512]),
-                "conf_threshold": kpt_cfg.get("conf_threshold", 0.50),
-                "fps_cadence": f"Every {self.pose_interval} frames",
-                "icon": "git-branch",
-                "category": "model_zoo",
-                "mutex_group": "pose"
-            },
-            {
-                "id": "license_plate_recognizer",
-                "name": "License Plate Recognition",
-                "task": "OCR / Identification",
-                "description": "YOLOv8n plate detector + CRNN OCR — reads and logs vehicle license plates",
-                "enabled": lpr_en,
-                "inferencing": lpr_en and self.is_running,
-                "backend": _backend(self._lpr, "detector_engine") if self._lpr else "Not Loaded",
-                "weights": lpr_cfg.get("detector_onnx", "models/onnx/yolov8n-plate.onnx"),
-                "input_size": lpr_cfg.get("detector_input_size", [640, 640]),
-                "conf_threshold": lpr_cfg.get("conf_threshold", 0.45),
-                "icon": "hash",
-                "category": "model_zoo"
-            },
-            {
-                "id": "zone_crossing",
-                "name": "Zone Crossing Detection",
-                "task": "Analytics",
-                "description": f"Virtual line/polygon zone crossing detection — {zone_count} zone(s) configured",
-                "enabled": zone_en,
-                "inferencing": zone_en and self.is_running,
-                "backend": "rule_based",
-                "weights": "N/A (rule-based)",
-                "zone_count": zone_count,
-                "icon": "layers",
-                "category": "analytics"
+                "id": "zone_crossing", "name": "Zone Crossing Detection", "task": "Analytics",
+                "description": f"Line/polygon crossing on OC-SORT tracks — {zone_count} zone(s) configured",
+                "enabled": st("zone_crossing"), "inferencing": running and st("zone_crossing"),
+                "backend": "rule_based", "weights": "N/A (rule-based)", "zone_count": zone_count,
+                "icon": "layers", "category": "analytics",
             },
         ]
 
@@ -460,211 +559,23 @@ class MultiCameraPipeline:
     # ─────────────────────────────────────────────────────────────────────────
 
     def start(self):
-        """Starts multi-camera capture and processing loop."""
-        self.stream_manager.start()
+        """Plans capacity and starts the inference runtime."""
         self.is_running = True
-
-        for cam_id in self.stream_manager.cameras.keys():
-            self.trackers[cam_id] = ByteTracker(
-                track_thresh=self.config.get("tracking", {}).get("track_thresh", 0.5)
-            )
-            self.frame_counters[cam_id] = 0
-            self.cached_detections[cam_id] = []
-            self.cached_poses[cam_id] = []
-            self.face_cache[cam_id] = {}
-
+        self.plan = None
+        try:
+            self.replan_now()
+        except Exception:
+            self.is_running = False
+            raise
+        self._replan_thread = threading.Thread(target=self._replan_worker, name="replan", daemon=True)
+        self._replan_thread.start()
         print("[PIPELINE SUCCESS] System initialized and actively processing streams.")
-
-    def process_step(self) -> Dict[str, np.ndarray]:
-        """
-        Executes one processing step across all active camera streams.
-        Only models that are enabled perform inference.
-        :return: Dict of camera_id -> rendered frame numpy array
-        """
-        frames = self.stream_manager.get_all_frames()
-        output_frames = {}
-
-        for cam_id, frame in frames.items():
-            cam_obj = self.stream_manager.cameras.get(cam_id)
-            cam_name = cam_obj.name if cam_obj else cam_id
-            fps = cam_obj.fps if cam_obj else 0.0
-
-            self.frame_counters[cam_id] = self.frame_counters.get(cam_id, 0) + 1
-            curr_frame_idx = self.frame_counters[cam_id]
-
-            # ── Step A: Human Detection ───────────────────────────────────────
-            active_detector = self._get_active_detector()
-            det_model_en = (
-                self.is_model_enabled("human_detector", cam_id) or
-                self.is_model_enabled("yolo11n_detector", cam_id) or
-                self.is_model_enabled("yolov5n_detector", cam_id)
-            ) and active_detector is not None
-
-            if det_model_en:
-                should_detect = (curr_frame_idx % self.detect_interval == 0) or not self.cached_detections.get(cam_id)
-                if should_detect:
-                    raw_detections = active_detector.detect(frame)
-                    if cam_id in self.trackers:
-                        detections = self.trackers[cam_id].update(raw_detections) if raw_detections else []
-                    else:
-                        detections = raw_detections
-                    self.cached_detections[cam_id] = detections
-                else:
-                    if cam_id in self.trackers:
-                        active_tracks = self.trackers[cam_id].get_active_tracks()
-                        detections = active_tracks if active_tracks else self.cached_detections.get(cam_id, [])
-                    else:
-                        detections = self.cached_detections.get(cam_id, [])
-            else:
-                detections = []
-                self.cached_detections[cam_id] = []
-
-            # ── Step B: Pose Estimation (active backend — poses mutex enforced) ──
-            pose_backend = self._get_active_pose_backend()
-            if pose_backend is not None and (
-                self.is_model_enabled("pose_estimator", cam_id) or
-                self.is_model_enabled("keypoint_detector", cam_id)
-            ):
-                if curr_frame_idx % self.pose_interval == 0 or not self.cached_poses.get(cam_id):
-                    poses = pose_backend.estimate_pose(frame)
-                    self.cached_poses[cam_id] = poses
-                else:
-                    poses = self.cached_poses.get(cam_id, [])
-            else:
-                poses = []
-                self.cached_poses[cam_id] = []
-
-            # ── Step C: Face Recognition ──────────────────────────────────────
-            active_faces = []
-            if self.is_model_enabled("face_recognizer", cam_id) and self.face_recognizer:
-                if self.is_model_enabled("human_detector", cam_id) or \
-                   self.is_model_enabled("yolo11n_detector", cam_id) or \
-                   self.is_model_enabled("yolov5n_detector", cam_id):
-                    person_boxes = []
-                    uncached_person_boxes = []
-                    for d in detections:
-                        bbox = d["bbox"]
-                        track_id = d.get("track_id")
-                        person_boxes.append(bbox)
-                        if track_id is None or track_id not in self.face_cache.get(cam_id, {}):
-                            uncached_person_boxes.append(bbox)
-
-                    if curr_frame_idx % self.face_interval == 0 or uncached_person_boxes:
-                        target_boxes = uncached_person_boxes if (curr_frame_idx % self.face_interval != 0) else person_boxes
-                        if target_boxes:
-                            new_faces = self.face_recognizer.recognize_faces_in_frame(frame, person_bboxes=target_boxes)
-                            for face in new_faces:
-                                f_box = face["bbox"]
-                                for d in detections:
-                                    if self._bbox_overlap(f_box, d["bbox"]) > 0.3:
-                                        tid = d.get("track_id")
-                                        if tid:
-                                            self.face_cache[cam_id][tid] = face
-
-                    for d in detections:
-                        tid = d.get("track_id")
-                        if tid and tid in self.face_cache.get(cam_id, {}):
-                            face_info = self.face_cache[cam_id][tid].copy()
-                            x1, y1, x2, y2 = d["bbox"]
-                            head_h = int((y2 - y1) * 0.35)
-                            face_info["bbox"] = [x1, y1, x2, y1 + head_h]
-                            active_faces.append(face_info)
-                else:
-                    if curr_frame_idx % self.face_interval == 0:
-                        active_faces = self.face_recognizer.recognize_faces_in_frame(frame, person_bboxes=None)
-            else:
-                self.face_cache[cam_id] = {}
-
-            # ── Step D: License Plate Recognition ────────────────────────────
-            plates = []
-            if self.is_model_enabled("license_plate_recognizer", cam_id) and self._lpr:
-                person_bboxes = [d["bbox"] for d in detections] if detections else None
-                plates = self._lpr.detect_plates(frame, person_bboxes=person_bboxes)
-                # Log to plate DB
-                for plate in plates:
-                    if plate.get("plate_text"):
-                        self.plate_db.log_plate(
-                            plate["plate_text"], cam_id,
-                            plate.get("confidence", 0.0),
-                            plate.get("ocr_confidence", 0.0)
-                        )
-
-            # ── Step E: Zone Crossing ──────────────────────────────────────────
-            zone_events = []
-            if self.is_model_enabled("zone_crossing", cam_id) and self._zone_crossing:
-                if self._zone_crossing.has_zones_for_camera(cam_id) and detections:
-                    active_track_ids = []
-                    for d in detections:
-                        tid = d.get("track_id")
-                        if tid is not None:
-                            active_track_ids.append(tid)
-                            bbox = d["bbox"]
-                            centroid = ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0)
-                            events = self._zone_crossing.update(cam_id, tid, centroid)
-                            zone_events.extend(events)
-                    self._zone_crossing.purge_stale_tracks(cam_id, active_track_ids)
-
-            # ── Step F: Visualization ──────────────────────────────────────────
-            zone_defs = []
-            if self.is_model_enabled("zone_crossing", cam_id) and self._zone_crossing:
-                zone_defs = self._zone_crossing.get_zones_for_camera(cam_id)
-
-            rendered = self.visualizer.draw_frame(
-                frame=frame,
-                detections=detections,
-                poses=poses,
-                faces=active_faces,
-                plates=plates,
-                zones=zone_defs,
-                zone_counts=self._zone_crossing.get_zone_counts(cam_id) if self._zone_crossing else {},
-                stream_title=f"{cam_name}",
-                fps=fps
-            )
-
-            output_frames[cam_id] = rendered
-
-        return output_frames
-
-    @staticmethod
-    def _bbox_overlap(b1: List[float], b2: List[float]) -> float:
-        """Calculates area overlap ratio between face box and person box."""
-        x1 = max(b1[0], b2[0])
-        y1 = max(b1[1], b2[1])
-        x2 = min(b1[2], b2[2])
-        y2 = min(b1[3], b2[3])
-        inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-        area1 = (b1[2] - b1[0]) * (b1[3] - b1[1])
-        return inter / area1 if area1 > 0 else 0.0
-
-    def compose_grid(self, frames_dict: Dict[str, np.ndarray], grid_w: int = 1280, grid_h: int = 720) -> np.ndarray:
-        """Combines multiple camera outputs into a single tiled grid layout."""
-        if not frames_dict:
-            blank = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
-            cv2.putText(blank, "No Active Camera Streams", (grid_w // 2 - 200, grid_h // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
-            return blank
-
-        frames_list = list(frames_dict.values())
-        num_streams = len(frames_list)
-
-        if num_streams == 1:
-            return cv2.resize(frames_list[0], (grid_w, grid_h))
-
-        cols = 2 if num_streams <= 4 else 3
-        rows = int(np.ceil(num_streams / cols))
-        tile_w = grid_w // cols
-        tile_h = grid_h // rows
-
-        grid = np.zeros((tile_h * rows, tile_w * cols, 3), dtype=np.uint8)
-        for idx, frame in enumerate(frames_list):
-            r = idx // cols
-            c = idx % cols
-            tile = cv2.resize(frame, (tile_w, tile_h))
-            grid[r * tile_h:(r + 1) * tile_h, c * tile_w:(c + 1) * tile_w] = tile
-
-        return cv2.resize(grid, (grid_w, grid_h))
 
     def stop(self):
         """Stops the processing pipeline."""
         self.is_running = False
-        self.stream_manager.stop()
+        self._replan_evt.set()
+        try:
+            self.runtime.stop()
+        finally:
+            self.preview.stop()

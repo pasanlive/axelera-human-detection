@@ -1,1 +1,13 @@
 __pycache__
+.DS_Store
+
+# Voyager build artifacts (quantized .axm models, manifests) and generated networks
+build/
+voyager/networks/
+
+# Data
+data/calibration/
+data/ssl/
+data/*.legacy.json
+data/face_db.json.tmp
+snapshot_*.jpg

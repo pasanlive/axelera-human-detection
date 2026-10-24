@@ -1,17 +1,17 @@
-# Core Computer Vision & Deep Learning Dependencies
+# Runtime dependencies (Metis host).
+#
+# The Axelera Voyager SDK 1.6 (axelera.app, GStreamer plugins, compiler) is NOT on PyPI:
+# install it with the SDK installer and run the app from its virtualenv:
+#   source ~/voyager-sdk/venv/bin/activate && pip install -r requirements.txt
+# On RK3588 also install the Rockchip MPP GStreamer plugins for hardware decode:
+#   sudo apt install gstreamer1.0-rockchip1   (package name varies by BSP)
+#
+# No PyTorch / Ultralytics / ONNXRuntime: all inference runs on the Metis AIPU.
 numpy>=1.23.0
-opencv-python>=4.8.0
+opencv-python>=4.8.0      # preview overlay drawing + JPEG encoding only
 pyyaml>=6.0
-torch>=2.0.0
-ultralytics>=8.0.0
-onnxruntime>=1.15.0
-scipy>=1.10.0
-Pillow>=9.5.0
 
 # Web Dashboard Server Dependencies
 Flask>=2.3.0
 Flask-CORS>=4.0.0
 psutil>=5.9.0
-
-# Axelera Metis NPU Hardware SDK (Install from Axelera SDK package / wheels directory)
-# Example: pip install voyager-*.whl  (or install via Axelera Voyager SDK installer)

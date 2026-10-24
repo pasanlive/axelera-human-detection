@@ -1,23 +1,30 @@
 """
 WebServer: Low-Latency MJPEG Web Streaming and REST API for Axelera Metis System.
 Supports HTTPS SSL encryption, Flask, and native Python http.server fallback for secure remote local network access.
+
+All REST endpoints are implemented once in :meth:`WebServer.handle_api` and served
+by either Flask or the zero-dependency native server. Video previews are rendered
+on demand by the pipeline's PreviewHub: a camera is only annotated/encoded while
+at least one browser is watching it.
 """
 
-import os
-import sys
-import time
+import base64
 import json
+import os
 import socket
-import threading
-import subprocess
 import ssl
-from typing import Dict, Any, Generator, Tuple, Optional
+import subprocess
+import threading
+import time
+import urllib.parse
+from typing import Any, Dict, Generator, Optional, Tuple
+
 import cv2
 import numpy as np
 
 # Optional Flask support
 try:
-    from flask import Flask, render_template, Response, jsonify, request, send_file
+    from flask import Flask, Response, jsonify, render_template, request
     try:
         from flask_cors import CORS
         FLASK_CORS_AVAILABLE = True
@@ -28,8 +35,11 @@ except ImportError:
     FLASK_AVAILABLE = False
 
 # Fallback Python standard library HTTP server
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+
+AIPU_TOPS_MAX = 214.0
+AIPU_CORES = 4
 
 
 def get_local_ip() -> str:
@@ -45,136 +55,102 @@ def get_local_ip() -> str:
 
 
 def get_hardware_backend_name(pipeline) -> str:
-    """Detects active hardware execution backend dynamically."""
-    if not pipeline:
-        return "Axelera Metis AIPU (4 Cores)"
-    detector = getattr(pipeline, 'detector', None)
-    if detector and hasattr(detector, 'engine'):
-        b = getattr(detector.engine, 'backend', 'unknown')
-        if b == 'onnxruntime':
-            return "ONNXRuntime (CPU/GPU Fallback)"
-        elif b == 'pytorch_virtual':
-            return "PyTorch Virtual Simulation"
-        elif b == 'axelera_voyager':
-            return "Axelera Metis AIPU (4 Cores)"
-    return "Axelera Metis AIPU (4 Cores)"
+    """Describes the active inference backend."""
+    backend = getattr(getattr(pipeline, "runtime", None), "backend", None)
+    if backend == "axelera_voyager":
+        return "Axelera Metis AIPU (Voyager SDK, 4 Cores)"
+    if backend == "simulation":
+        return "SIMULATION (no AIPU inference)"
+    return "Inference backend unavailable"
 
 
-def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
-    """
-    Gathers real-time system & hardware telemetry:
-    - RAM usage (used_gb, total_gb, percent)
-    - CPU usage (percent)
-    - AIPU usage (active_cores, load_percent, tops_current, tops_max)
-    - System / Chip Temperature (°C)
-    """
-    ram_used_gb, ram_total_gb, ram_percent = 2.5, 8.0, 31.0
-    try:
-        import psutil
-        mem = psutil.virtual_memory()
-        ram_used_gb = round(mem.used / (1024**3), 2)
-        ram_total_gb = round(mem.total / (1024**3), 2)
-        ram_percent = round(mem.percent, 1)
-    except Exception:
-        pass
-
-    cpu_percent = 25.0
-    try:
-        import psutil
-        cpu_percent = round(psutil.cpu_percent(interval=None), 1)
-    except Exception:
-        pass
-
+def _host_telemetry() -> Dict[str, Any]:
+    ram_used_gb = ram_total_gb = ram_percent = cpu_percent = 0.0
     temp_c = None
     try:
         import psutil
+        mem = psutil.virtual_memory()
+        ram_used_gb = round(mem.used / (1024 ** 3), 2)
+        ram_total_gb = round(mem.total / (1024 ** 3), 2)
+        ram_percent = round(mem.percent, 1)
+        cpu_percent = round(psutil.cpu_percent(interval=None), 1)
         if hasattr(psutil, "sensors_temperatures"):
-            temps = psutil.sensors_temperatures()
-            for key, entries in temps.items():
+            for entries in (psutil.sensors_temperatures() or {}).values():
                 if entries and entries[0].current > 0:
                     temp_c = round(entries[0].current, 1)
                     break
     except Exception:
         pass
-
     if temp_c is None:
+        for zone_id in range(4):
+            path = f"/sys/class/thermal/thermal_zone{zone_id}/temp"
+            try:
+                with open(path) as f:
+                    val = float(f.read().strip())
+                temp_c = round(val / 1000.0, 1) if val > 1000 else round(val, 1)
+                break
+            except Exception:
+                continue
+    return {"ram": {"used_gb": ram_used_gb, "total_gb": ram_total_gb, "percent": ram_percent},
+            "cpu_percent": cpu_percent, "host_temperature_c": temp_c}
+
+
+def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
+    """
+    Gathers real-time system & hardware telemetry:
+    - RAM / CPU usage of the RK3588 host
+    - Metis core temperature and per-core device FPS from Voyager tracers
+    - AIPU load: planned utilisation scaled by achieved vs planned throughput
+      (Voyager does not expose a direct utilisation counter; marked as ``estimated``)
+    """
+    out = _host_telemetry()
+    metrics = {}
+    plan = None
+    stats = {}
+    if pipeline is not None:
         try:
-            for zone_id in range(4):
-                path = f"/sys/class/thermal/thermal_zone{zone_id}/temp"
-                if os.path.exists(path):
-                    with open(path, "r") as f:
-                        val = float(f.read().strip())
-                        temp_c = round(val / 1000.0, 1) if val > 1000 else round(val, 1)
-                        break
+            metrics = pipeline.get_runtime_metrics() or {}
+            plan = pipeline.plan
+            stats = pipeline.get_stats()
         except Exception:
             pass
 
-    if temp_c is None:
-        temp_c = round(41.5 + (cpu_percent * 0.1), 1)
+    core_temp = metrics.get("core_temp", {}).get("value")
+    out["temperature_c"] = round(core_temp, 1) if core_temp else out.get("host_temperature_c")
+    out["temperature_source"] = "metis_core" if core_temp else "host"
 
-    is_running = getattr(pipeline, 'is_running', True) if pipeline else True
-    is_npu_active = False
-    if pipeline and hasattr(pipeline, 'detector') and hasattr(pipeline.detector, 'engine'):
-        backend_name = getattr(pipeline.detector.engine, 'backend', 'unknown')
-        if backend_name == 'axelera_voyager':
-            is_npu_active = True
+    running = bool(getattr(pipeline, "is_running", False))
+    load = 0.0
+    if running and plan is not None and plan.fps > 0:
+        planned_total = plan.fps * sum(len(g.camera_ids) for g in plan.groups)
+        achieved = float(stats.get("total_fps", 0.0))
+        ratio = min(1.2, achieved / planned_total) if planned_total else 0.0
+        load = round(min(100.0, plan.aipu_utilization * 100.0 * ratio), 1)
 
-    active_models_ratio = 1.0
-    if pipeline and hasattr(pipeline, 'enabled_models'):
-        total_m = len(pipeline.enabled_models)
-        enabled_m = sum(1 for v in pipeline.enabled_models.values() if v)
-        active_models_ratio = (enabled_m / total_m) if total_m > 0 else 1.0
-
-    if is_running and is_npu_active and active_models_ratio > 0:
-        aipu_cores = 4
-        base_load = min(96.0, max(20.0, (48.0 + (cpu_percent * 0.45)) * active_models_ratio))
-        c0_load = round(min(99.0, base_load + 2.4), 1)
-        c1_load = round(min(99.0, base_load - 1.2), 1)
-        c2_load = round(min(99.0, base_load + 1.8), 1)
-        c3_load = round(min(99.0, base_load - 2.1), 1)
-        core_loads = [c0_load, c1_load, c2_load, c3_load]
-
-        aipu_load_percent = round(sum(core_loads) / 4.0, 1)
-        aipu_tops_max = 214.0
-        aipu_tops_current = round(aipu_tops_max * (aipu_load_percent / 100.0), 1)
-        
-        per_core_info = []
-        for i, c_load in enumerate(core_loads):
-            c_tops = round(53.5 * (c_load / 100.0), 1)
-            per_core_info.append({
-                "core_id": i,
-                "name": f"Core {i}",
-                "load_percent": c_load,
-                "tops_current": c_tops,
-                "tops_max": 53.5,
-                "active": True
-            })
-    else:
-        aipu_cores = 4
-        aipu_load_percent = 0.0
-        aipu_tops_max = 214.0
-        aipu_tops_current = 0.0
-        per_core_info = [
-            {"core_id": i, "name": f"Core {i}", "load_percent": 0.0, "tops_current": 0.0, "tops_max": 53.5, "active": False}
-            for i in range(4)
-        ]
-
-    return {
-        "ram": {
-            "used_gb": ram_used_gb,
-            "total_gb": ram_total_gb,
-            "percent": ram_percent
-        },
-        "cpu_percent": cpu_percent,
-        "temperature_c": temp_c,
-        "aipu": {
-            "cores": aipu_cores,
-            "load_percent": aipu_load_percent,
-            "tops_current": aipu_tops_current,
-            "tops_max": aipu_tops_max,
-            "per_core": per_core_info
-        }
+    per_core = []
+    for c in range(AIPU_CORES):
+        dev_fps = None
+        for key in (f"device_d0_{c}_fps", f"device_{c}_fps"):
+            if key in metrics:
+                dev_fps = metrics[key]["value"]
+                break
+        per_core.append({
+            "core_id": c, "name": f"Core {c}", "load_percent": load,
+            "tops_current": round(AIPU_TOPS_MAX / AIPU_CORES * load / 100.0, 1),
+            "tops_max": AIPU_TOPS_MAX / AIPU_CORES, "device_fps": dev_fps, "active": load > 0,
+        })
+    out["aipu"] = {
+        "cores": AIPU_CORES,
+        "load_percent": load,
+        "tops_current": round(AIPU_TOPS_MAX * load / 100.0, 1),
+        "tops_max": AIPU_TOPS_MAX,
+        "per_core": per_core,
+        "estimated": True,
+        "device_fps": metrics.get("device_fps", {}).get("value"),
+        "end_to_end_fps": metrics.get("end_to_end_fps", {}).get("value"),
     }
+    out["voyager_metrics"] = metrics
+    return out
 
 
 def ensure_self_signed_cert(cert_path: str = "data/ssl/cert.pem", key_path: str = "data/ssl/key.pem") -> Tuple[Optional[str], Optional[str]]:
@@ -226,7 +202,7 @@ IP.2 = {local_ip}
 
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, local_ip)])
-        
+
         san_list = [
             x509.DNSName(u"localhost"),
             x509.IPAddress(ipaddress.ip_address("127.0.0.1"))
@@ -281,6 +257,13 @@ IP.2 = {local_ip}
     return None, None
 
 
+def _decode_b64_image(b64_str: str) -> Optional[np.ndarray]:
+    if "," in b64_str:
+        b64_str = b64_str.split(",", 1)[1]
+    data = np.frombuffer(base64.b64decode(b64_str), np.uint8)
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
 class ThreadingSimpleServer(ThreadingMixIn, HTTPServer):
     """Multi-threaded HTTP Server for low-latency MJPEG video streaming."""
     daemon_threads = True
@@ -288,344 +271,100 @@ class ThreadingSimpleServer(ThreadingMixIn, HTTPServer):
 
 class NativeHTTPHandler(BaseHTTPRequestHandler):
     """Zero-dependency HTTP Handler for MJPEG streaming and JSON API."""
-    
+
     server_ref = None  # Reference set by WebServer
 
     def log_message(self, format, *args):
         # Suppress HTTP access logging noise in terminal
         return
 
-    def do_GET(self):
+    def _send_json(self, status: int, payload: Any):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self) -> Dict[str, Any]:
+        length = int(self.headers.get("content-length", 0) or 0)
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        except Exception:
+            return {}
+
+    def _dispatch(self, method: str):
         srv = NativeHTTPHandler.server_ref
         if not srv:
             self.send_error(500)
             return
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query = {k: v[-1] for k, v in urllib.parse.parse_qs(parsed.query).items()}
 
-        if self.path == '/' or self.path == '/index.html':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html; charset=utf-8')
-            self.end_headers()
+        if method == "GET" and path in ("/", "/index.html"):
             html_path = os.path.join(os.path.dirname(__file__), "templates", "index.html")
+            self.send_response(200)
+            self.send_header("Content-type", "text/html; charset=utf-8")
+            self.end_headers()
             if os.path.exists(html_path):
-                with open(html_path, 'rb') as f:
+                with open(html_path, "rb") as f:
                     self.wfile.write(f.read())
             else:
                 self.wfile.write(b"<h1>Axelera Metis Web Interface</h1>")
+            return
 
-        elif self.path.startswith('/video_feed'):
-            parts = self.path.split('/')
-            cam_id = parts[-1] if len(parts) > 2 and parts[-1] != 'video_feed' else 'grid'
-            
+        if method == "GET" and path.startswith("/video_feed"):
+            parts = [p for p in path.split("/") if p]
+            key = parts[1] if len(parts) > 1 else "grid"
             self.send_response(200)
-            self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=frame')
+            self.send_header("Content-type", "multipart/x-mixed-replace; boundary=frame")
             self.end_headers()
+            try:
+                for chunk in srv.mjpeg_stream(key):
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
 
-            while srv.pipeline.is_running:
-                frame_bytes = None
-                with srv.lock:
-                    if cam_id == 'grid':
-                        frame_bytes = srv.latest_grid_jpeg
-                    else:
-                        frame_bytes = srv.latest_cam_jpegs.get(cam_id)
-
-                if frame_bytes is not None:
-                    try:
-                        self.wfile.write(b'--frame\r\n')
-                        self.wfile.write(b'Content-Type: image/jpeg\r\n\r\n')
-                        self.wfile.write(frame_bytes)
-                        self.wfile.write(b'\r\n')
-                        self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError):
-                        break
-                time.sleep(1.0 / 30.0)
-
-        elif self.path == '/api/status':
+        if method == "GET" and path == "/api/snapshot":
+            jpeg = srv.snapshot()
+            if not jpeg:
+                self._send_json(404, {"error": "No frame available"})
+                return
             self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header("Content-type", "image/jpeg")
+            self.send_header("Content-Disposition", 'attachment; filename="snapshot.jpg"')
             self.end_headers()
+            self.wfile.write(jpeg)
+            return
 
-            cam_list = []
-            if hasattr(srv.pipeline, 'stream_manager'):
-                for cid, cam in srv.pipeline.stream_manager.cameras.items():
-                    is_open = getattr(cam, 'is_running', False)
-                    if hasattr(cam, 'cap') and cam.cap is not None:
-                        is_open = cam.cap.isOpened()
-                    cam_list.append({
-                        "id": cid,
-                        "name": cam.name,
-                        "fps": round(getattr(cam, 'fps', 0.0), 1),
-                        "is_opened": is_open
-                    })
+        if path.startswith("/api/"):
+            status, payload = srv.handle_api(method, path, query, self._body() if method != "GET" else {})
+            self._send_json(status, payload)
+            return
+        self.send_error(404, "Not Found")
 
-            telemetry = get_system_telemetry(srv.pipeline)
-            hw_name = get_hardware_backend_name(srv.pipeline)
-            models_status = srv.pipeline.get_models_status() if hasattr(srv.pipeline, 'get_models_status') else []
-
-            payload = {
-                "status": "online" if srv.pipeline.is_running else "offline",
-                "hardware": hw_name,
-                "fps": 30.0,
-                "active_cameras": len(cam_list),
-                "cameras": cam_list,
-                "persons_detected": srv.total_persons,
-                "faces_recognized": srv.total_faces,
-                "telemetry": telemetry,
-                "models": models_status
-            }
-            self.wfile.write(json.dumps(payload).encode('utf-8'))
-
-        elif self.path == '/api/models':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            models_status = srv.pipeline.get_models_status() if hasattr(srv.pipeline, 'get_models_status') else []
-            self.wfile.write(json.dumps({"models": models_status}).encode('utf-8'))
-
-        elif self.path == '/api/update/status':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            status = srv.auto_updater.get_status() if (hasattr(srv, 'auto_updater') and srv.auto_updater) else {"enabled": False, "status": "unavailable"}
-            self.wfile.write(json.dumps(status).encode('utf-8'))
-
-        elif self.path == '/api/identities':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            identities = srv.pipeline.face_db.list_identities() if hasattr(srv.pipeline, 'face_db') else []
-            self.wfile.write(json.dumps({"identities": identities, "count": len(identities)}).encode('utf-8'))
-
-        elif self.path == '/api/snapshot':
-            with srv.lock:
-                jpeg_data = srv.latest_grid_jpeg
-            if jpeg_data:
-                self.send_response(200)
-                self.send_header('Content-type', 'image/jpeg')
-                self.send_header('Content-Disposition', 'attachment; filename="snapshot.jpg"')
-                self.end_headers()
-                self.wfile.write(jpeg_data)
-            else:
-                self.send_error(404, "No frame available")
-
-        else:
-            self.send_error(404, "Not Found")
+    def do_GET(self):
+        self._dispatch("GET")
 
     def do_POST(self):
-        srv = NativeHTTPHandler.server_ref
-        if self.path == '/api/update/config' and srv:
-            length = int(self.headers.get('content-length', 0))
-            body = self.rfile.read(length)
-            try:
-                data = json.loads(body.decode('utf-8'))
-                if hasattr(srv, 'auto_updater') and srv.auto_updater:
-                    srv.auto_updater.update_config(data)
-                    status = srv.auto_updater.get_status()
-                else:
-                    status = {"enabled": False, "status": "unavailable"}
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps({"success": True, "status": status}).encode('utf-8'))
-            except Exception as e:
-                self.send_error(400, str(e))
-        elif self.path == '/api/update/check' and srv:
-            try:
-                res = srv.auto_updater.check_for_updates() if (hasattr(srv, 'auto_updater') and srv.auto_updater) else {"success": False, "error": "Auto-updater not initialized"}
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps(res).encode('utf-8'))
-            except Exception as e:
-                self.send_error(500, str(e))
-        elif self.path == '/api/update/install' and srv:
-            try:
-                res = srv.auto_updater.apply_update_and_restart() if (hasattr(srv, 'auto_updater') and srv.auto_updater) else {"success": False, "error": "Auto-updater not initialized"}
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps(res).encode('utf-8'))
-            except Exception as e:
-                self.send_error(500, str(e))
-        elif self.path == '/api/models/toggle' and srv:
-            length = int(self.headers.get('content-length', 0))
-            body = self.rfile.read(length)
-            try:
-                data = json.loads(body.decode('utf-8'))
-                model_id = data.get('model_id')
-                enabled = data.get('enabled', True)
-                cam_id = data.get('camera_id', 'all')
-
-                if hasattr(srv.pipeline, 'set_model_enabled'):
-                    srv.pipeline.set_model_enabled(model_id, enabled, cam_id)
-
-                vis = getattr(srv.pipeline, 'visualizer', None)
-                if vis:
-                    if model_id == 'human_detector': vis.draw_boxes = enabled
-                    elif model_id == 'pose_estimator': vis.draw_pose = enabled
-                    elif model_id == 'face_recognizer': vis.draw_faces = enabled
-
-                models_status = srv.pipeline.get_models_status() if hasattr(srv.pipeline, 'get_models_status') else []
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps({"success": True, "model_id": model_id, "enabled": enabled, "models": models_status}).encode('utf-8'))
-            except Exception as e:
-                self.send_error(500, str(e))
-        elif self.path == '/api/models/configure_detector' and srv:
-            length = int(self.headers.get('content-length', 0))
-            body = self.rfile.read(length)
-            try:
-                data = json.loads(body.decode('utf-8'))
-                profile = data.get('profile', 'ultra_light')
-                detect_interval = int(data.get('detect_interval', 2))
-
-                if profile == 'extreme_light':
-                    model_name = 'yolov5nu.pt'
-                    input_size = [320, 320]
-                    axm_path = 'models/axm/yolov5n_320.axm'
-                    onnx_path = 'models/onnx/yolov5n_320.onnx'
-                elif profile == 'ultra_light':
-                    model_name = 'yolov8n.pt'
-                    input_size = [320, 320]
-                    axm_path = 'models/axm/yolov8n_320.axm'
-                    onnx_path = 'models/onnx/yolov8n_320.onnx'
-                elif profile == 'high_precision':
-                    model_name = 'yolov8n.pt'
-                    input_size = [640, 640]
-                    axm_path = 'models/axm/yolov8n.axm'
-                    onnx_path = 'models/onnx/yolov8n.onnx'
-                else:  # balanced
-                    profile = 'balanced'
-                    model_name = 'yolov8n.pt'
-                    input_size = [512, 512]
-                    axm_path = 'models/axm/yolov8n.axm'
-                    onnx_path = 'models/onnx/yolov8n.onnx'
-
-                if hasattr(srv.pipeline, 'reload_detector_model'):
-                    srv.pipeline.reload_detector_model(
-                        model_profile=profile,
-                        model_name=model_name,
-                        input_size=input_size,
-                        axm_path=axm_path,
-                        onnx_path=onnx_path,
-                        detect_interval=detect_interval
-                    )
-
-                # Persist to config.yaml if possible
-                try:
-                    import yaml
-                    cfg_path = getattr(srv.auto_updater, 'config_path', 'config/config.yaml') if srv.auto_updater else 'config/config.yaml'
-                    if os.path.exists(cfg_path):
-                        with open(cfg_path, 'r') as f:
-                            disk_cfg = yaml.safe_load(f) or {}
-                        disk_cfg.setdefault('performance', {})['detect_interval'] = detect_interval
-                        det_cfg = disk_cfg.setdefault('models', {}).setdefault('human_detector', {})
-                        det_cfg['model_profile'] = profile
-                        det_cfg['model_name'] = model_name
-                        det_cfg['input_size'] = input_size
-                        det_cfg['axm_path'] = axm_path
-                        det_cfg['onnx_path'] = onnx_path
-                        with open(cfg_path, 'w') as f:
-                            yaml.safe_dump(disk_cfg, f, default_flow_style=False)
-                except Exception as save_err:
-                    print(f"[CONFIG SAVE NOTICE] Failed to update config.yaml: {save_err}")
-
-                models_status = srv.pipeline.get_models_status() if hasattr(srv.pipeline, 'get_models_status') else []
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps({"success": True, "profile": profile, "models": models_status}).encode('utf-8'))
-            except Exception as e:
-                self.send_error(500, str(e))
-        elif self.path == '/api/toggle' and srv:
-            length = int(self.headers.get('content-length', 0))
-            body = self.rfile.read(length)
-            try:
-                data = json.loads(body.decode('utf-8'))
-                feature = data.get('feature')
-                enabled = data.get('enabled', True)
-
-                if hasattr(srv.pipeline, 'set_model_enabled'):
-                    if feature == 'boxes': srv.pipeline.set_model_enabled('human_detector', enabled)
-                    elif feature == 'pose': srv.pipeline.set_model_enabled('pose_estimator', enabled)
-                    elif feature == 'faces': srv.pipeline.set_model_enabled('face_recognizer', enabled)
-
-                vis = getattr(srv.pipeline, 'visualizer', None)
-                if vis:
-                    if feature == 'boxes': vis.draw_boxes = enabled
-                    elif feature == 'pose': vis.draw_pose = enabled
-                    elif feature == 'faces': vis.draw_faces = enabled
-
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps({"success": True}).encode('utf-8'))
-            except Exception as e:
-                self.send_error(400, str(e))
-        elif self.path == '/api/enroll_face' and srv:
-            length = int(self.headers.get('content-length', 0))
-            body = self.rfile.read(length)
-            try:
-                import base64
-                data = json.loads(body.decode('utf-8'))
-                name = data.get('name')
-                b64_str = data.get('image_base64')
-                if not name or not b64_str:
-                    self.send_error(400, "Missing name or image_base64")
-                    return
-
-                if ',' in b64_str:
-                    b64_str = b64_str.split(',')[1]
-                img_data = base64.b64decode(b64_str)
-                file_bytes = np.frombuffer(img_data, np.uint8)
-                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
-                success = False
-                if hasattr(srv.pipeline, 'face_recognizer') and img is not None:
-                    success = srv.pipeline.face_recognizer.enroll_identity(name, img)
-
-                self.send_response(200 if success else 400)
-                self.send_header('Content-type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                if success:
-                    self.wfile.write(json.dumps({"success": True, "name": name, "message": f"Successfully enrolled '{name}'."}).encode('utf-8'))
-                else:
-                    self.wfile.write(json.dumps({"error": "Could not detect or extract face features from image."}).encode('utf-8'))
-            except Exception as e:
-                self.send_error(400, str(e))
-        else:
-            self.send_error(404)
+        self._dispatch("POST")
 
     def do_DELETE(self):
-        srv = NativeHTTPHandler.server_ref
-        if self.path.startswith('/api/identity/') and srv:
-            import urllib.parse
-            name = urllib.parse.unquote(self.path.split('/')[-1])
-            success = srv.pipeline.face_db.remove_identity(name) if hasattr(srv.pipeline, 'face_db') else False
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps({"success": success, "name": name}).encode('utf-8'))
-        else:
-            self.send_error(404)
+        self._dispatch("DELETE")
 
 
 class WebServer:
     """Web Application Server providing remote local-network streaming and API telemetry with HTTPS SSL support."""
 
-    def __init__(self, pipeline, host: str = "0.0.0.0", port: int = 8000, use_https: bool = True, cert_file: Optional[str] = "data/ssl/cert.pem", key_file: Optional[str] = "data/ssl/key.pem", auto_updater: Optional[Any] = None):
+    def __init__(self, pipeline, host: str = "0.0.0.0", port: int = 8000, use_https: bool = True,
+                 cert_file: Optional[str] = "data/ssl/cert.pem", key_file: Optional[str] = "data/ssl/key.pem",
+                 auto_updater: Optional[Any] = None):
         self.pipeline = pipeline
         self.auto_updater = auto_updater
         self.host = host
@@ -634,16 +373,9 @@ class WebServer:
         self.cert_file = cert_file or "data/ssl/cert.pem"
         self.key_file = key_file or "data/ssl/key.pem"
         self.local_ip = get_local_ip()
-
-        self.latest_grid_jpeg = None
-        self.latest_cam_jpegs: Dict[str, bytes] = {}
         self.lock = threading.Lock()
 
-        self.total_persons = 0
-        self.total_faces = 0
-
         template_dir = os.path.join(os.path.dirname(__file__), "templates")
-
         if FLASK_AVAILABLE:
             self.app = Flask(__name__, template_folder=template_dir)
             if FLASK_CORS_AVAILABLE:
@@ -652,40 +384,204 @@ class WebServer:
         else:
             self.app = None
 
-    def update_frame(self, grid_frame: np.ndarray, individual_frames: Dict[str, np.ndarray]):
-        """Thread-safe update of latest rendered frames into JPEG buffers for streaming."""
+    # ── video ────────────────────────────────────────────────────────────────
+    def mjpeg_stream(self, key: str = "grid") -> Generator[bytes, None, None]:
+        """Multipart MJPEG generator; registers as a viewer so the camera gets rendered."""
+        hub = self.pipeline.preview
+        hub.acquire(key)
+        last_seq = -1
         try:
-            if grid_frame is not None and grid_frame.size > 0:
-                ret, jpeg = cv2.imencode('.jpg', grid_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                if ret:
-                    with self.lock:
-                        self.latest_grid_jpeg = jpeg.tobytes()
+            while self.pipeline.is_running:
+                item = hub.wait_next(key, last_seq, timeout=1.0)
+                if item is None:
+                    continue
+                last_seq, jpeg = item
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+        finally:
+            hub.release(key)
 
-            if individual_frames:
-                for cam_id, frame in individual_frames.items():
-                    if frame is not None and frame.size > 0:
-                        ret, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                        if ret:
-                            with self.lock:
-                                self.latest_cam_jpegs[cam_id] = jpeg.tobytes()
-        except Exception:
-            pass
+    def snapshot(self, key: str = "grid") -> Optional[bytes]:
+        return self.pipeline.preview.snapshot(key)
 
-    def _generate_mjpeg_stream(self, cam_id: str = "grid") -> Generator[bytes, None, None]:
-        """Generates HTTP multipart MJPEG stream from latest frame buffer."""
-        while self.pipeline.is_running:
-            frame_bytes = None
-            with self.lock:
-                if cam_id == "grid":
-                    frame_bytes = self.latest_grid_jpeg
-                else:
-                    frame_bytes = self.latest_cam_jpegs.get(cam_id)
+    # ── shared API implementation ────────────────────────────────────────────
+    def _cfg_path(self) -> str:
+        return getattr(self.auto_updater, "config_path", None) or getattr(self.pipeline, "config_path", None) \
+            or "config/config.yaml"
 
-            if frame_bytes is not None:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            time.sleep(1.0 / 30.0)
+    def _status_payload(self) -> Dict[str, Any]:
+        p = self.pipeline
+        cams = p.get_camera_status()
+        stats = p.get_stats()
+        live = [c for c in cams if c["enabled"]]
+        avg_fps = (sum(c["fps"] for c in live) / len(live)) if live else 0.0
+        return {
+            "status": "online" if p.is_running else "offline",
+            "hardware": get_hardware_backend_name(p),
+            "backend": p.runtime.backend,
+            "fps": round(avg_fps, 1),
+            "total_fps": stats["total_fps"],
+            "active_cameras": len(live),
+            "cameras": cams,
+            "persons_detected": stats["persons"],
+            "faces_recognized": stats["faces_recognized"],
+            "telemetry": get_system_telemetry(p),
+            "capacity": p.get_capacity_plan(),
+            "models": p.get_models_status(),
+        }
 
+    def _sync_visualizer(self, model_id: str, enabled: bool):
+        vis = getattr(self.pipeline, "visualizer", None)
+        if not vis:
+            return
+        attr = {"human_detector": "draw_boxes", "pose_estimator": "draw_pose", "face_recognizer": "draw_faces",
+                "license_plate_recognizer": "draw_plates", "zone_crossing": "draw_zones"}.get(model_id)
+        if attr:
+            setattr(vis, attr, enabled)
+
+    def handle_api(self, method: str, path: str, query: Dict[str, str], body: Dict[str, Any]) -> Tuple[int, Any]:
+        """Single implementation of every /api endpoint (used by Flask and the native server)."""
+        p = self.pipeline
+        try:
+            # ── status / models ─────────────────────────────────────────────
+            if method == "GET" and path == "/api/status":
+                return 200, self._status_payload()
+            if method == "GET" and path == "/api/models":
+                return 200, {"models": p.get_models_status()}
+            if method == "POST" and path == "/api/models/toggle":
+                model_id = body.get("model_id")
+                enabled = bool(body.get("enabled", True))
+                p.set_model_enabled(model_id, enabled, body.get("camera_id", "all"))
+                if body.get("camera_id", "all") in (None, "all"):
+                    self._sync_visualizer(model_id, enabled)
+                return 200, {"success": True, "model_id": model_id, "enabled": enabled,
+                             "models": p.get_models_status()}
+            if method == "POST" and path == "/api/toggle":
+                model_id = {"boxes": "human_detector", "pose": "pose_estimator",
+                            "faces": "face_recognizer"}.get(body.get("feature"))
+                if model_id:
+                    enabled = bool(body.get("enabled", True))
+                    p.set_model_enabled(model_id, enabled)
+                    self._sync_visualizer(model_id, enabled)
+                return 200, {"success": True, "feature": body.get("feature"), "enabled": body.get("enabled", True)}
+
+            # ── capacity / performance profile ──────────────────────────────
+            if method == "GET" and path == "/api/capacity":
+                return 200, p.get_capacity_plan()
+            if method == "POST" and path in ("/api/capacity/profile", "/api/models/configure_detector"):
+                plan = p.set_performance_profile(body.get("profile", "auto"))
+                return 200, {"success": True, "profile": p.performance_profile, "capacity": plan,
+                             "models": p.get_models_status()}
+
+            # ── cameras ─────────────────────────────────────────────────────
+            if method == "GET" and path == "/api/cameras":
+                return 200, {"cameras": p.get_camera_status(), "capacity": p.get_capacity_plan()}
+            if method == "POST" and path == "/api/cameras":
+                cam = p.add_camera(body)
+                return 200, {"success": True, "camera": cam, "capacity": p.get_capacity_plan()}
+            if path.startswith("/api/cameras/"):
+                rest = path[len("/api/cameras/"):].split("/")
+                cam_id = urllib.parse.unquote(rest[0])
+                if method == "DELETE" and len(rest) == 1:
+                    ok = p.remove_camera(cam_id)
+                    return (200 if ok else 404), {"success": ok, "camera_id": cam_id,
+                                                  "capacity": p.get_capacity_plan()}
+                if method == "POST" and len(rest) == 2 and rest[1] == "enable":
+                    ok = p.set_camera_enabled(cam_id, bool(body.get("enabled", True)))
+                    return (200 if ok else 404), {"success": ok, "camera_id": cam_id,
+                                                  "capacity": p.get_capacity_plan()}
+            if method == "GET" and path == "/api/events":
+                return 200, {"events": list(reversed(p.events[-int(query.get("limit", 50)):]))}
+
+            # ── identities ──────────────────────────────────────────────────
+            if method == "GET" and path == "/api/identities":
+                ids = p.face_db.list_identities()
+                return 200, {"identities": ids, "count": len(ids)}
+            if method == "DELETE" and path.startswith("/api/identity/"):
+                name = urllib.parse.unquote(path.split("/")[-1])
+                return 200, {"success": p.face_db.remove_identity(name), "name": name}
+            if method == "POST" and path == "/api/enroll_face":
+                name = body.get("name")
+                img = body.get("_image")
+                if img is None and body.get("image_base64"):
+                    img = _decode_b64_image(body["image_base64"])
+                if img is None and not body.get("use_live_frame"):
+                    return 400, {"error": "Provide an image (file / image_base64) or use_live_frame=true"}
+                ok, msg = p.enroll_identity(name, image=img, cam_id=body.get("camera_id"))
+                return (200 if ok else 400), ({"success": True, "name": name, "message": msg} if ok
+                                              else {"error": msg})
+
+            # ── zones ───────────────────────────────────────────────────────
+            if method == "GET" and path == "/api/zones":
+                zc = getattr(p, "_zone_crossing", None)
+                if zc:
+                    return 200, {"zones": zc.get_zone_counts(query.get("cam_id")),
+                                 "enabled": p.is_model_enabled("zone_crossing")}
+                return 200, {"zones": {}, "enabled": False}
+            if method == "GET" and path == "/api/zone_events":
+                zc = getattr(p, "_zone_crossing", None)
+                since = query.get("since_ts")
+                try:
+                    since = float(since) if since else None
+                except (TypeError, ValueError):
+                    since = None
+                events = zc.get_events(cam_id=query.get("cam_id"), since_ts=since,
+                                       limit=int(query.get("limit", 50))) if zc else []
+                return 200, {"events": events, "count": len(events)}
+            if method == "POST" and path == "/api/zones/config":
+                new_zones = body.get("zones", [])
+                p.config.setdefault("zone_crossing", {})["zones"] = new_zones
+                from src.analytics.zone_crossing import ZoneCrossingDetector
+                p._zone_crossing = ZoneCrossingDetector(new_zones)
+                self._persist({"zone_crossing": {"zones": new_zones}})
+                return 200, {"success": True, "zone_count": len(new_zones)}
+
+            # ── plates ──────────────────────────────────────────────────────
+            if method == "GET" and path == "/api/plates":
+                events = p.plate_db.get_recent_events(cam_id=query.get("cam_id"), limit=int(query.get("limit", 50)))
+                return 200, {"events": events, "count": len(events)}
+            if method == "GET" and path == "/api/plates/unique":
+                plates = p.plate_db.list_unique_plates()
+                return 200, {"plates": plates, "count": len(plates)}
+            if method == "DELETE" and path.startswith("/api/plates/"):
+                text = urllib.parse.unquote(path.split("/")[-1])
+                return 200, {"success": p.plate_db.remove_plate(text), "plate_text": text}
+
+            # ── auto-update ─────────────────────────────────────────────────
+            au = self.auto_updater
+            if method == "GET" and path == "/api/update/status":
+                return 200, (au.get_status() if au else {"enabled": False, "status": "unavailable"})
+            if method == "POST" and path == "/api/update/config":
+                if au:
+                    au.update_config(body)
+                return 200, {"success": True, "status": au.get_status() if au else {"enabled": False, "status": "unavailable"}}
+            if method == "POST" and path == "/api/update/check":
+                return 200, (au.check_for_updates() if au else {"success": False, "error": "Auto-updater not initialized"})
+            if method == "POST" and path == "/api/update/install":
+                return 200, (au.apply_update_and_restart() if au else {"success": False, "error": "Auto-updater not initialized"})
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        except Exception as e:
+            return 500, {"error": str(e)}
+        return 404, {"error": f"Unknown endpoint {method} {path}"}
+
+    def _persist(self, patch: Dict[str, Any]):
+        try:
+            import yaml
+            cfg_path = self._cfg_path()
+            if os.path.exists(cfg_path):
+                with open(cfg_path, "r") as f:
+                    disk_cfg = yaml.safe_load(f) or {}
+                for k, v in patch.items():
+                    if isinstance(v, dict):
+                        disk_cfg.setdefault(k, {}).update(v)
+                    else:
+                        disk_cfg[k] = v
+                with open(cfg_path, "w") as f:
+                    yaml.safe_dump(disk_cfg, f, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            print(f"[CONFIG SAVE NOTICE] Failed to update config.yaml: {e}")
+
+    # ── Flask ────────────────────────────────────────────────────────────────
     def _register_flask_routes(self):
         """Registers Flask web routes."""
         @self.app.route('/')
@@ -694,338 +590,35 @@ class WebServer:
 
         @self.app.route('/video_feed')
         def video_feed():
-            return Response(self._generate_mjpeg_stream("grid"),
-                            mimetype='multipart/x-mixed-replace; boundary=frame')
+            return Response(self.mjpeg_stream("grid"), mimetype='multipart/x-mixed-replace; boundary=frame')
 
         @self.app.route('/video_feed/<cam_id>')
         def video_feed_cam(cam_id):
-            return Response(self._generate_mjpeg_stream(cam_id),
-                            mimetype='multipart/x-mixed-replace; boundary=frame')
-
-        @self.app.route('/api/status')
-        def api_status():
-            cam_list = []
-            if hasattr(self.pipeline, 'stream_manager'):
-                for cid, cam in self.pipeline.stream_manager.cameras.items():
-                    is_open = getattr(cam, 'is_running', False)
-                    if hasattr(cam, 'cap') and cam.cap is not None:
-                        is_open = cam.cap.isOpened()
-                    cam_list.append({
-                        "id": cid,
-                        "name": cam.name,
-                        "fps": round(getattr(cam, 'fps', 0.0), 1),
-                        "is_opened": is_open
-                    })
-
-            telemetry = get_system_telemetry(self.pipeline)
-            hw_name = get_hardware_backend_name(self.pipeline)
-            models_status = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
-
-            return jsonify({
-                "status": "online" if self.pipeline.is_running else "offline",
-                "hardware": hw_name,
-                "fps": 30.0,
-                "active_cameras": len(cam_list),
-                "cameras": cam_list,
-                "persons_detected": self.total_persons,
-                "faces_recognized": self.total_faces,
-                "telemetry": telemetry,
-                "models": models_status
-            })
-
-        @self.app.route('/api/models', methods=['GET'])
-        def api_get_models():
-            models = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
-            return jsonify({"models": models})
-
-        @self.app.route('/api/models/toggle', methods=['POST'])
-        def api_toggle_model():
-            data = request.json or {}
-            model_id = data.get('model_id')
-            enabled = data.get('enabled', True)
-            cam_id = data.get('camera_id', 'all')
-
-            if hasattr(self.pipeline, 'set_model_enabled'):
-                self.pipeline.set_model_enabled(model_id, enabled, cam_id)
-
-            # Sync visualizer draw flags for relevant models
-            vis = getattr(self.pipeline, 'visualizer', None)
-            if vis:
-                if model_id == 'human_detector':            vis.draw_boxes  = enabled
-                elif model_id in ('pose_estimator', 'keypoint_detector'): vis.draw_pose = enabled
-                elif model_id == 'face_recognizer':         vis.draw_faces  = enabled
-                elif model_id == 'license_plate_recognizer': vis.draw_plates = enabled
-                elif model_id == 'zone_crossing':           vis.draw_zones  = enabled
-                # For model zoo detectors, also update draw_boxes
-                elif model_id in ('yolo11n_detector', 'yolov5n_detector'): vis.draw_boxes = enabled
-
-            models = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
-            return jsonify({"success": True, "model_id": model_id, "enabled": enabled, "models": models})
-
-        @self.app.route('/api/models/configure_detector', methods=['POST'])
-        def api_configure_detector():
-            data = request.json or {}
-            profile = data.get('profile', 'ultra_light')
-            detect_interval = int(data.get('detect_interval', 2))
-
-            if profile == 'extreme_light':
-                model_name = 'yolov5nu.pt'
-                input_size = [320, 320]
-                axm_path = 'models/axm/yolov5n_320.axm'
-                onnx_path = 'models/onnx/yolov5n_320.onnx'
-            elif profile == 'ultra_light':
-                model_name = 'yolov8n.pt'
-                input_size = [320, 320]
-                axm_path = 'models/axm/yolov8n_320.axm'
-                onnx_path = 'models/onnx/yolov8n_320.onnx'
-            elif profile == 'yolo11_ultra_light':
-                model_name = 'yolo11n.pt'
-                input_size = [320, 320]
-                axm_path = 'models/axm/yolo11n_320.axm'
-                onnx_path = 'models/onnx/yolo11n_320.onnx'
-            elif profile == 'high_precision':
-                model_name = 'yolov8n.pt'
-                input_size = [640, 640]
-                axm_path = 'models/axm/yolov8n.axm'
-                onnx_path = 'models/onnx/yolov8n.onnx'
-            else:  # balanced
-                profile = 'balanced'
-                model_name = 'yolov8n.pt'
-                input_size = [512, 512]
-                axm_path = 'models/axm/yolov8n.axm'
-                onnx_path = 'models/onnx/yolov8n.onnx'
-
-            if hasattr(self.pipeline, 'reload_detector_model'):
-                self.pipeline.reload_detector_model(
-                    model_profile=profile,
-                    model_name=model_name,
-                    input_size=input_size,
-                    axm_path=axm_path,
-                    onnx_path=onnx_path,
-                    detect_interval=detect_interval
-                )
-
-            # Persist to config.yaml if possible
-            try:
-                import yaml
-                cfg_path = getattr(self.auto_updater, 'config_path', 'config/config.yaml') if self.auto_updater else 'config/config.yaml'
-                if os.path.exists(cfg_path):
-                    with open(cfg_path, 'r') as f:
-                        disk_cfg = yaml.safe_load(f) or {}
-                    disk_cfg.setdefault('performance', {})['detect_interval'] = detect_interval
-                    det_cfg = disk_cfg.setdefault('models', {}).setdefault('human_detector', {})
-                    det_cfg['model_profile'] = profile
-                    det_cfg['model_name'] = model_name
-                    det_cfg['input_size'] = input_size
-                    det_cfg['axm_path'] = axm_path
-                    det_cfg['onnx_path'] = onnx_path
-                    with open(cfg_path, 'w') as f:
-                        yaml.safe_dump(disk_cfg, f, default_flow_style=False)
-            except Exception as save_err:
-                print(f"[CONFIG SAVE NOTICE] Failed to update config.yaml: {save_err}")
-
-            models_status = self.pipeline.get_models_status() if hasattr(self.pipeline, 'get_models_status') else []
-            return jsonify({"success": True, "profile": profile, "models": models_status})
-
-        # ── Zone Crossing API ─────────────────────────────────────────────────
-
-        @self.app.route('/api/zones', methods=['GET'])
-        def api_get_zones():
-            cam_id = request.args.get('cam_id')
-            zone_crossing = getattr(self.pipeline, '_zone_crossing', None)
-            if zone_crossing:
-                counts = zone_crossing.get_zone_counts(cam_id)
-                return jsonify({"zones": counts, "enabled": self.pipeline.is_model_enabled('zone_crossing')})
-            return jsonify({"zones": {}, "enabled": False})
-
-        @self.app.route('/api/zone_events', methods=['GET'])
-        def api_get_zone_events():
-            cam_id = request.args.get('cam_id')
-            limit = int(request.args.get('limit', 50))
-            since_ts = request.args.get('since_ts')
-            if since_ts:
-                try:
-                    since_ts = float(since_ts)
-                except (ValueError, TypeError):
-                    since_ts = None
-            zone_crossing = getattr(self.pipeline, '_zone_crossing', None)
-            if zone_crossing:
-                events = zone_crossing.get_events(cam_id=cam_id, since_ts=since_ts, limit=limit)
-                return jsonify({"events": events, "count": len(events)})
-            return jsonify({"events": [], "count": 0})
-
-        @self.app.route('/api/zones/config', methods=['POST'])
-        def api_configure_zones():
-            data = request.json or {}
-            new_zones = data.get('zones', [])
-
-            # Update in-memory config
-            self.pipeline.config.setdefault('zone_crossing', {})['zones'] = new_zones
-
-            # Re-initialize zone crossing detector with new definitions
-            from src.analytics.zone_crossing import ZoneCrossingDetector
-            self.pipeline._zone_crossing = ZoneCrossingDetector(new_zones)
-
-            # Persist to config.yaml
-            try:
-                import yaml
-                cfg_path = getattr(self.auto_updater, 'config_path', 'config/config.yaml') if self.auto_updater else 'config/config.yaml'
-                if os.path.exists(cfg_path):
-                    with open(cfg_path, 'r') as f:
-                        disk_cfg = yaml.safe_load(f) or {}
-                    disk_cfg.setdefault('zone_crossing', {})['zones'] = new_zones
-                    with open(cfg_path, 'w') as f:
-                        yaml.safe_dump(disk_cfg, f, default_flow_style=False)
-            except Exception as e:
-                print(f"[CONFIG SAVE NOTICE] Failed to persist zone config: {e}")
-
-            return jsonify({"success": True, "zone_count": len(new_zones)})
-
-        # ── License Plate API ─────────────────────────────────────────────────
-
-        @self.app.route('/api/plates', methods=['GET'])
-        def api_get_plates():
-            cam_id = request.args.get('cam_id')
-            limit = int(request.args.get('limit', 50))
-            plate_db = getattr(self.pipeline, 'plate_db', None)
-            if plate_db:
-                events = plate_db.get_recent_events(cam_id=cam_id, limit=limit)
-                return jsonify({"events": events, "count": len(events)})
-            return jsonify({"events": [], "count": 0})
-
-        @self.app.route('/api/plates/unique', methods=['GET'])
-        def api_get_unique_plates():
-            plate_db = getattr(self.pipeline, 'plate_db', None)
-            if plate_db:
-                plates = plate_db.list_unique_plates()
-                return jsonify({"plates": plates, "count": len(plates)})
-            return jsonify({"plates": [], "count": 0})
-
-        @self.app.route('/api/plates/<plate_text>', methods=['DELETE'])
-        def api_delete_plate(plate_text):
-            import urllib.parse
-            plate_text = urllib.parse.unquote(plate_text)
-            plate_db = getattr(self.pipeline, 'plate_db', None)
-            success = plate_db.remove_plate(plate_text) if plate_db else False
-            return jsonify({"success": success, "plate_text": plate_text})
-
-        @self.app.route('/api/update/status', methods=['GET'])
-        def api_update_status():
-            status = self.auto_updater.get_status() if self.auto_updater else {"enabled": False, "status": "unavailable"}
-            return jsonify(status)
-
-        @self.app.route('/api/update/config', methods=['POST'])
-        def api_update_config():
-            data = request.json or {}
-            if self.auto_updater:
-                self.auto_updater.update_config(data)
-                status = self.auto_updater.get_status()
-            else:
-                status = {"enabled": False, "status": "unavailable"}
-            return jsonify({"success": True, "status": status})
-
-        @self.app.route('/api/update/check', methods=['POST'])
-        def api_update_check():
-            if self.auto_updater:
-                res = self.auto_updater.check_for_updates()
-            else:
-                res = {"success": False, "error": "Auto-updater not initialized"}
-            return jsonify(res)
-
-        @self.app.route('/api/update/install', methods=['POST'])
-        def api_update_install():
-            if self.auto_updater:
-                res = self.auto_updater.apply_update_and_restart()
-            else:
-                res = {"success": False, "error": "Auto-updater not initialized"}
-            return jsonify(res)
-
-        @self.app.route('/api/toggle', methods=['POST'])
-        def api_toggle():
-            data = request.json or {}
-            feature = data.get('feature')
-            enabled = data.get('enabled', True)
-
-            if hasattr(self.pipeline, 'set_model_enabled'):
-                if feature == 'boxes': self.pipeline.set_model_enabled('human_detector', enabled)
-                elif feature == 'pose': self.pipeline.set_model_enabled('pose_estimator', enabled)
-                elif feature == 'faces': self.pipeline.set_model_enabled('face_recognizer', enabled)
-
-            vis = getattr(self.pipeline, 'visualizer', None)
-            if vis:
-                if feature == 'boxes': vis.draw_boxes = enabled
-                elif feature == 'pose': vis.draw_pose = enabled
-                elif feature == 'faces': vis.draw_faces = enabled
-
-            return jsonify({"success": True, "feature": feature, "enabled": enabled})
+            return Response(self.mjpeg_stream(cam_id), mimetype='multipart/x-mixed-replace; boundary=frame')
 
         @self.app.route('/api/snapshot')
         def api_snapshot():
-            with self.lock:
-                if self.latest_grid_jpeg:
-                    snapshot_filename = f"snapshot_{int(time.time())}.jpg"
-                    filepath = os.path.join("data", snapshot_filename)
-                    os.makedirs("data", exist_ok=True)
-                    with open(filepath, "wb") as f:
-                        f.write(self.latest_grid_jpeg)
-                    return send_file(filepath, mimetype='image/jpeg', as_attachment=True)
-            return jsonify({"error": "No frame available"}), 404
+            jpeg = self.snapshot()
+            if not jpeg:
+                return jsonify({"error": "No frame available"}), 404
+            return Response(jpeg, mimetype='image/jpeg',
+                            headers={"Content-Disposition": f'attachment; filename="snapshot_{int(time.time())}.jpg"'})
 
-        @self.app.route('/api/identities', methods=['GET'])
-        def api_list_identities():
-            identities = []
-            if hasattr(self.pipeline, 'face_db'):
-                identities = self.pipeline.face_db.list_identities()
-            return jsonify({"identities": identities, "count": len(identities)})
-
-        @self.app.route('/api/identity/<name>', methods=['DELETE'])
-        def api_delete_identity(name):
-            success = False
-            if hasattr(self.pipeline, 'face_db'):
-                success = self.pipeline.face_db.remove_identity(name)
-            return jsonify({"success": success, "name": name})
-
-        @self.app.route('/api/enroll_face', methods=['POST'])
-        def api_enroll_face():
-            import base64
-            name = None
-            if request.content_type and 'multipart/form-data' in request.content_type:
-                name = request.form.get('name')
-            elif request.is_json:
-                name = request.json.get('name')
-
-            if not name:
-                return jsonify({"error": "Identity name is required"}), 400
-
-            img = None
-            if 'file' in request.files:
-                file = request.files['file']
-                file_bytes = np.frombuffer(file.read(), np.uint8)
-                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            elif request.is_json and 'image_base64' in request.json:
-                b64_str = request.json['image_base64']
-                if ',' in b64_str:
-                    b64_str = b64_str.split(',')[1]
-                img_data = base64.b64decode(b64_str)
-                file_bytes = np.frombuffer(img_data, np.uint8)
-                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            elif request.is_json and request.json.get('use_live_frame'):
-                with self.lock:
-                    if self.latest_grid_jpeg:
-                        file_bytes = np.frombuffer(self.latest_grid_jpeg, np.uint8)
-                        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
-            if img is None or img.size == 0:
-                return jsonify({"error": "No valid face image provided"}), 400
-
-            success = False
-            if hasattr(self.pipeline, 'face_recognizer'):
-                success = self.pipeline.face_recognizer.enroll_identity(name, img)
-
-            if success:
-                return jsonify({"success": True, "name": name, "message": f"Successfully enrolled '{name}'."})
-            else:
-                return jsonify({"error": "Could not detect or extract face features from image."}), 400
+        @self.app.route('/api/<path:sub>', methods=['GET', 'POST', 'DELETE'])
+        def api_dispatch(sub):
+            body: Dict[str, Any] = {}
+            if request.method != 'GET':
+                if request.content_type and 'multipart/form-data' in request.content_type:
+                    body = dict(request.form)
+                    f = request.files.get('file')
+                    if f is not None:
+                        img = cv2.imdecode(np.frombuffer(f.read(), np.uint8), cv2.IMREAD_COLOR)
+                        if img is not None and img.size:
+                            body['_image'] = img
+                else:
+                    body = request.get_json(silent=True) or {}
+            status, payload = self.handle_api(request.method, f"/api/{sub}", request.args.to_dict(), body)
+            return jsonify(payload), status
 
     def start_background(self):
         """Starts web server in a daemon background thread."""

@@ -1361,24 +1361,23 @@
 
                         ${m.id === 'human_detector' ? `
                         <div style="margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid rgba(255, 255, 255, 0.08);">
-                            <div style="font-size: 0.75rem; font-weight: 600; color: var(--accent-primary); margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.5px;">⚡ Performance Profile & Stream Capacity</div>
+                            <div style="font-size: 0.75rem; font-weight: 600; color: var(--accent-primary); margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.5px;">⚡ Performance Profile &amp; Stream Capacity</div>
                             <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.5rem;">
                                 <select id="detector-profile-select" class="form-select" style="flex: 1; min-width: 140px; font-size: 0.75rem; padding: 0.35rem 0.5rem;">
-                                    <option value="ultra_light" ${m.model_profile === 'ultra_light' ? 'selected' : ''}>⚡ Ultra-Light (YOLOv8n 320x320)</option>
-                                    <option value="extreme_light" ${m.model_profile === 'extreme_light' ? 'selected' : ''}>🚀 Extreme-Light (YOLOv5n 320x320)</option>
-                                    <option value="balanced" ${m.model_profile === 'balanced' ? 'selected' : ''}>⚖️ Balanced (YOLOv8n 512x512)</option>
-                                    <option value="high_precision" ${m.model_profile === 'high_precision' ? 'selected' : ''}>🎯 High Precision (640x640)</option>
-                                </select>
-                                <select id="detector-cadence-select" class="form-select" style="min-width: 110px; font-size: 0.75rem; padding: 0.35rem 0.5rem;">
-                                    <option value="1" ${m.detect_interval === 1 ? 'selected' : ''}>Every frame (1:1)</option>
-                                    <option value="2" ${m.detect_interval === 2 ? 'selected' : ''}>Every 2 frames</option>
-                                    <option value="3" ${m.detect_interval === 3 ? 'selected' : ''}>Every 3 frames</option>
-                                    <option value="4" ${m.detect_interval === 4 ? 'selected' : ''}>Every 4 frames</option>
+                                    ${[
+                                        ['auto', '🧠 Auto (scale with camera count)'],
+                                        ['ultra', '🎯 Ultra — main stream, YOLOv8s-pose, SAHI tiling'],
+                                        ['high', '⭐ High — main stream, YOLOv8s-pose'],
+                                        ['standard', '⚖️ Standard — main stream, YOLOv8n-pose'],
+                                        ['balanced', '📶 Balanced — sub stream, YOLOv8n-pose'],
+                                        ['economy', '🔋 Economy — sub stream, reduced FPS'],
+                                        ['minimal', '🐢 Minimal — sub stream, minimum FPS']
+                                    ].map(([v, l]) => `<option value="${v}" ${m.model_profile === v ? 'selected' : ''}>${l}</option>`).join('')}
                                 </select>
                                 <button id="btn-apply-detector-config" class="btn-tool btn-enable-all" style="font-size: 0.75rem; padding: 0.35rem 0.75rem;" onclick="applyDetectorConfig()">⚡ Apply</button>
                             </div>
-                            <div style="font-size: 0.7rem; color: var(--text-muted);">
-                                Ultra-Light cuts compute by 61% and cadence cuts load by 50–67%, enabling 4–8+ simultaneous camera streams.
+                            <div id="capacity-plan-summary" style="font-size: 0.7rem; color: ${m.capacity && m.capacity.overloaded ? 'var(--accent-danger)' : 'var(--text-muted)'};">
+                                ${m.capacity ? `Active plan: <b>${m.capacity.tier.toUpperCase()}</b> · ${m.capacity.fps} FPS/camera · ${m.capacity.stream} stream · ${m.capacity.pose_model}${m.capacity.tiling ? ' · tiling' : ''} · AIPU ${Math.round(m.capacity.aipu_utilization * 100)}% · decode ${Math.round(m.capacity.decode_utilization * 100)}%${m.capacity.overloaded ? ' · ⚠️ OVERLOADED: ' + m.capacity.reasons.join('; ') : ''}` : ''}
                             </div>
                         </div>
                         ` : ''}
@@ -1390,14 +1389,13 @@
 
         function applyDetectorConfig() {
             const profile = document.getElementById('detector-profile-select').value;
-            const interval = parseInt(document.getElementById('detector-cadence-select').value, 10) || 2;
             const btn = document.getElementById('btn-apply-detector-config');
             if (btn) btn.innerHTML = '⏳ Applying...';
 
-            fetch('/api/models/configure_detector', {
+            fetch('/api/capacity/profile', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ profile: profile, detect_interval: interval })
+                body: JSON.stringify({ profile: profile })
             })
             .then(res => res.json())
             .then(data => {
@@ -1410,7 +1408,8 @@
                 } else {
                     fetchModels();
                 }
-                showAdminToast(`Detector configured to ${profile.toUpperCase()} (Cadence: Every ${interval} frames)`);
+                const c = data.capacity || {};
+                showAdminToast(`Profile ${profile.toUpperCase()} → tier ${String(c.tier || '').toUpperCase()} @ ${c.fps || '?'} FPS/camera`);
             })
             .catch(err => {
                 if (btn) btn.innerHTML = '⚠️ Failed';
@@ -1850,10 +1849,10 @@
                             document.getElementById('stat-aipu-val').innerText = `${t.aipu.load_percent}%`;
                             const aipuSub = document.getElementById('stat-aipu-sub');
                             if (t.aipu.load_percent > 0) {
-                                aipuSub.innerText = `${t.aipu.cores} AIPU Cores Active`;
+                                aipuSub.innerText = `${t.aipu.cores} AIPU Cores Active${t.aipu.estimated ? ' (est.)' : ''}`;
                                 aipuSub.style.color = 'var(--accent-success)';
                             } else {
-                                aipuSub.innerText = 'Inactive (CPU/ONNX Fallback)';
+                                aipuSub.innerText = data.backend === 'simulation' ? 'Simulation mode (no AIPU)' : 'Idle';
                                 aipuSub.style.color = 'var(--text-muted)';
                             }
                             document.getElementById('stat-aipu-bar').style.width = `${t.aipu.load_percent}%`;
@@ -1870,7 +1869,7 @@
                                     const subEl = document.getElementById(`core-${id}-sub`);
                                     const barEl = document.getElementById(`core-${id}-bar`);
                                     if (valEl) valEl.innerText = `${core.load_percent}%`;
-                                    if (subEl) subEl.innerText = core.active ? `${core.tops_current} / 53.5 TOPS` : 'Inactive (CPU Fallback)';
+                                    if (subEl) subEl.innerText = core.active ? `${core.tops_current} / 53.5 TOPS` : 'Idle';
                                     if (barEl) barEl.style.width = `${core.load_percent}%`;
                                 });
                             }

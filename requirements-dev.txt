@@ -1,0 +1,3 @@
+# Development / CI (no Metis hardware needed: tests use SimulatedRuntime and fakes)
+-r requirements.txt
+cryptography>=41.0        # self-signed cert fallback when openssl CLI is missing

@@ -1,0 +1,42 @@
+{
+  "unique_plates": {
+    "SIM175": {
+      "first_seen": 1792827419.635469,
+      "last_seen": 1792827449.787234,
+      "count": 4,
+      "cameras": [
+        "cam_01"
+      ]
+    }
+  },
+  "events": [
+    {
+      "plate_text": "SIM175",
+      "cam_id": "cam_01",
+      "confidence": 0.9,
+      "ocr_confidence": 1.0,
+      "timestamp": 1792827419.635469
+    },
+    {
+      "plate_text": "SIM175",
+      "cam_id": "cam_01",
+      "confidence": 0.9,
+      "ocr_confidence": 1.0,
+      "timestamp": 1792827429.6838841
+    },
+    {
+      "plate_text": "SIM175",
+      "cam_id": "cam_01",
+      "confidence": 0.9,
+      "ocr_confidence": 1.0,
+      "timestamp": 1792827439.734862
+    },
+    {
+      "plate_text": "SIM175",
+      "cam_id": "cam_01",
+      "confidence": 0.9,
+      "ocr_confidence": 1.0,
+      "timestamp": 1792827449.787234
+    }
+  ]
+}

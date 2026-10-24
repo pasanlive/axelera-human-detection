@@ -4,122 +4,93 @@ auto_update:
   enabled: true
   install_time: immediately
   remote: origin
-
 cameras:
-- enabled: true
-  fps_limit: 30
-  id: cam_01
+- id: cam_01
   name: Front Entrance
-  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
-- enabled: false
-  fps_limit: 30
-  id: cam_02
+  enabled: true
+  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/main/av_stream
+  source_sub: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
+  main_resolution:
+  - 1920
+  - 1080
+  sub_resolution:
+  - 640
+  - 360
+  native_fps: 25
+- id: cam_02
   name: Lobby East
-  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
-
+  enabled: false
+  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/main/av_stream
+  source_sub: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
+  main_resolution:
+  - 1920
+  - 1080
+  sub_resolution:
+  - 640
+  - 360
+  native_fps: 25
 face_db:
   path: data/face_db.json
-
 plate_db:
   path: data/plate_db.json
-
-hardware:
-  chip_id: 0
-  device: axelera
-  num_cores: 4
-  voyager_sdk: true
-
 models:
-  # ── Primary Models (enabled by default) ──────────────────────────────────
   human_detector:
     enabled: true
-    model_profile: ultra_light
-    model_name: yolov8n.pt
-    onnx_path: models/onnx/yolov8n_320.onnx
-    axm_path: models/axm/yolov8n_320.axm   # Optional: compile with Voyager SDK
-    input_size: [320, 320]
-    conf_threshold: 0.45
-    iou_threshold: 0.45
-    person_class_id: 0
-
   pose_estimator:
     enabled: true
-    model_name: yolov8n-pose.pt
-    onnx_path: models/onnx/yolov8n-pose.onnx
-    axm_path: models/axm/yolov8n-pose.axm   # Optional: compile with Voyager SDK
-    input_size: [512, 512]
-    conf_threshold: 0.5
-    num_keypoints: 17
-
   face_recognizer:
     enabled: true
-    conf_threshold: 0.5
-    # Face embedder (ArcFace MobileFaceNet)
-    embedder_onnx: models/onnx/arcface_mobilefacenet.onnx
-    embedder_axm: models/axm/arcface_mobilefacenet.axm   # Optional: compile with Voyager SDK
-    input_size: [112, 112]
-    match_threshold: 0.6
-    # Note: face region detected via Haar cascade fallback (no separate YOLO face detector required)
-
-  # ── Model Zoo: Detector Alternatives (disabled by default) ───────────────
-  yolo11n_detector:
-    enabled: false
-    model_profile: yolo11_ultra_light
-    model_name: yolo11n.pt
-    onnx_path: models/onnx/yolo11n_320.onnx
-    axm_path: models/axm/yolo11n_320.axm   # Optional: compile with Voyager SDK
-    input_size: [320, 320]
-    conf_threshold: 0.45
-    iou_threshold: 0.45
-    person_class_id: 0
-
-  yolov5n_detector:
-    enabled: false
-    model_profile: extreme_light
-    model_name: yolov5nu.pt
-    onnx_path: models/onnx/yolov5n_320.onnx
-    axm_path: models/axm/yolov5n_320.axm   # Optional: compile with Voyager SDK
-    input_size: [320, 320]
-    conf_threshold: 0.45
-    iou_threshold: 0.45
-    person_class_id: 0
-
-  # ── Model Zoo: Pose Alternative (mutually exclusive with pose_estimator) ──
-  keypoint_detector:
-    enabled: false
-    model_name: yolo11n-pose.pt
-    onnx_path: models/onnx/yolo11n-pose_512.onnx
-    axm_path: models/axm/yolo11n-pose_512.axm   # Optional: compile with Voyager SDK
-    input_size: [512, 512]
-    conf_threshold: 0.5
-    num_keypoints: 17
-
-  # ── Model Zoo: License Plate Recognition (disabled by default) ────────────
+    match_threshold: 0.55
   license_plate_recognizer:
     enabled: false
-    detector_onnx: models/onnx/yolov8n-plate.onnx
-    detector_axm: models/axm/yolov8n-plate.axm   # Optional: compile with Voyager SDK
-    ocr_onnx: models/onnx/crnn_plate_ocr.onnx
-    ocr_axm: models/axm/crnn_plate_ocr.axm       # Optional: compile with Voyager SDK
-    detector_input_size: [640, 640]
-    ocr_input_size: [100, 32]
-    conf_threshold: 0.45
-    search_in_person_roi: false
-
-performance:
-  buffer_size: 1
-  detect_interval: 2
-  face_interval: 3
-  pose_interval: 2
+    log_interval_s: 10
+voyager:
+  sdk_path: ~/voyager-sdk
+  build_root: null
+  networks_dir: voyager/networks
+  calibration_dir: data/calibration
+  num_calibration_images: 400
+  aipu_cores: 4
+  hardware_decode: true
   rtsp_transport: tcp
-
-tracking:
-  enabled: true
-  match_thresh: 0.8
-  track_buffer: 30
-  track_thresh: 0.5
-  tracker_type: bytetrack
-
+  rtsp_latency_ms: 200
+  low_latency: true
+  reconnect_interval_s: 5
+  thresholds:
+    person_conf: 0.4
+    person_nms_iou: 0.45
+    face_conf: 0.5
+    max_faces_per_frame: 6
+    min_face_px: 32
+    plate_conf: 0.4
+    max_plates_per_frame: 4
+  tracker:
+    max_age: 50
+    min_hits: 3
+    iou_threshold: 0.3
+capacity:
+  profile: auto
+  target_utilization: 0.85
+  derating: 0.6
+  decode_mpx_per_s: 1000
+  host_results_per_s: 400
+  expected_faces: 2
+  expected_plates: 1
+  enable_tiling: true
+  tile_overlap_pct: 10
+  max_fps: 25
+  model_fps:
+    yolov8npose: 723
+    yolov8spose: 471
+    retinaface: 774
+    facenet: 720
+    plate_detector: 764
+    lprnet: 1500
+preview:
+  fps: 12
+  grid_fps: 6
+  max_width: 1280
+  jpeg_quality: 75
 visualization:
   draw_boxes: true
   draw_faces: true
@@ -129,7 +100,6 @@ visualization:
   draw_plates: true
   draw_zones: true
   window_name: Axelera Metis Multi-Camera Detection System
-
 web:
   cert_file: data/ssl/cert.pem
   enabled: true
@@ -137,23 +107,6 @@ web:
   https: true
   key_file: data/ssl/key.pem
   port: 8000
-
-# ── Zone Crossing: absolute pixel coordinates per stream ───────────────────
-# Each zone MUST specify camera_id. Cameras with no zones are unaffected.
 zone_crossing:
   enabled: false
   zones: []
-  # Example zone definitions (uncomment and edit to activate):
-  # - id: zone_entrance
-  #   name: "Main Entrance Line"
-  #   type: line
-  #   camera_id: cam_01
-  #   points: [[0, 540], [1920, 540]]   # absolute pixels at stream resolution
-  #   direction_labels: ["IN", "OUT"]
-  #
-  # - id: zone_restricted
-  #   name: "Restricted Area"
-  #   type: polygon
-  #   camera_id: cam_01
-  #   points: [[200,100],[800,100],[800,600],[200,600]]
-  #   direction_labels: ["ENTER", "EXIT"]
