@@ -54,6 +54,33 @@ def framework_path(configured: Optional[str] = None) -> Optional[str]:
     return None
 
 
+DEFAULT_NETWORKS_SUBDIR = "customers/upside"
+
+
+def resolve_networks_dir(configured: Optional[str], sdk_path: Optional[str] = None,
+                         fallback_root: Optional[str] = None) -> "Path":
+    """Where the generated network YAMLs are written.
+
+    Voyager 1.6.0 ``deploy.py`` only accepts networks registered by scanning YAMLs
+    *inside* the SDK checkout (``ax_models/``, ``customers/`` ...); a YAML anywhere
+    else fails with "Invalid network ... no close match found". So relative paths
+    are resolved against ``$AXELERA_FRAMEWORK`` (default ``customers/upside``).
+    Without an SDK (dev laptop / --dry-run) we fall back to ``<project>/voyager/networks``.
+    """
+    from pathlib import Path
+
+    fw = framework_path(sdk_path)
+    rel = configured or DEFAULT_NETWORKS_SUBDIR
+    if rel == "voyager/networks":  # legacy default (outside the SDK tree => unusable by deploy.py)
+        rel = DEFAULT_NETWORKS_SUBDIR
+    p = Path(os.path.expanduser(rel))
+    if p.is_absolute():
+        return p
+    if fw:
+        return (Path(fw) / p).resolve()
+    return (Path(fallback_root or os.getcwd()) / "voyager" / "networks").resolve()
+
+
 def sdk_modules() -> Any:
     """Returns a namespace with the SDK modules the runtime needs (imports lazily)."""
     require_voyager()

@@ -47,7 +47,7 @@ models:
 voyager:
   sdk_path: ~/voyager-sdk
   build_root: null
-  networks_dir: voyager/networks
+  networks_dir: customers/upside
   calibration_dir: data/calibration
   num_calibration_images: 400
   aipu_cores: 4

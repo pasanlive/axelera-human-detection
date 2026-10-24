@@ -142,7 +142,9 @@ class VoyagerRuntime(BaseRuntime):
 
         self.sdk = sdk_modules()
         self.vcfg = vcfg
-        self.networks_dir = Path(vcfg.get("networks_dir", "voyager/networks")).resolve()
+        from src.voyager.sdk import resolve_networks_dir
+
+        self.networks_dir = resolve_networks_dir(vcfg.get("networks_dir"), vcfg.get("sdk_path"))
         build_root = vcfg.get("build_root")
         self.build_root = Path(build_root).expanduser().resolve() if build_root else None
         self.rtsp_latency = int(vcfg.get("rtsp_latency_ms", 200))

@@ -123,7 +123,7 @@ python tools/deploy_networks.py --dry-run        # print the plan and YAMLs only
 python tools/deploy_networks.py --all            # all feature combinations + face-enroll network
 python tools/deploy_networks.py --network upside-yolov8npose-face
 ```
-This runs Voyager `deploy.py` (PTQ → compile) and outputs to `$AXELERA_FRAMEWORK/build` (or `voyager.build_root`).
+This writes the network YAMLs to `$AXELERA_FRAMEWORK/customers/upside/` (`voyager.networks_dir`, relative to the SDK). They must live inside the SDK checkout, because `deploy.py` only accepts networks it finds there. It then runs Voyager `deploy.py <network-name>` (PTQ → compile), which outputs to `$AXELERA_FRAMEWORK/build` (or `voyager.build_root`).
 
 > [!TIP]
 > Compiling is slow on the RK3588. You can compile on an x86 host that has the same SDK version, then copy the `build/<network>` directories to the board.

@@ -37,7 +37,7 @@ from src.voyager.network_builder import (  # noqa: E402
     write_face_enroll_network,
     write_network,
 )
-from src.voyager.sdk import framework_path  # noqa: E402
+from src.voyager.sdk import framework_path, resolve_networks_dir  # noqa: E402
 from src.voyager.stream_runtime import build_options_from_config  # noqa: E402
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -78,7 +78,7 @@ def main():
     vcfg = cfg.get("voyager", {}) or {}
     os.chdir(ROOT)
     opts = build_options_from_config(vcfg)
-    out_dir = (ROOT / vcfg.get("networks_dir", "voyager/networks")).resolve()
+    out_dir = resolve_networks_dir(vcfg.get("networks_dir"), vcfg.get("sdk_path"), fallback_root=str(ROOT))
     n_cal = args.num_cal_images or int(vcfg.get("num_calibration_images", 400))
 
     cal_dir = vcfg.get("calibration_dir")
@@ -99,21 +99,26 @@ def main():
         want_enroll = not args.no_enroll and (cfg.get("models", {}).get("face_recognizer", {}).get("enabled", True)
                                               or args.all)
 
+    fw = framework_path(vcfg.get("sdk_path"))
+    if not fw and not args.dry_run:
+        sys.exit("[deploy] Voyager SDK not found: set voyager.sdk_path or AXELERA_FRAMEWORK (dir containing deploy.py)")
+    if fw and Path(fw).resolve() not in out_dir.resolve().parents:
+        sys.exit(f"[deploy] networks_dir {out_dir} must be inside the SDK checkout {fw}: "
+                 "Voyager deploy.py only accepts networks registered under $AXELERA_FRAMEWORK.")
+
     yamls = [write_network(s, out_dir, opts) for s in specs]
     if want_enroll:
         yamls.append(write_face_enroll_network(out_dir, opts))
     for y in yamls:
-        print(f"[deploy] wrote {y.relative_to(ROOT)}")
+        print(f"[deploy] wrote {y}")
     if args.dry_run:
         return
 
-    fw = framework_path(vcfg.get("sdk_path"))
-    if not fw:
-        sys.exit("[deploy] Voyager SDK not found: set voyager.sdk_path or AXELERA_FRAMEWORK (dir containing deploy.py)")
     build_root = vcfg.get("build_root")
     failures = []
     for y in yamls:
-        cmd = [sys.executable, os.path.join(fw, "deploy.py"), str(y), "--num-cal-images", str(n_cal)]
+        # deploy.py resolves networks by registered name (the YAML's `name:` == file stem).
+        cmd = [sys.executable, os.path.join(fw, "deploy.py"), y.stem, "--num-cal-images", str(n_cal)]
         if build_root:
             cmd += ["--build-root", str(Path(build_root).expanduser().resolve())]
         print(f"\n[deploy] $ {' '.join(cmd)}")
