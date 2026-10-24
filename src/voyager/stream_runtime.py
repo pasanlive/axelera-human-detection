@@ -69,6 +69,25 @@ def build_options_from_config(vcfg: Dict[str, Any]) -> BuildOptions:
         opts.calibration_dir = cal
     opts.model_overrides = dict(vcfg.get("model_overrides", {}) or {})
     return opts
+class NetworkNotCompiledError(RuntimeError):
+    """Raised when one or more required networks have not been compiled for the Metis AIPU."""
+
+    def __init__(self, networks: Any, build_root: Optional[Path] = None):
+        self.networks = list(networks)
+        self.build_root = build_root
+        cmd = f"python tools/deploy_networks.py {' '.join(f'--network {n}' for n in self.networks)}"
+        msg = (
+            f"\n\n{'='*70}\n"
+            f"[METIS SETUP ERROR] Required network(s) not compiled for Metis AIPU!\n"
+            f"Missing: {', '.join(self.networks)}\n"
+            f"Expected directory: {build_root or '$AXELERA_FRAMEWORK/build'}\n\n"
+            f"Please run the deployment tool on your board (or build host):\n"
+            f"  {cmd}\n\n"
+            f"To deploy all model combinations + face enrollment in one go:\n"
+            f"  python tools/deploy_networks.py --all\n"
+            f"{'='*70}\n"
+        )
+        super().__init__(msg)
 
 
 class BaseRuntime:
@@ -158,17 +177,16 @@ class VoyagerRuntime(BaseRuntime):
         fw = framework_path(self.vcfg.get("sdk_path"))
         return Path(fw) / "build" if fw else None
 
+    def is_compiled(self, spec: NetworkSpec) -> bool:
+        build_root = self.resolved_build_root()
+        return build_root is None or (build_root / spec.name).exists()
+
     def network_yaml(self, spec: NetworkSpec) -> str:
         path = self.networks_dir / f"{spec.name}.yaml"
         if not path.exists():
             write_network(spec, self.networks_dir, self.build_opts)
-        build_root = self.resolved_build_root()
-        if build_root is not None and not (build_root / spec.name).exists():
-            raise RuntimeError(
-                f"Network '{spec.name}' has not been quantized/compiled for Metis "
-                f"(expected {build_root / spec.name}). Run:\n"
-                f"  python tools/deploy_networks.py --network {spec.name}"
-            )
+        if not self.is_compiled(spec):
+            raise NetworkNotCompiledError([spec.name], self.resolved_build_root())
         return str(path)
 
     # ── lifecycle ───────────────────────────────────────────────────────────
@@ -224,6 +242,10 @@ class VoyagerRuntime(BaseRuntime):
                 **sys_kwargs,
                 **self._pipeline_kwargs(plan),
             )
+        except NetworkNotCompiledError as e:
+            # A missing build is a setup problem, not a tiling problem: fail loudly.
+            self.last_error = str(e)
+            raise
         except Exception as e:
             if any(s.startswith("tile[") for g in plan.groups for s in g.sources):
                 # Tiling with keypoint models is not verified on every SDK build: degrade, don't die.

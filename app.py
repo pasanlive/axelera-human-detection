@@ -107,7 +107,15 @@ def main():
         pipeline.preview.stop()
         return
 
-    pipeline.start()
+    try:
+        pipeline.start()
+    except Exception as e:
+        if e.__class__.__name__ == "NetworkNotCompiledError":
+            print(e, file=sys.stderr)
+            pipeline.preview.stop()
+            sys.exit(1)
+        raise
+
     shutdown = threading.Event()
 
     # Application restart callback for Auto-Updater
