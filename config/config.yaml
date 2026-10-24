@@ -35,9 +35,9 @@ plate_db:
   path: data/plate_db.json
 models:
   human_detector:
-    enabled: true
+    enabled: false
   pose_estimator:
-    enabled: true
+    enabled: false
   face_recognizer:
     enabled: false
     match_threshold: 0.55
