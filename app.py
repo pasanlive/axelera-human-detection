@@ -77,6 +77,8 @@ def main():
     parser.add_argument("--image", type=str, help="Image filepath for face enrollment")
     parser.add_argument("--list-faces", action="store_true", help="List enrolled face identities")
     parser.add_argument("--print-plan", action="store_true", help="Print the capacity plan and exit")
+    parser.add_argument("--no-hw-decode", action="store_true", help="Force software video decode (diagnostics)")
+    parser.add_argument("--no-tiling", action="store_true", help="Disable tiled (ultra) inference (diagnostics)")
     parser.add_argument("--web", action="store_true", default=False, help="Enable local network web dashboard interface")
     parser.add_argument("--no-web", action="store_true", help="Disable web dashboard interface")
     parser.add_argument("--host", type=str, default=None, help="Web server host IP address")
@@ -87,6 +89,13 @@ def main():
     args = parser.parse_args()
 
     config = load_config(args.config)
+    # Runtime-only overrides (not persisted unless the dashboard later saves config).
+    if args.no_hw_decode:
+        config.setdefault("voyager", {})["hardware_decode"] = False
+        print("[DIAG] Hardware video decode disabled (software decodebin)")
+    if args.no_tiling:
+        config.setdefault("capacity", {})["enable_tiling"] = False
+        print("[DIAG] Tiled inference disabled")
 
     if args.enroll:
         if not args.image:
