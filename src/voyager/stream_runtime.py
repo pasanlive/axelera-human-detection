@@ -148,7 +148,10 @@ class VoyagerRuntime(BaseRuntime):
         build_root = vcfg.get("build_root")
         self.build_root = Path(build_root).expanduser().resolve() if build_root else None
         self.rtsp_latency = int(vcfg.get("rtsp_latency_ms", 200))
-        self.low_latency = bool(vcfg.get("low_latency", True))
+        # Must match deploy.py (which has no low-latency flag): in SDK 1.6.0 low_latency=True
+        # forces 1-core builds (build/<net>/<model>/1/), so a mismatch triggers a full
+        # recompile inside create_inference_stream at startup / on every tier change.
+        self.low_latency = bool(vcfg.get("low_latency", False))
         self.allow_hw_codec = bool(vcfg.get("hardware_decode", True))
         self.aipu_cores = int(vcfg.get("aipu_cores", 4))
         self.reconnect_s = float(vcfg.get("reconnect_interval_s", 5.0))
@@ -179,15 +182,47 @@ class VoyagerRuntime(BaseRuntime):
         fw = framework_path(self.vcfg.get("sdk_path"))
         return Path(fw) / "build" if fw else None
 
-    def is_compiled(self, spec: NetworkSpec) -> bool:
+    def missing_models(self, spec: NetworkSpec, yaml_path: Optional[Path] = None) -> List[str]:
+        """Models of ``spec`` whose compiled manifest is not where SDK 1.6.0 will look.
+
+        Mirrors ``network.read_deployed_model_infos``: each AIPU model must have
+        ``<build>/<net>/<model>/<deploy_cores>/manifest.json`` with
+        deploy_cores = 1 if low_latency else min(aipu_cores, max_compiler_cores).
+        Without this check the SDK silently recompiles inside create_inference_stream.
+        """
         build_root = self.resolved_build_root()
-        return build_root is None or (build_root / spec.name).exists()
+        if build_root is None:
+            return []
+        net_dir = build_root / spec.name
+        yaml_path = yaml_path or (self.networks_dir / f"{spec.name}.yaml")
+        try:
+            import yaml as _yaml
+
+            models = (_yaml.safe_load(Path(yaml_path).read_text()) or {}).get("models", {}) or {}
+        except Exception:
+            return [] if net_dir.exists() else [spec.name]
+        missing = []
+        for name, mdef in models.items():
+            if str(mdef.get("model_type", "")).upper() == "CLASSICAL_CV":
+                continue
+            extra = mdef.get("extra_kwargs", {}) or {}
+            cores = int(extra.get("aipu_cores", self.aipu_cores))
+            max_comp = int(extra.get("max_compiler_cores", 1))
+            deploy_cores = 1 if self.low_latency else min(cores, max_comp)
+            if not (net_dir / name / str(deploy_cores) / "manifest.json").is_file():
+                missing.append(f"{name}/{deploy_cores}")
+        return missing
+
+    def is_compiled(self, spec: NetworkSpec) -> bool:
+        return not self.missing_models(spec)
 
     def network_yaml(self, spec: NetworkSpec) -> str:
         path = self.networks_dir / f"{spec.name}.yaml"
         if not path.exists():
             write_network(spec, self.networks_dir, self.build_opts)
-        if not self.is_compiled(spec):
+        missing = self.missing_models(spec, path)
+        if missing:
+            self.on_event(None, "error", f"{spec.name}: missing compiled models {missing}")
             raise NetworkNotCompiledError([spec.name], self.resolved_build_root())
         return str(path)
 

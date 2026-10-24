@@ -54,7 +54,7 @@ voyager:
   hardware_decode: true
   rtsp_transport: tcp
   rtsp_latency_ms: 200
-  low_latency: true
+  low_latency: false
   reconnect_interval_s: 5
   thresholds:
     person_conf: 0.4
