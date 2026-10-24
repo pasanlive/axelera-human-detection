@@ -278,6 +278,7 @@ class VoyagerRuntime(BaseRuntime):
         self._stopping = False
         import re as _re
 
+        shown = [_re.sub(r"//[^@/]+@", "//***@", s) for s in first.sources]
         rate_str = f"fps={self.vcfg['specified_frame_rate']}" if self.vcfg.get("specified_frame_rate", 0) else f"budget_fps={plan.fps} (camera-rate)"
         self.on_event(None, "info", f"Building Voyager stream: network={first.network} sources={shown} "
                                     f"hw_decode={self.allow_hw_codec} {rate_str} cores={self.aipu_cores}")
