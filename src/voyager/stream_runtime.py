@@ -264,6 +264,10 @@ class VoyagerRuntime(BaseRuntime):
         self.reconnect_s = float(vcfg.get("reconnect_interval_s", 5.0))
         self.build_opts = build_options_from_config(vcfg)
         os.environ.setdefault("AXELERA_RTSP_PROTOCOL", str(vcfg.get("rtsp_transport", "tcp")))
+        clock = vcfg.get("aipu_clock_mhz", 400)
+        mvm = vcfg.get("mvm_utilization", 20)
+        if clock or mvm:
+            os.environ.setdefault("AXELERA_CONFIGURE_BOARD", f"{clock or ''},{mvm or ''}")
 
         self._lock = threading.RLock()
         self._stream = None
