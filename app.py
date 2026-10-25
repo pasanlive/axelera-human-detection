@@ -207,9 +207,20 @@ def main():
             plan = pipeline.plan
             if plan is not None:
                 cams = pipeline.get_camera_status() if hasattr(pipeline, "get_camera_status") else []
-                waiting = [c["id"] for c in cams if c.get("enabled") and c.get("state") not in ("live",)]
+                face_det_on = pipeline.is_model_enabled("face_detector") if hasattr(pipeline, "is_model_enabled") else False
+                face_rec_on = pipeline.is_model_enabled("face_recognizer") if hasattr(pipeline, "is_model_enabled") else False
+                lpr_on = pipeline.is_model_enabled("license_plate_recognizer") if hasattr(pipeline, "is_model_enabled") else False
+
+                face_str = ""
+                if face_rec_on:
+                    face_str = f" known_faces={stats.get('faces_recognized', 0)}"
+                elif face_det_on:
+                    face_str = f" faces={stats.get('faces_detected', 0)}"
+
+                plate_str = f" plates={stats.get('plates', 0)}" if lpr_on else ""
+
                 print(f"[STATUS] tier={plan.tier.name} target={plan.fps}fps/cam achieved={stats['total_fps']}fps total "
-                      f"persons={stats['persons']} known_faces={stats['faces_recognized']}"
+                      f"persons={stats['persons']}{face_str}{plate_str}"
                       + (f" waiting_for_frames={waiting}" if waiting else ""))
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Stopping pipeline...")

@@ -923,10 +923,10 @@
                         <span style="font-weight: 600;">YOLOv8 Pose</span>
                         <span class="hud-status" id="hud-status-pose_estimator">Active</span>
                     </div>
-                    <div class="hud-chip active" id="hud-face_recognizer">
+                    <div class="hud-chip disabled" id="hud-face_recognizer">
                         <span class="hud-dot"></span>
-                        <span style="font-weight: 600;">ArcFace Rec</span>
-                        <span class="hud-status" id="hud-status-face_recognizer">Active</span>
+                        <span style="font-weight: 600;">RetinaFace + FaceNet</span>
+                        <span class="hud-status" id="hud-status-face_recognizer">Off</span>
                     </div>
                 </div>
                 <div class="video-wrapper">
@@ -1053,11 +1053,11 @@
                     </div>
                     <div class="toggle-row">
                         <div>
-                            <div style="font-weight: 500; font-size: 0.9rem;">Face Recognition (ArcFace)</div>
-                            <div class="sub-label" id="face-sub-status">Active NPU Inferencing</div>
+                            <div style="font-weight: 500; font-size: 0.9rem;">Face Recognition (RetinaFace + FaceNet)</div>
+                            <div class="sub-label" id="face-sub-status">Inference Bypassed (Off)</div>
                         </div>
                         <label class="switch">
-                            <input type="checkbox" id="toggle-face_recognizer" checked onchange="toggleModel('face_recognizer', this.checked)">
+                            <input type="checkbox" id="toggle-face_recognizer" onchange="toggleModel('face_recognizer', this.checked)">
                             <span class="slider"></span>
                         </label>
                     </div>

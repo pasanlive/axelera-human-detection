@@ -78,10 +78,11 @@ class MultiCameraPipeline:
         print("==========================================================")
 
         models_cfg = config.get("models", {}) or {}
+        face_rec_enabled = models_cfg.get("face_recognizer", {}).get("enabled", False)
         self.enabled_models: Dict[str, bool] = {
             "human_detector":           models_cfg.get("human_detector", {}).get("enabled", True),
             "pose_estimator":           models_cfg.get("pose_estimator", {}).get("enabled", True),
-            "face_recognizer":          models_cfg.get("face_recognizer", {}).get("enabled", True),
+            "face_recognizer":          face_rec_enabled,
             "license_plate_recognizer": models_cfg.get("license_plate_recognizer", {}).get("enabled", False),
             "zone_crossing":            config.get("zone_crossing", {}).get("enabled", False),
         }
@@ -95,7 +96,10 @@ class MultiCameraPipeline:
         self.plate_log_interval_s = float(models_cfg.get("license_plate_recognizer", {}).get("log_interval_s", 10.0))
 
         # ── Databases ────────────────────────────────────────────────────────
-        self.face_db = FaceDatabase(db_path=config.get("face_db", {}).get("path", "data/face_db.json"))
+        self.face_db = FaceDatabase(
+            db_path=config.get("face_db", {}).get("path", "data/face_db.json"),
+            quiet=not face_rec_enabled,
+        )
         self.plate_db = PlateDatabase(db_path=config.get("plate_db", {}).get("path", "data/plate_db.json"))
 
         # ── Analytics ────────────────────────────────────────────────────────
@@ -370,20 +374,26 @@ class MultiCameraPipeline:
 
         # Faces → identities (vectorised gallery match + per-track voting)
         faces_out: List[Dict[str, Any]] = []
-        if fa.faces and self.is_model_enabled("face_recognizer", cam_id):
-            with_emb = [f for f in fa.faces if f["embedding"] is not None]
+        face_det_on = self.is_model_enabled("face_detector", cam_id) or self.is_model_enabled("face_recognizer", cam_id)
+        face_rec_on = self.is_model_enabled("face_recognizer", cam_id)
+
+        if fa.faces and face_det_on:
+            with_emb = [f for f in fa.faces if f.get("embedding") is not None] if face_rec_on else []
             matches = self.face_db.match_batch(np.stack([f["embedding"] for f in with_emb]),
                                                self.match_threshold) if with_emb else []
-            for f, (name, sim) in zip(with_emb, matches):
+            match_map = {id(f): (name, sim) for f, (name, sim) in zip(with_emb, matches)}
+            for f in fa.faces:
+                name, sim = match_map.get(id(f), ("Unknown", 0.0))
                 tid = None
                 if f["person_index"] is not None and f["person_index"] < len(persons):
                     tid = persons[f["person_index"]]["track_id"]
-                if tid is not None:
+                if tid is not None and face_rec_on:
                     name, sim = self.identity.update(cam_id, tid, name, sim, now)
                     persons[f["person_index"]]["identity"] = name
                 faces_out.append({"bbox": f["bbox"], "name": name, "similarity": sim,
-                                  "track_id": tid, "embedding": f["embedding"]})
-        self.identity.purge(cam_id, track_ids, now)
+                                  "track_id": tid, "embedding": f.get("embedding")})
+        if face_rec_on:
+            self.identity.purge(cam_id, track_ids, now)
 
         # Plates → throttled logging
         plates_out = fa.plates if self.is_model_enabled("license_plate_recognizer", cam_id) else []
@@ -408,6 +418,7 @@ class MultiCameraPipeline:
 
         with self._state_lock:
             self._latest[cam_id] = {"ts": now, "persons": len(persons), "faces": faces_out,
+                                    "faces_detected": len(faces_out),
                                     "known_faces": sum(1 for f in faces_out if f["name"] != "Unknown"),
                                     "plates": len(plates_out), "frame_size": fa.frame_size}
 
@@ -488,9 +499,10 @@ class MultiCameraPipeline:
     def get_stats(self) -> Dict[str, Any]:
         with self._state_lock:
             latest = dict(self._latest)
+        face_rec_on = self.is_model_enabled("face_recognizer")
         return {
             "persons": sum(v["persons"] for v in latest.values()),
-            "faces_recognized": sum(v["known_faces"] for v in latest.values()),
+            "faces_recognized": sum(v["known_faces"] for v in latest.values()) if face_rec_on else 0,
             "plates": sum(v["plates"] for v in latest.values()),
             "total_fps": round(sum(self.runtime.camera_fps.values()), 1),
         }
@@ -531,7 +543,7 @@ class MultiCameraPipeline:
             },
             {
                 "id": "face_recognizer", "name": "RetinaFace + FaceNet Recognizer", "task": "Biometric Identification",
-                "description": "RetinaFace-mb0.25 detection → face alignment → 512-d FaceNet embeddings on Metis",
+                "description": "RetinaFace detection → face alignment → 512-d FaceNet embeddings on Metis",
                 "enabled": st("face_recognizer"), "inferencing": running and st("face_recognizer"),
                 "backend": backend, "weights": "retinaface-mb0.25 + facenet-vggface2 (INT8)",
                 "input_size": [160, 160], "match_threshold": self.match_threshold,

@@ -184,57 +184,39 @@ def _patch_voyager_stream_input() -> None:
         requires_decodebin = False
         fps_limit = ''
 
-        target_fps = int(
-            getattr(self, "_requested_fps", 0)
-            or getattr(self, "_specified_frame_rate", 0)
-            or getattr(io.SinglePipeInput, "_global_fps_limit", 25)
-            or 25
-        )
-
         if self._src.type == ax_config.SourceType.USB:
             requires_decodebin = io._build_gst_usb(gst, self._src)
-            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
         elif self._src.type == ax_config.SourceType.RTSP:
             io._build_gst_rtsp(gst, self._src.location, stream_idx, latency=self._rtsp_latency)
             requires_decodebin = True
-            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
         elif self._src.type == ax_config.SourceType.HLS:
             gst.playbin(uri=self._src.location)
-            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
         elif self._src.type == ax_config.SourceType.FAKE_VIDEO:
             gst.videotestsrc(is_live=True, pattern=0)
             dims = f"width={self._src.width},height={self._src.height}"
-            gst.capsfilter(caps=f'video/x-raw,{dims},format=NV12,framerate={self._src.fps or target_fps}/1')
+            gst.capsfilter(caps=f'video/x-raw,{dims},format=NV12,framerate={self._src.fps or 25}/1')
             requires_decodebin = True
         elif self._src.type in (ax_config.SourceType.IMAGE_FILES, ax_config.SourceType.DATA_SOURCE):
             io._build_data_loader(gst, stream_idx)
             gst.images = [os.path.relpath(str(i), os.getcwd()) for i in self._src.images]
-            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
+            fps_limit = f';fps_limit:{self._requested_fps}' if getattr(self, '_requested_fps', 0) else ''
         elif self._src.type == ax_config.SourceType.VIDEO_FILE:
             gst.filesrc(location=self._src.location)
             requires_decodebin = True
-            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
+            fps_limit = f';fps_limit:{self._requested_fps}' if getattr(self, '_requested_fps', 0) else ''
         else:
             raise NotImplementedError(f"{self._src.type} format not supported in gst pipe")
 
         decodebin_link = ''
         if requires_decodebin:
             decodebin_link = io.build_decodebin(gst, self._allow_hardware_codec, stream_idx)
-            # Insert a real-time leaky queue directly after decodebin:
-            # Drops all stale pre-roll buffers and network backlogs, guaranteeing that ONLY 1 real-time frame
-            # at a time is ever passed downstream to the Metis AIPU command queue.
-            gst.queue(
-                props={
-                    'max-size-buffers': 1,
-                    'max-size-bytes': 0,
-                    'max-size-time': 0,
-                    'leaky': 2,  # 2 = downstream: drop oldest
-                },
-                name=decodebin_link,
-            )
+
+        # Do NOT call videorate for RTSP live streams; avoid duplicating buffers
+        if self._specified_frame_rate and self._src.type != ax_config.SourceType.RTSP:
+            gst.videorate(name=decodebin_link)
+            gst.capsfilter(caps=f'video/x-raw,framerate={self._specified_frame_rate}/1')
             decodebin_link = ''
 
-        # Do NOT call videorate here; fps_limit in libinplace_addstreamid.so paces without duplicating buffers.
         gst.axinplace(
             name=decodebin_link,
             lib='libinplace_addstreamid.so',
@@ -244,21 +226,6 @@ def _patch_voyager_stream_input() -> None:
 
     io._build_gst_rtsp = patched_build_gst_rtsp
     io.SinglePipeInput.build_input_gst = patched_build_input_gst
-
-    # Ensure downstream appsink drops stale frames rather than buffering
-    try:
-        from axelera.app import gst_builder
-        orig_appsink = getattr(gst_builder.Builder, "appsink", None)
-        if orig_appsink is not None:
-            def patched_appsink(self_b: Any, props: Any = {}, **kwargs: Any) -> None:
-                p = dict(props) if isinstance(props, dict) else {}
-                p['drop'] = True
-                p['max-buffers'] = 1
-                return orig_appsink(self_b, p, **kwargs)
-
-            gst_builder.Builder.appsink = patched_appsink
-    except Exception:
-        pass
 
     _VOYAGER_INPUT_PATCHED = True
 
@@ -294,8 +261,8 @@ class VoyagerRuntime(BaseRuntime):
         self.build_opts = build_options_from_config(vcfg)
         os.environ.setdefault("AXELERA_RTSP_PROTOCOL", str(vcfg.get("rtsp_transport", "tcp")))
         clock = vcfg.get("aipu_clock_mhz")
-        mvm = vcfg.get("mvm_utilization")
-        if clock or mvm:
+        mvm = vcfg.get("mvm_utilization", 40)
+        if clock or mvm is not None:
             cfg_str = f"{clock or ''},{mvm or ''}" if mvm is not None else str(clock or '')
             os.environ["AXELERA_CONFIGURE_BOARD"] = cfg_str
             print(f"[VOYAGER HW] Metis board configuration active: AXELERA_CONFIGURE_BOARD={cfg_str}")

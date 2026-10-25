@@ -21,18 +21,21 @@ FORMAT_VERSION = 2
 class FaceDatabase:
     """Stores enrolled face identity vectors and performs top-1 cosine matching."""
 
-    def __init__(self, db_path: str = "data/face_db.json", model: str = EMBEDDING_MODEL):
+    def __init__(self, db_path: str = "data/face_db.json", model: str = EMBEDDING_MODEL, quiet: bool = False):
         self.db_path = db_path
         self.model = model
+        self.quiet = quiet
         self.identities: Dict[str, np.ndarray] = {}  # name -> unit-norm embedding
         self._lock = threading.RLock()
         self._names: List[str] = []
         self._matrix: Optional[np.ndarray] = None  # (K, D) stacked gallery for vectorised matching
-        self.load()
+        self.load(quiet=quiet)
 
     # ── persistence ──────────────────────────────────────────────────────────
-    def load(self):
+    def load(self, quiet: Optional[bool] = None):
         """Loads enrolled face gallery from disk."""
+        if quiet is None:
+            quiet = self.quiet
         if not os.path.exists(self.db_path):
             os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
             self.save()
@@ -62,7 +65,8 @@ class FaceDatabase:
             for name, vec_list in entries.items():
                 self.identities[name] = np.asarray(vec_list, dtype=np.float32)
             self._rebuild_index()
-        print(f"[FACE DB] Loaded {len(self.identities)} enrolled identity face profiles ({self.model}).")
+        if not quiet:
+            print(f"[FACE DB] Loaded {len(self.identities)} enrolled identity face profiles ({self.model}).")
 
     def _backup_incompatible(self, reason: str):
         backup = os.path.splitext(self.db_path)[0] + ".legacy.json"

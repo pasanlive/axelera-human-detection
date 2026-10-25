@@ -35,9 +35,9 @@ plate_db:
   path: data/plate_db.json
 models:
   human_detector:
-    enabled: false
+    enabled: true
   pose_estimator:
-    enabled: false
+    enabled: true
   face_recognizer:
     enabled: false
     match_threshold: 0.55
@@ -52,9 +52,11 @@ voyager:
   num_calibration_images: 400
   aipu_cores: 4
   hardware_decode: false # software decode (avdec_h264) prevents Rockchip MPP (rkvdec2) driver crashes
-  rtsp_transport: all
+  rtsp_transport: tcp
   rtsp_latency_ms: 200
   low_latency: false
+  aipu_clock_mhz: 400 # 400 MHz clock profile prevents PCIe voltage droop
+  mvm_utilization: 40 # 40% MVM limitation protects Antelao RK3588 M.2 power rail from Level-Zero -1301 timeout
   specified_frame_rate: 0 # 0 prevents videorate duplicate buffer crash (inplace_addstreamid)
   reconnect_interval_s: 5
   thresholds:
