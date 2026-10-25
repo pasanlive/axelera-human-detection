@@ -162,7 +162,10 @@ class PreviewHub:
             now = time.time()
             if GRID in direct and now - last_grid >= 1.0 / self.grid_fps:
                 last_grid = now
-                self._publish(GRID, self._encode(self.compose_grid()))
+                try:
+                    self._publish(GRID, self._encode(self.compose_grid()))
+                except Exception as e:
+                    print(f"[PREVIEW] compose_grid error: {e}")
 
     def compose_grid(self) -> np.ndarray:
         gw, gh = self.grid_size
@@ -180,6 +183,12 @@ class PreviewHub:
         tw, th = gw // cols, gh // rows
         grid = np.zeros((th * rows, tw * cols, 3), dtype=np.uint8)
         for i, t in enumerate(tiles):
+            if t is None or not hasattr(t, "shape"):
+                continue
+            if t.ndim == 2:
+                t = cv2.cvtColor(t, cv2.COLOR_GRAY2BGR)
+            elif t.ndim == 3 and t.shape[2] == 1:
+                t = cv2.cvtColor(t, cv2.COLOR_GRAY2BGR)
             r, c = divmod(i, cols)
             grid[r * th:(r + 1) * th, c * tw:(c + 1) * tw] = cv2.resize(t, (tw, th), interpolation=cv2.INTER_AREA)
         return grid

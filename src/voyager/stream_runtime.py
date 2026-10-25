@@ -504,21 +504,31 @@ class VoyagerRuntime(BaseRuntime):
                             if _img is None:
                                 return None
                             try:
+                                arr = None
                                 if hasattr(_img, "asarray"):
                                     try:
-                                        arr = _img.asarray()
-                                    except (TypeError, ValueError):
+                                        from axelera import types as _ax_types
+                                        arr = _img.asarray(_ax_types.ColorFormat.BGR)
+                                    except Exception:
                                         try:
-                                            from axelera import types as _ax_types
-                                            arr = _img.asarray(_ax_types.ColorFormat.BGR)
-                                        except Exception:
                                             arr = _img.asarray("BGR")
-                                    if arr is not None:
-                                        return arr.copy() if hasattr(arr, "copy") else arr
-                                if hasattr(_img, "to_numpy"):
-                                    return _img.to_numpy().copy()
-                                if isinstance(_img, np.ndarray):
-                                    return _img.copy()
+                                        except Exception:
+                                            try:
+                                                arr = _img.asarray()
+                                            except Exception:
+                                                pass
+                                if arr is None and hasattr(_img, "to_numpy"):
+                                    arr = _img.to_numpy()
+                                if arr is None and isinstance(_img, np.ndarray):
+                                    arr = _img
+                                if arr is not None:
+                                    if hasattr(arr, "copy"):
+                                        arr = arr.copy()
+                                    if arr.ndim == 2:
+                                        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+                                    elif arr.ndim == 3 and arr.shape[2] == 1:
+                                        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+                                    return arr
                             except Exception as e:
                                 print(f"[PREVIEW ERROR] Failed to extract image from frame: {e}")
                             return None
