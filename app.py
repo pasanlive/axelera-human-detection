@@ -207,6 +207,7 @@ def main():
             plan = pipeline.plan
             if plan is not None:
                 cams = pipeline.get_camera_status() if hasattr(pipeline, "get_camera_status") else []
+                waiting = [c["id"] for c in cams if c.get("enabled") and c.get("state") not in ("live",)]
                 face_det_on = pipeline.is_model_enabled("face_detector") if hasattr(pipeline, "is_model_enabled") else False
                 face_rec_on = pipeline.is_model_enabled("face_recognizer") if hasattr(pipeline, "is_model_enabled") else False
                 lpr_on = pipeline.is_model_enabled("license_plate_recognizer") if hasattr(pipeline, "is_model_enabled") else False
@@ -224,6 +225,10 @@ def main():
                       + (f" waiting_for_frames={waiting}" if waiting else ""))
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Stopping pipeline...")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"\n[FATAL ERROR] Main loop encountered unhandled exception: {e}", file=sys.stderr)
     finally:
         auto_updater.stop()
         pipeline.stop()
