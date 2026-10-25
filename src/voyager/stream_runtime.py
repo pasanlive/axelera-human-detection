@@ -264,6 +264,12 @@ class VoyagerRuntime(BaseRuntime):
         self.reconnect_s = float(vcfg.get("reconnect_interval_s", 5.0))
         self.build_opts = build_options_from_config(vcfg)
         os.environ.setdefault("AXELERA_RTSP_PROTOCOL", str(vcfg.get("rtsp_transport", "tcp")))
+        clock = vcfg.get("aipu_clock_mhz", 400)
+        mvm = vcfg.get("mvm_utilization")
+        if clock or mvm:
+            cfg_str = f"{clock or ''},{mvm or ''}" if mvm is not None else str(clock or '')
+            os.environ["AXELERA_CONFIGURE_BOARD"] = cfg_str
+            print(f"[VOYAGER HW] Metis board configuration active: AXELERA_CONFIGURE_BOARD={cfg_str}")
 
         self._lock = threading.RLock()
         self._stream = None

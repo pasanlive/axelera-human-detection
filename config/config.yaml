@@ -55,6 +55,8 @@ voyager:
   rtsp_transport: all
   rtsp_latency_ms: 200
   low_latency: false
+  aipu_clock_mhz: 400 # 400 MHz clock profile prevents PCIe voltage droop and MSI timeout on M.2 slots
+  mvm_utilization: null # keep MVM pipeline unthrottled
   specified_frame_rate: 0 # 0 prevents videorate duplicate buffer crash (inplace_addstreamid)
   reconnect_interval_s: 5
   thresholds:
