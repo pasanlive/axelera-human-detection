@@ -595,6 +595,11 @@ class VoyagerRuntime(BaseRuntime):
         self._cam_to_sid.clear()
         self.camera_state.clear()
         self.camera_fps.clear()
+        try:
+            import subprocess
+            subprocess.run(["pkill", "-9", "axtrace"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     def stop(self) -> None:
         with self._lock:

@@ -117,6 +117,14 @@ def main():
         list_faces_cli(config)
         return
 
+    # Clean up any orphaned axtrace processes from previous aborted runs before initializing Metis
+    if not (args.simulate or args.print_plan):
+        try:
+            import subprocess
+            subprocess.run(["pkill", "-9", "axtrace"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
     # Planning is pure Python, so --print-plan never needs the SDK/hardware.
     pipeline = MultiCameraPipeline(config, simulate=args.simulate or args.print_plan, config_path=args.config)
 
@@ -208,6 +216,11 @@ def main():
     finally:
         auto_updater.stop()
         pipeline.stop()
+        try:
+            import subprocess
+            subprocess.run(["pkill", "-9", "axtrace"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
         print("[SHUTDOWN] Axelera Metis system stopped cleanly.")
         os._exit(0)
 
