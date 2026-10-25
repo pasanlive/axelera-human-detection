@@ -56,8 +56,6 @@ voyager:
   rtsp_latency_ms: 200
   low_latency: false
   specified_frame_rate: 0 # 0 prevents videorate duplicate buffer crash (inplace_addstreamid)
-  aipu_clock_mhz: 400 # 400 MHz prevents M.2 voltage droop and MSI timeout on RK3588
-  mvm_utilization: 20 # 20% limit prevents PCIe power rail collapse on embedded SBCs
   reconnect_interval_s: 5
   thresholds:
     person_conf: 0.4

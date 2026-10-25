@@ -264,10 +264,6 @@ class VoyagerRuntime(BaseRuntime):
         self.reconnect_s = float(vcfg.get("reconnect_interval_s", 5.0))
         self.build_opts = build_options_from_config(vcfg)
         os.environ.setdefault("AXELERA_RTSP_PROTOCOL", str(vcfg.get("rtsp_transport", "tcp")))
-        clock = vcfg.get("aipu_clock_mhz", 400)
-        mvm = vcfg.get("mvm_utilization", 20)
-        if clock or mvm:
-            os.environ.setdefault("AXELERA_CONFIGURE_BOARD", f"{clock or ''},{mvm or ''}")
 
         self._lock = threading.RLock()
         self._stream = None
@@ -505,10 +501,27 @@ class VoyagerRuntime(BaseRuntime):
                         img = result.image
 
                         def get_image(_img=img):
-                            try:
-                                return _img.asarray("BGR").copy()
-                            except Exception:
+                            if _img is None:
                                 return None
+                            try:
+                                if hasattr(_img, "asarray"):
+                                    try:
+                                        arr = _img.asarray()
+                                    except (TypeError, ValueError):
+                                        try:
+                                            from axelera import types as _ax_types
+                                            arr = _img.asarray(_ax_types.ColorFormat.BGR)
+                                        except Exception:
+                                            arr = _img.asarray("BGR")
+                                    if arr is not None:
+                                        return arr.copy() if hasattr(arr, "copy") else arr
+                                if hasattr(_img, "to_numpy"):
+                                    return _img.to_numpy().copy()
+                                if isinstance(_img, np.ndarray):
+                                    return _img.copy()
+                            except Exception as e:
+                                print(f"[PREVIEW ERROR] Failed to extract image from frame: {e}")
+                            return None
 
                         self.on_result(cam, analysis, get_image)
                     except Exception:
