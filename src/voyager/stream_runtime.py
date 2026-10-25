@@ -128,6 +128,112 @@ class BaseRuntime:
         self.camera_fps[cam_id] = (len(w) - 1) / (w[-1] - w[0]) if len(w) > 1 and w[-1] > w[0] else 0.0
 
 
+_VOYAGER_INPUT_PATCHED = False
+
+
+def _patch_voyager_stream_input() -> None:
+    """Monkey-patch Axelera Voyager SDK's SinglePipeInput and _build_gst_rtsp.
+
+    Resolves two critical issues for RTSP cameras on embedded Metis platforms:
+    1. SDK 1.6.0 does not pass `fps_limit` for RTSP sources to `libinplace_addstreamid.so`.
+       If `specified_frame_rate > 0`, the SDK inserts `gst.videorate`, which duplicates
+       buffers during network jitter. Because duplicated buffers share metadata,
+       re-entering `libinplace_addstreamid.so` throws:
+           "inplace_addstreamid: meta_key already exists" (SIGABRT).
+       Conversely, when `specified_frame_rate: 0`, GStreamer's appsink has `sync: false`,
+       so decoded RTSP bursts dump into the AIPU at ~300 FPS, triggering PCIe MSI
+       interrupt timeouts:
+           "waitForQueueBinaryCompletion: Wait kernel failed with return code -1301".
+       By setting `fps_limit` directly in `libinplace_addstreamid.so` (without videorate),
+       every frame is paced in C++ to the target FPS (e.g. 25 FPS = 40ms interval).
+    2. Injects `drop-on-latency: True` into `rtspsrc` properties so that network jitter
+       or camera connection bursts drop stale backlogs instead of accumulating latency.
+    """
+    global _VOYAGER_INPUT_PATCHED
+    if _VOYAGER_INPUT_PATCHED:
+        return
+    try:
+        from axelera.app.pipe import io
+        from axelera.app import config as ax_config
+    except ImportError:
+        return
+
+    def patched_build_gst_rtsp(gst: Any, location: str, stream_idx: str, latency: int = 500):
+        username, password, loc = io._parse_livestream_location(location)
+        rtsp_props = {
+            'location': f"{loc}",
+            'user-id': f"{username}",
+            'user-pw': f"{password}",
+            'latency': latency,
+            'drop-on-latency': True,
+            'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
+        }
+        rtsp_protocol = ax_config.env.rtsp_protocol.lower()
+        if rtsp_protocol == 'tcp':
+            rtsp_props['protocols'] = 4
+        elif rtsp_protocol == 'udp':
+            rtsp_props['protocols'] = 1
+        elif rtsp_protocol not in ('all', ''):
+            io.LOG.warning(
+                f"Invalid AXELERA_RTSP_PROTOCOL value: {rtsp_protocol}. Valid values are 'tcp', 'udp', or 'all'."
+            )
+        gst.rtspsrc(rtsp_props)
+        gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
+
+    def patched_build_input_gst(self: Any, gst: Any, stream_idx: str):
+        requires_decodebin = False
+        fps_limit = ''
+
+        target_fps = int(
+            getattr(self, "_requested_fps", 0)
+            or getattr(self, "_specified_frame_rate", 0)
+            or getattr(io.SinglePipeInput, "_global_fps_limit", 25)
+            or 25
+        )
+
+        if self._src.type == ax_config.SourceType.USB:
+            requires_decodebin = io._build_gst_usb(gst, self._src)
+            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
+        elif self._src.type == ax_config.SourceType.RTSP:
+            io._build_gst_rtsp(gst, self._src.location, stream_idx, latency=self._rtsp_latency)
+            requires_decodebin = True
+            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
+        elif self._src.type == ax_config.SourceType.HLS:
+            gst.playbin(uri=self._src.location)
+            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
+        elif self._src.type == ax_config.SourceType.FAKE_VIDEO:
+            gst.videotestsrc(is_live=True, pattern=0)
+            dims = f"width={self._src.width},height={self._src.height}"
+            gst.capsfilter(caps=f'video/x-raw,{dims},format=NV12,framerate={self._src.fps or target_fps}/1')
+            requires_decodebin = True
+        elif self._src.type in (ax_config.SourceType.IMAGE_FILES, ax_config.SourceType.DATA_SOURCE):
+            io._build_data_loader(gst, stream_idx)
+            gst.images = [os.path.relpath(str(i), os.getcwd()) for i in self._src.images]
+            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
+        elif self._src.type == ax_config.SourceType.VIDEO_FILE:
+            gst.filesrc(location=self._src.location)
+            requires_decodebin = True
+            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
+        else:
+            raise NotImplementedError(f"{self._src.type} format not supported in gst pipe")
+
+        decodebin_link = ''
+        if requires_decodebin:
+            decodebin_link = io.build_decodebin(gst, self._allow_hardware_codec, stream_idx)
+
+        # Do NOT call videorate here; fps_limit in libinplace_addstreamid.so paces without duplicating buffers.
+        gst.axinplace(
+            name=decodebin_link,
+            lib='libinplace_addstreamid.so',
+            mode='meta',
+            options=f'stream_id:{stream_idx or 0}{fps_limit}',
+        )
+
+    io._build_gst_rtsp = patched_build_gst_rtsp
+    io.SinglePipeInput.build_input_gst = patched_build_input_gst
+    _VOYAGER_INPUT_PATCHED = True
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Production runtime
 # ═════════════════════════════════════════════════════════════════════════════
@@ -141,6 +247,7 @@ class VoyagerRuntime(BaseRuntime):
         from src.voyager.sdk import sdk_modules
 
         self.sdk = sdk_modules()
+        _patch_voyager_stream_input()
         self.vcfg = vcfg
         from src.voyager.sdk import resolve_networks_dir
 
@@ -266,6 +373,11 @@ class VoyagerRuntime(BaseRuntime):
         self.plan = plan
         if not plan.groups:
             return
+        try:
+            from axelera.app.pipe import io
+            io.SinglePipeInput._global_fps_limit = plan.fps
+        except Exception:
+            pass
         sdk = self.sdk
         first, rest = plan.groups[0], plan.groups[1:]
         sys_kwargs: Dict[str, Any] = dict(allow_hardware_codec=self.allow_hw_codec, timeout=0)
