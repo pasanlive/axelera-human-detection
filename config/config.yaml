@@ -54,7 +54,7 @@ voyager:
   hardware_decode: false # software decode (avdec_h264) prevents Rockchip MPP (rkvdec2) driver crashes
   rtsp_transport: all
   rtsp_latency_ms: 200
-  low_latency: true # caps queue size to 1 and processes single-frame real-time without buffering
+  low_latency: false
   specified_frame_rate: 0 # 0 prevents videorate duplicate buffer crash (inplace_addstreamid)
   reconnect_interval_s: 5
   thresholds:
