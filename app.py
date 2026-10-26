@@ -79,6 +79,10 @@ def main():
     parser.add_argument("--print-plan", action="store_true", help="Print the capacity plan and exit")
     parser.add_argument("--no-hw-decode", action="store_true", help="Force software video decode (diagnostics)")
     parser.add_argument("--no-tiling", action="store_true", help="Disable tiled (ultra) inference (diagnostics)")
+    parser.add_argument("--debug", action="store_true", help="Enable extensive diagnostic logging (GStreamer, Level-Zero, and hardware watchdog)")
+    parser.add_argument("--no-tracers", action="store_true", help="Disable background axtrace processes (prevents concurrent /dev/metis* access)")
+    parser.add_argument("--aipu-clock", type=str, default=None, help="Override AIPU clock in MHz (e.g. 400, 800, or none)")
+    parser.add_argument("--mvm-limit", type=str, default=None, help="Override MVM utilization limit percentage (e.g. 40, 50, 100, or none)")
     parser.add_argument("--headless", action="store_true", help="Run in strict headless mode (unsets DISPLAY and disables GUI probes)")
     parser.add_argument("--web", action="store_true", default=False, help="Enable local network web dashboard interface")
     parser.add_argument("--no-web", action="store_true", help="Disable web dashboard interface")
@@ -88,6 +92,17 @@ def main():
     parser.add_argument("--cert", type=str, default=None, help="SSL certificate filepath")
     parser.add_argument("--key", type=str, default=None, help="SSL private key filepath")
     args = parser.parse_args()
+
+    # Enable crash handler for C++ abort / L0::Exception
+    from src.utils.hw_diag import enable_crash_handler
+    enable_crash_handler()
+
+    if args.debug:
+        os.environ["ZE_DEBUG"] = "1"
+        os.environ["AXELERA_LOG_LEVEL"] = "DEBUG"
+        if not os.environ.get("GST_DEBUG"):
+            os.environ["GST_DEBUG"] = "2,axinferencenet:4,axinplace:4"
+        print("[DIAG] Detailed diagnostic logging active (ZE_DEBUG=1, GST_DEBUG=2,axinferencenet:4)")
 
     if args.headless or not os.environ.get("DISPLAY"):
         # Explicit headless mode: prevent X11 auth warnings and Pyglet display probe errors
@@ -103,6 +118,17 @@ def main():
     if args.no_tiling:
         config.setdefault("capacity", {})["enable_tiling"] = False
         print("[DIAG] Tiled inference disabled")
+    if args.no_tracers:
+        config.setdefault("voyager", {})["disable_tracers"] = True
+        print("[DIAG] Background axtrace tracers disabled")
+    if args.aipu_clock is not None:
+        val = None if args.aipu_clock.lower() in ("none", "0") else int(args.aipu_clock)
+        config.setdefault("voyager", {})["aipu_clock_mhz"] = val
+        print(f"[DIAG] AIPU clock profile override: {val}")
+    if args.mvm_limit is not None:
+        val = None if args.mvm_limit.lower() in ("none", "0") else int(args.mvm_limit)
+        config.setdefault("voyager", {})["mvm_utilization"] = val
+        print(f"[DIAG] MVM utilization override: {val}")
     if args.headless:
         print("[DIAG] Strict headless mode active (DISPLAY disabled)")
 
@@ -220,8 +246,19 @@ def main():
 
                 plate_str = f" plates={stats.get('plates', 0)}" if lpr_on else ""
 
+                rt_metrics = pipeline.get_runtime_metrics() if hasattr(pipeline, "get_runtime_metrics") else {}
+                wd_metrics = rt_metrics.get("watchdog", {})
+                lat_str = ""
+                frames_str = ""
+                if wd_metrics:
+                    lat_str = f" lat={wd_metrics.get('last_latency_ms', 0):.1f}ms (p95={wd_metrics.get('p95_latency_ms', 0):.1f}ms)"
+                    frames_str = f" frames={wd_metrics.get('frames_processed', 0)}"
+
+                core_temp = rt_metrics.get("core_temp", {}).get("value")
+                temp_str = f" temp={core_temp:.0f}°C" if core_temp is not None else ""
+
                 print(f"[STATUS] tier={plan.tier.name} target={plan.fps}fps/cam achieved={stats['total_fps']}fps total "
-                      f"persons={stats['persons']}{face_str}{plate_str}"
+                      f"persons={stats['persons']}{face_str}{plate_str}{frames_str}{lat_str}{temp_str}"
                       + (f" waiting_for_frames={waiting}" if waiting else ""))
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Stopping pipeline...")

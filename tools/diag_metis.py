@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""
+Comprehensive Hardware & Driver Diagnostic Utility for Axelera Metis on Rockchip / Embedded Linux.
+
+Checks:
+1. PCIe link status, negotiated speed (Gen1/2/3), width, and ASPM power states.
+2. Kernel dmesg ring buffer for PCIe, UIO, DMA, and Metis driver events.
+3. Axelera Metis device nodes (/dev/metis*) and orphaned file descriptors.
+4. axdevice firmware / driver version alignment.
+5. System thermals and power profile.
+
+Usage:
+  python tools/diag_metis.py
+  python tools/diag_metis.py --fix-aspm   # Proposes or executes setpci command to disable PCIe ASPM
+"""
+
+import argparse
+import glob
+import os
+import platform
+import re
+import subprocess
+import sys
+
+
+def print_header(title: str) -> None:
+    print("\n" + "=" * 65)
+    print(f"  {title}")
+    print("=" * 65)
+
+
+def run_cmd(cmd: list[str], timeout: int = 5) -> tuple[int, str]:
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        out = (res.stdout or "") + (res.stderr or "")
+        return res.returncode, out.strip()
+    except Exception as e:
+        return -1, str(e)
+
+
+def check_system() -> None:
+    print_header("System & Platform Architecture")
+    uname = platform.uname()
+    print(f"OS / Kernel:     {uname.system} {uname.release} ({uname.machine})")
+    print(f"Python:          {sys.version.split()[0]} ({sys.executable})")
+
+    # Check Rockchip device tree model if on ARM
+    rk_model = "/proc/device-tree/model"
+    if os.path.exists(rk_model):
+        try:
+            with open(rk_model, "r") as f:
+                print(f"Hardware Model:  {f.read().strip()}")
+        except Exception:
+            pass
+
+    # Check thermal zones
+    tz_files = sorted(glob.glob("/sys/class/thermal/thermal_zone*/temp"))
+    if tz_files:
+        temps = []
+        for tf in tz_files:
+            type_f = os.path.join(os.path.dirname(tf), "type")
+            try:
+                name = open(type_f).read().strip() if os.path.exists(type_f) else os.path.basename(os.path.dirname(tf))
+                val = float(open(tf).read().strip()) / 1000.0
+                temps.append(f"{name}: {val:.1f}°C")
+            except Exception:
+                pass
+        if temps:
+            print(f"SoC Thermals:    {', '.join(temps[:4])}")
+
+
+def check_pcie() -> None:
+    print_header("PCIe Bus & ASPM Power State Inspection")
+    rc, out = run_cmd(["lspci", "-d", "1f76:", "-vvv"])
+    if rc != 0 or not out:
+        # Fall back to listing all devices
+        rc_all, out_all = run_cmd(["lspci"])
+        print("[WARNING] Axelera PCIe device (Vendor 1f76) not found via 'lspci -d 1f76:'")
+        if "1f76" in out_all or "Axelera" in out_all or "Processing accelerators" in out_all:
+            print("Found potential accelerator in full lspci:")
+            for l in out_all.splitlines():
+                if any(k in l for k in ("Axelera", "1f76", "Processing accelerators")):
+                    print(f"  --> {l}")
+        else:
+            print("Available PCIe devices:")
+            for l in out_all.splitlines()[:10]:
+                print(f"  {l}")
+        return
+
+    print("Found Axelera Metis PCIe Device:")
+    lines = out.splitlines()
+    for l in lines[:3]:
+        print(f"  {l}")
+
+    link_caps, link_status, aspm_info = None, None, []
+    for l in lines:
+        l_str = l.strip()
+        if "LnkCap:" in l_str:
+            link_caps = l_str
+        elif "LnkSta:" in l_str:
+            link_status = l_str
+        elif "ASPM" in l_str:
+            aspm_info.append(l_str)
+
+    if link_caps:
+        print(f"\n  Link Capabilities:  {link_caps}")
+    if link_status:
+        print(f"  Link Status:        {link_status}")
+        # Detect downgrade
+        if "Speed 2.5GT/s" in link_status and "Speed 8GT/s" in (link_caps or ""):
+            print("  [ALERT] PCIe link speed downgraded to Gen1 (2.5GT/s) - indicates PCIe signal degradation!")
+
+    if aspm_info:
+        print(f"  ASPM Power States:  {'; '.join(aspm_info)}")
+        if any("ASPM L1" in s and "Enabled" in s for s in aspm_info):
+            print("\n  [CRITICAL NOTICE FOR RK3588]")
+            print("  PCIe ASPM L1 is ENABLED. On Rockchip RK3588, when the PCIe controller enters L1")
+            print("  power-saving state, MSI interrupts from the Metis AIPU can be dropped, causing:")
+            print("    'waitForQueueBinaryCompletion: Wait kernel failed with return code -1301'")
+            print("  Recommendation: Disable PCIe ASPM by adding 'pcie_aspm=off' to kernel cmdline or:")
+            print("    sudo setpci -d 1f76: CAP_EXP+0x10.w=0x0000")
+
+
+def check_metis_device() -> None:
+    print_header("Axelera Metis Driver & Device Node Check")
+    devs = glob.glob("/dev/metis*")
+    if not devs:
+        print("[ERROR] No /dev/metis* device nodes found!")
+        print("Check if metis kernel module is loaded: 'lsmod | grep -E \"metis|uio\"'")
+    else:
+        print(f"Detected Metis device nodes: {devs}")
+        for d in devs:
+            rc, out = run_cmd(["ls", "-la", d])
+            print(f"  {out}")
+
+    # Check axdevice CLI
+    rc_ax, out_ax = run_cmd(["axdevice", "-v"])
+    if rc_ax == 0:
+        print("\naxdevice information:")
+        for l in out_ax.splitlines()[:12]:
+            print(f"  {l}")
+    else:
+        print(f"[NOTE] 'axdevice -v' returned code {rc_ax} ({out_ax[:100]})")
+
+    # Check for active processes holding the device
+    print_header("Processes Accessing Metis Device")
+    rc_fus, out_fus = run_cmd(["fuser", "-v", "/dev/metis-0:1:0"])
+    if out_fus.strip():
+        print("Active processes:")
+        for l in out_fus.splitlines():
+            print(f"  {l}")
+    else:
+        print("No processes currently locking /dev/metis-0:1:0.")
+
+
+def check_dmesg() -> None:
+    print_header("Kernel Log (dmesg) Metis / PCIe / DMA Events")
+    rc, out = run_cmd(["dmesg", "-T"], timeout=3)
+    if rc != 0:
+        rc, out = run_cmd(["dmesg"], timeout=3)
+    if rc == 0 and out:
+        pattern = re.compile(r"(metis|uio|pcie|dma|rockchip-pcie|aer|msi|timeout|failed)", re.IGNORECASE)
+        matches = [l for l in out.splitlines() if pattern.search(l)]
+        if matches:
+            print(f"Found {len(matches)} relevant kernel log lines. Recent entries:")
+            for l in matches[-20:]:
+                print(f"  {l}")
+        else:
+            print("No recent metis/uio/pcie error entries in dmesg.")
+    else:
+        print("[NOTE] dmesg access restricted (run with sudo or check permissions).")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Axelera Metis Diagnostics on RK3588")
+    parser.add_argument("--fix-aspm", action="store_true", help="Attempt to disable PCIe ASPM on Axelera device")
+    args = parser.parse_args()
+
+    check_system()
+    check_pcie()
+    check_metis_device()
+    check_dmesg()
+
+    if args.fix_aspm:
+        print_header("Disabling PCIe ASPM on Axelera Device")
+        rc, out = run_cmd(["setpci", "-d", "1f76:", "CAP_EXP+0x10.w=0x0000"])
+        print(f"setpci result: code={rc} output={out}")
+
+    print_header("Diagnostic Complete")
+
+
+if __name__ == "__main__":
+    main()

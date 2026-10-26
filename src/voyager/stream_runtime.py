@@ -291,6 +291,7 @@ class VoyagerRuntime(BaseRuntime):
         self.allow_hw_codec = bool(vcfg.get("hardware_decode", True))
         self.aipu_cores = int(vcfg.get("aipu_cores", 4))
         self.reconnect_s = float(vcfg.get("reconnect_interval_s", 5.0))
+        self.disable_tracers = bool(vcfg.get("disable_tracers", False))
         self.build_opts = build_options_from_config(vcfg)
         os.environ["AXELERA_RTSP_PROTOCOL"] = str(vcfg.get("rtsp_transport", "all"))
         clock = vcfg.get("aipu_clock_mhz")
@@ -301,6 +302,10 @@ class VoyagerRuntime(BaseRuntime):
             print(f"[VOYAGER HW] Metis board configuration active: AXELERA_CONFIGURE_BOARD={cfg_str}")
         else:
             os.environ.pop("AXELERA_CONFIGURE_BOARD", None)
+
+        from src.utils.hw_diag import get_watchdog
+        self.watchdog = get_watchdog()
+        self.watchdog.start()
 
         self._lock = threading.RLock()
         self._stream = None
@@ -420,10 +425,14 @@ class VoyagerRuntime(BaseRuntime):
         sys_kwargs: Dict[str, Any] = dict(allow_hardware_codec=self.allow_hw_codec, timeout=0)
         if self.build_root:
             sys_kwargs["build_root"] = self.build_root
-        tracers = sdk.inf_tracers.create_tracers(
-            "end_to_end_fps", "core_temp", "device_fps", "cpu_usage",
-            _aipu_cores=self.aipu_cores, pipe_type="gst",
-        )
+        if self.disable_tracers:
+            tracers = []
+            print("[VOYAGER HW] Metis tracers disabled (zero background axtrace processes)")
+        else:
+            tracers = sdk.inf_tracers.create_tracers(
+                "end_to_end_fps", "core_temp", "device_fps", "cpu_usage",
+                _aipu_cores=self.aipu_cores, pipe_type="gst",
+            )
         self._stopping = False
         import re as _re
 
@@ -521,6 +530,8 @@ class VoyagerRuntime(BaseRuntime):
 
     def _consume(self, stream: Any) -> None:
         FrameEventType = self.sdk.FrameEventType
+        self.watchdog.set_stream_active(True)
+        t_last = time.time()
         try:
             for event in stream.with_events():
                 if self._stopping:
@@ -531,6 +542,9 @@ class VoyagerRuntime(BaseRuntime):
                     if cam is None:
                         continue
                     now = time.time()
+                    lat_ms = (now - t_last) * 1000.0 if t_last > 0 else 0.0
+                    t_last = now
+                    self.watchdog.record_frame(cam, lat_ms)
                     self._tick_fps(cam, now)
                     self.camera_state[cam] = "live"
                     try:
@@ -584,6 +598,8 @@ class VoyagerRuntime(BaseRuntime):
                 self.last_error = str(e)
                 self.on_event(None, "error", f"Voyager stream terminated: {e}")
                 traceback.print_exc()
+        finally:
+            self.watchdog.set_stream_active(False)
 
     def _schedule_reconnect(self, cam: str) -> None:
         if cam in self._reconnecting:
@@ -645,14 +661,16 @@ class VoyagerRuntime(BaseRuntime):
     # ── telemetry ───────────────────────────────────────────────────────────
     def metrics(self) -> Dict[str, Any]:
         stream = self._stream
-        if stream is None:
-            return {}
-        try:
-            raw = stream.get_all_metrics()
-        except Exception:
-            return {}
-        return {k: {"value": float(getattr(m, "value", 0.0)), "unit": getattr(m, "unit", ""),
-                    "title": getattr(m, "title", k)} for k, m in raw.items()}
+        res: Dict[str, Any] = {}
+        if stream is not None:
+            try:
+                raw = stream.get_all_metrics()
+                res = {k: {"value": float(getattr(m, "value", 0.0)), "unit": getattr(m, "unit", ""),
+                            "title": getattr(m, "title", k)} for k, m in raw.items()}
+            except Exception:
+                pass
+        res["watchdog"] = self.watchdog.get_metrics()
+        return res
 
     # ── enrollment ──────────────────────────────────────────────────────────
     def embed_face_image(self, image_bgr: np.ndarray) -> Optional[np.ndarray]:
