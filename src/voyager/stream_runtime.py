@@ -184,26 +184,36 @@ def _patch_voyager_stream_input() -> None:
         requires_decodebin = False
         fps_limit = ''
 
+        target_fps = int(
+            getattr(self, "_requested_fps", 0)
+            or getattr(self, "_specified_frame_rate", 0)
+            or getattr(io.SinglePipeInput, "_global_fps_limit", 25)
+            or 25
+        )
+
         if self._src.type == ax_config.SourceType.USB:
             requires_decodebin = io._build_gst_usb(gst, self._src)
+            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
         elif self._src.type == ax_config.SourceType.RTSP:
             io._build_gst_rtsp(gst, self._src.location, stream_idx, latency=self._rtsp_latency)
             requires_decodebin = True
+            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
         elif self._src.type == ax_config.SourceType.HLS:
             gst.playbin(uri=self._src.location)
+            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
         elif self._src.type == ax_config.SourceType.FAKE_VIDEO:
             gst.videotestsrc(is_live=True, pattern=0)
             dims = f"width={self._src.width},height={self._src.height}"
-            gst.capsfilter(caps=f'video/x-raw,{dims},format=NV12,framerate={self._src.fps or 25}/1')
+            gst.capsfilter(caps=f'video/x-raw,{dims},format=NV12,framerate={self._src.fps or target_fps}/1')
             requires_decodebin = True
         elif self._src.type in (ax_config.SourceType.IMAGE_FILES, ax_config.SourceType.DATA_SOURCE):
             io._build_data_loader(gst, stream_idx)
             gst.images = [os.path.relpath(str(i), os.getcwd()) for i in self._src.images]
-            fps_limit = f';fps_limit:{self._requested_fps}' if getattr(self, '_requested_fps', 0) else ''
+            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
         elif self._src.type == ax_config.SourceType.VIDEO_FILE:
             gst.filesrc(location=self._src.location)
             requires_decodebin = True
-            fps_limit = f';fps_limit:{self._requested_fps}' if getattr(self, '_requested_fps', 0) else ''
+            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
         else:
             raise NotImplementedError(f"{self._src.type} format not supported in gst pipe")
 
