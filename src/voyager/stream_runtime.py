@@ -132,20 +132,26 @@ _VOYAGER_INPUT_PATCHED = False
 
 
 def _patch_voyager_stream_input() -> None:
-    """Monkey-patch Axelera Voyager SDK's SinglePipeInput and _build_gst_rtsp.
+    """Monkey-patch Axelera Voyager SDK's SinglePipeInput, gst_builder, and _build_gst_rtsp.
 
-    Resolves two critical issues for RTSP cameras on embedded Metis platforms:
-    1. SDK 1.6.0 does not pass `fps_limit` for RTSP sources to `libinplace_addstreamid.so`.
-       If `specified_frame_rate > 0`, the SDK inserts `gst.videorate`, which duplicates
-       buffers during network jitter. Because duplicated buffers share metadata,
-       re-entering `libinplace_addstreamid.so` throws:
+    Resolves critical issues for RTSP cameras on embedded Metis platforms:
+    1. SDK 1.6.0 does not rate-limit RTSP camera inputs when specified_frame_rate is 0.
+       Decoded RTSP bursts dump into the AIPU at >400 FPS, overflowing the Level-Zero
+       command queue and triggering PCIe MSI timeout:
+           "waitForQueueBinaryCompletion: Wait kernel failed with return code -1301"
+           "terminate called after throwing an instance of 'L0::Exception'".
+       If specified_frame_rate > 0 was used in stock SDK, it inserted gst.videorate with
+       duplicate: True, which duplicates buffers on network jitter, causing:
            "inplace_addstreamid: meta_key already exists" (SIGABRT).
-       Conversely, when `specified_frame_rate: 0`, GStreamer's appsink has `sync: false`,
-       so decoded RTSP bursts dump into the AIPU at ~300 FPS, triggering PCIe MSI
-       interrupt timeouts:
-           "waitForQueueBinaryCompletion: Wait kernel failed with return code -1301".
-       By setting `fps_limit` directly in `libinplace_addstreamid.so` (without videorate),
-       every frame is paced in C++ to the target FPS (e.g. 25 FPS = 40ms interval).
+       Fix:
+       - Insert `gst.videorate(drop-only=True, skip-to-first=True)` with capsfilter
+         `framerate={target_fps}/1` BEFORE `libinplace_addstreamid.so`.
+         Because `drop-only: True` is set, frames are NEVER duplicated on jitter (no meta_key crash),
+         and incoming burst frames are dropped so the AIPU receives strictly <= target_fps.
+       - Patch `gst_builder.Builder.queue` to set `max-size-buffers: 2, leaky: 2` (GST_QUEUE_LEAK_DOWNSTREAM),
+         ensuring queues before the Metis AIPU never buffer more than 2 frames.
+       - Patch `gst_builder.Builder.appsink` to set `max-buffers: 1, drop: True` to prevent
+         backpressure accumulation.
     2. Injects `drop-on-latency: True` into `rtspsrc` properties so that network jitter
        or camera connection bursts drop stale backlogs instead of accumulating latency.
     """
@@ -155,8 +161,31 @@ def _patch_voyager_stream_input() -> None:
     try:
         from axelera.app.pipe import io
         from axelera.app import config as ax_config
+        from axelera.app import gst_builder
     except ImportError:
         return
+
+    _orig_builder_queue = getattr(gst_builder.Builder, "queue", None)
+    if _orig_builder_queue is not None:
+        def patched_builder_queue(self: Any, props: Any = None, **kwargs: Any) -> None:
+            p = dict(props or {})
+            p.setdefault('max-size-buffers', 2)
+            p.setdefault('max-size-time', 0)
+            p.setdefault('max-size-bytes', 0)
+            p.setdefault('leaky', 2)  # 2 = GST_QUEUE_LEAK_DOWNSTREAM (drop oldest buffer when full)
+            return _orig_builder_queue(self, p, **kwargs)
+
+        gst_builder.Builder.queue = patched_builder_queue
+
+    _orig_builder_appsink = getattr(gst_builder.Builder, "appsink", None)
+    if _orig_builder_appsink is not None:
+        def patched_builder_appsink(self: Any, props: Any = None, **kwargs: Any) -> None:
+            p = dict(props or {})
+            p['max-buffers'] = 1
+            p['drop'] = True
+            return _orig_builder_appsink(self, p, **kwargs)
+
+        gst_builder.Builder.appsink = patched_builder_appsink
 
     def patched_build_gst_rtsp(gst: Any, location: str, stream_idx: str, latency: int = 500):
         username, password, loc = io._parse_livestream_location(location)
@@ -221,17 +250,25 @@ def _patch_voyager_stream_input() -> None:
         if requires_decodebin:
             decodebin_link = io.build_decodebin(gst, self._allow_hardware_codec, stream_idx)
 
-        # Do NOT call videorate for RTSP live streams; avoid duplicating buffers
-        if self._specified_frame_rate and self._src.type != ax_config.SourceType.RTSP:
-            gst.videorate(name=decodebin_link)
-            gst.capsfilter(caps=f'video/x-raw,framerate={self._specified_frame_rate}/1')
+        # Enforce target camera FPS and drop burst frames from RTSP / network jitter.
+        # drop-only=True ensures videorate ONLY drops excess frames and NEVER duplicates buffers.
+        if target_fps and self._src.type not in (ax_config.SourceType.IMAGE_FILES, ax_config.SourceType.DATA_SOURCE):
+            rate_props = {'drop-only': True, 'skip-to-first': True}
+            if decodebin_link:
+                gst.videorate(props=rate_props, name=decodebin_link)
+            else:
+                gst.videorate(props=rate_props)
+            gst.capsfilter(caps=f'video/x-raw,framerate={target_fps}/1')
             decodebin_link = ''
 
+        axinplace_kwargs = {}
+        if decodebin_link:
+            axinplace_kwargs['name'] = decodebin_link
         gst.axinplace(
-            name=decodebin_link,
             lib='libinplace_addstreamid.so',
             mode='meta',
             options=f'stream_id:{stream_idx or 0}{fps_limit}',
+            **axinplace_kwargs,
         )
 
     io._build_gst_rtsp = patched_build_gst_rtsp
