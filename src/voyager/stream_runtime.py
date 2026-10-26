@@ -289,15 +289,11 @@ class VoyagerRuntime(BaseRuntime):
         # recompile inside create_inference_stream at startup / on every tier change.
         self.low_latency = bool(vcfg.get("low_latency", False))
         self.allow_hw_codec = bool(vcfg.get("hardware_decode", True))
-        if not self.allow_hw_codec:
-            ranks = os.environ.get("GST_PLUGIN_FEATURE_RANK", "")
-            mpp_ranks = "mppvideodec:0,rkvdec:0,rkvpu:0"
-            os.environ["GST_PLUGIN_FEATURE_RANK"] = f"{ranks},{mpp_ranks}" if ranks else mpp_ranks
         self.aipu_cores = int(vcfg.get("aipu_cores", 4))
         self.reconnect_s = float(vcfg.get("reconnect_interval_s", 5.0))
         self.disable_tracers = bool(vcfg.get("disable_tracers", False))
         self.build_opts = build_options_from_config(vcfg)
-        os.environ["AXELERA_RTSP_PROTOCOL"] = str(vcfg.get("rtsp_transport", "tcp"))
+        os.environ["AXELERA_RTSP_PROTOCOL"] = str(vcfg.get("rtsp_transport", "all"))
         clock = vcfg.get("aipu_clock_mhz")
         mvm = vcfg.get("mvm_utilization")
         if clock or mvm is not None:

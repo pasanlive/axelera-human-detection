@@ -72,6 +72,11 @@ def check_system() -> None:
 def check_pcie() -> None:
     print_header("PCIe Bus & ASPM Power State Inspection")
     rc, out = run_cmd(["lspci", "-d", "1f9d:", "-vvv"])
+    if rc == 0 and "Capabilities:" not in out:
+        rc_sudo, out_sudo = run_cmd(["sudo", "-n", "lspci", "-d", "1f9d:", "-vvv"])
+        if rc_sudo == 0 and "Capabilities:" in out_sudo:
+            out = out_sudo
+
     if rc != 0 or not out:
         # Fall back to listing all devices
         rc_all, out_all = run_cmd(["lspci"])
@@ -89,7 +94,7 @@ def check_pcie() -> None:
 
     print("Found Axelera Metis PCIe Device:")
     lines = out.splitlines()
-    for l in lines[:3]:
+    for l in lines[:5]:
         print(f"  {l}")
 
     link_caps, link_status, aspm_info = None, None, []
@@ -120,6 +125,9 @@ def check_pcie() -> None:
             print("    'waitForQueueBinaryCompletion: Wait kernel failed with return code -1301'")
             print("  Recommendation: Disable PCIe ASPM via:")
             print("    sudo setpci -d 1f9d: CAP_EXP+0x10.w=0x0000")
+    elif "Capabilities:" not in out:
+        print("\n  [NOTE] PCIe Capabilities are hidden by non-root permissions.")
+        print("  Run with sudo to view detailed ASPM power states: 'sudo python tools/diag_metis.py'")
 
 
 def check_metis_device() -> None:
