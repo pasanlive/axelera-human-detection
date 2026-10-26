@@ -83,6 +83,7 @@ def main():
     parser.add_argument("--no-tracers", action="store_true", help="Disable background axtrace processes (prevents concurrent /dev/metis* access)")
     parser.add_argument("--aipu-clock", type=str, default=None, help="Override AIPU clock in MHz (e.g. 400, 800, or none)")
     parser.add_argument("--mvm-limit", type=str, default=None, help="Override MVM utilization limit percentage (e.g. 40, 50, 100, or none)")
+    parser.add_argument("--aipu-cores", type=int, default=None, help="Override number of AIPU cores (1, 2, or 4)")
     parser.add_argument("--headless", action="store_true", help="Run in strict headless mode (unsets DISPLAY and disables GUI probes)")
     parser.add_argument("--web", action="store_true", default=False, help="Enable local network web dashboard interface")
     parser.add_argument("--no-web", action="store_true", help="Disable web dashboard interface")
@@ -129,6 +130,9 @@ def main():
         val = None if args.mvm_limit.lower() in ("none", "0") else int(args.mvm_limit)
         config.setdefault("voyager", {})["mvm_utilization"] = val
         print(f"[DIAG] MVM utilization override: {val}")
+    if args.aipu_cores is not None:
+        config.setdefault("voyager", {})["aipu_cores"] = args.aipu_cores
+        print(f"[DIAG] AIPU cores override: {args.aipu_cores}")
     if args.headless:
         print("[DIAG] Strict headless mode active (DISPLAY disabled)")
 

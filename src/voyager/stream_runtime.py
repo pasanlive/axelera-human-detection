@@ -165,27 +165,8 @@ def _patch_voyager_stream_input() -> None:
     except ImportError:
         return
 
-    _orig_builder_queue = getattr(gst_builder.Builder, "queue", None)
-    if _orig_builder_queue is not None:
-        def patched_builder_queue(self: Any, props: Any = None, **kwargs: Any) -> None:
-            p = dict(props or {})
-            p['max-size-buffers'] = 1
-            p['max-size-time'] = 0
-            p['max-size-bytes'] = 0
-            p['leaky'] = 2  # 2 = GST_QUEUE_LEAK_DOWNSTREAM (drop oldest buffer when full)
-            return _orig_builder_queue(self, p, **kwargs)
-
-        gst_builder.Builder.queue = patched_builder_queue
-
-    _orig_builder_appsink = getattr(gst_builder.Builder, "appsink", None)
-    if _orig_builder_appsink is not None:
-        def patched_builder_appsink(self: Any, props: Any = None, **kwargs: Any) -> None:
-            p = dict(props or {})
-            p['max-buffers'] = 1
-            p['drop'] = True
-            return _orig_builder_appsink(self, p, **kwargs)
-
-        gst_builder.Builder.appsink = patched_builder_appsink
+    # Note: gst_builder.Builder.queue and appsink are kept non-leaky (stock SDK behavior)
+    # to guarantee Level-Zero command list buffers are never discarded before host synchronization.
 
     def patched_build_gst_rtsp(gst: Any, location: str, stream_idx: str, latency: int = 500):
         username, password, loc = io._parse_livestream_location(location)

@@ -124,14 +124,18 @@ def check_pcie() -> None:
             print("    'axl 0000:01:00.0: IRQ MSI timeout'")
             print("    'waitForQueueBinaryCompletion: Wait kernel failed with return code -1301'")
             if os.geteuid() == 0:
-                print("\n  [AUTO-FIX] Root detected. Disabling PCIe ASPM on Axelera Metis (1f9d:)...")
+                print("\n  [AUTO-FIX] Root detected. Disabling PCIe ASPM across bus...")
+                run_cmd(["sh", "-c", "echo performance > /sys/module/pcie_aspm/parameters/policy"])
+                run_cmd(["setpci", "-s", "00:00.0", "CAP_EXP+0x10.w=0x0000"])
                 rc_fix, out_fix = run_cmd(["setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"])
                 if rc_fix == 0:
-                    print("  [SUCCESS] Executed 'setpci -d 1f9d: CAP_EXP+0x10.w=0x0000'. ASPM is now DISABLED.")
+                    print("  [SUCCESS] Disabled ASPM on Root Port (00:00.0) + Metis (1f9d:) + kernel policy!")
                 else:
                     print(f"  [ERROR] setpci failed: {out_fix}")
             else:
                 print("  Recommendation: Disable PCIe ASPM via:")
+                print("    sudo sh -c 'echo performance > /sys/module/pcie_aspm/parameters/policy'")
+                print("    sudo setpci -s 00:00.0 CAP_EXP+0x10.w=0x0000")
                 print("    sudo setpci -d 1f9d: CAP_EXP+0x10.w=0x0000")
     elif "Capabilities:" not in out:
         print("\n  [NOTE] PCIe Capabilities are hidden by non-root permissions.")
@@ -200,6 +204,26 @@ def check_dmesg() -> None:
         print("[NOTE] dmesg access restricted (run with sudo or check permissions).")
 
 
+def check_compiled_models() -> None:
+    print_header("Compiled Voyager Models (AIPU Core Layout)")
+    build_dirs = [
+        Path.home() / "voyager-sdk" / "build",
+        Path.cwd() / "build",
+    ]
+    found = False
+    for b in build_dirs:
+        if b.is_dir():
+            model_jsons = list(b.glob("**/model.json"))
+            if model_jsons:
+                found = True
+                print(f"Found {len(model_jsons)} compiled models in {b}:")
+                for m in sorted(model_jsons):
+                    rel = m.relative_to(b)
+                    print(f"  --> {rel} ({m.stat().st_size // 1024} KB)")
+    if not found:
+        print("No compiled model.json files found in ~/voyager-sdk/build or ./build")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Axelera Metis Diagnostics on RK3588")
     parser.add_argument("--fix-aspm", action="store_true", help="Attempt to disable PCIe ASPM on Axelera device")
@@ -208,6 +232,7 @@ def main() -> None:
     check_system()
     check_pcie()
     check_metis_device()
+    check_compiled_models()
     check_dmesg()
 
     if args.fix_aspm:

@@ -125,21 +125,33 @@ class HardwareWatchdog:
         self._initial_dmesg_logged = False
 
     def disable_pcie_aspm(self) -> bool:
-        """Disables PCIe ASPM on Axelera Metis (1f9d:1100) to prevent RK3588 MSI timeout stalls."""
+        """Disables PCIe ASPM on Axelera Metis (1f9d:1100), Root Port, and kernel policy to prevent RK3588 MSI timeout stalls."""
+        # 1. Global Linux kernel ASPM policy -> performance (disables L0s/L1 system-wide)
         try:
-            res = subprocess.run(["setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
-                                 capture_output=True, text=True, timeout=2)
-            if res.returncode == 0:
-                print("[PCIe OPTIMIZATION] Successfully disabled PCIe ASPM on Metis device via setpci.")
-                return True
+            res_pol = subprocess.run(["sudo", "-n", "sh", "-c", "echo performance > /sys/module/pcie_aspm/parameters/policy"],
+                                     capture_output=True, text=True, timeout=2)
+            if res_pol.returncode == 0:
+                print("[PCIe OPTIMIZATION] Set Linux PCIe ASPM policy to 'performance'.")
         except Exception:
             pass
 
+        # 2. Disable ASPM on Metis endpoint (1f9d:)
         try:
+            subprocess.run(["setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
+                           capture_output=True, text=True, timeout=2)
             res_sudo = subprocess.run(["sudo", "-n", "setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
                                       capture_output=True, text=True, timeout=2)
             if res_sudo.returncode == 0:
                 print("[PCIe OPTIMIZATION] Successfully disabled PCIe ASPM on Metis device via sudo setpci.")
+        except Exception:
+            pass
+
+        # 3. Disable ASPM on upstream PCIe Root Port (00:00.0)
+        try:
+            res_rp = subprocess.run(["sudo", "-n", "setpci", "-s", "00:00.0", "CAP_EXP+0x10.w=0x0000"],
+                                    capture_output=True, text=True, timeout=2)
+            if res_rp.returncode == 0:
+                print("[PCIe OPTIMIZATION] Successfully disabled PCIe ASPM on Root Port (00:00.0).")
                 return True
         except Exception:
             pass
