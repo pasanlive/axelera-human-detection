@@ -146,6 +146,18 @@ class HardwareWatchdog:
 
         return False
 
+    def optimize_network_buffers(self) -> None:
+        """Increases Linux network socket receive buffers to prevent RTSP UDP packet drops."""
+        try:
+            res = subprocess.run(["sudo", "-n", "sysctl", "-w",
+                                  "net.core.rmem_max=26214400",
+                                  "net.core.rmem_default=2097152"],
+                                 capture_output=True, text=True, timeout=2)
+            if res.returncode == 0:
+                print("[NETWORK OPTIMIZATION] Increased Linux UDP socket buffer limit (rmem_max=25MB).")
+        except Exception:
+            pass
+
     def start(self) -> None:
         """Starts the background diagnostic watchdog thread."""
         with self._lock:
@@ -153,6 +165,7 @@ class HardwareWatchdog:
                 return
             self._running = True
             self.disable_pcie_aspm()
+            self.optimize_network_buffers()
             self._thread = threading.Thread(target=self._monitor_loop, name="hw-watchdog", daemon=True)
             self._thread.start()
 

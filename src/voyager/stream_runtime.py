@@ -193,25 +193,16 @@ def _patch_voyager_stream_input() -> None:
             'location': f"{loc}",
             'user-id': f"{username}",
             'user-pw': f"{password}",
-            'latency': latency,
-            'drop-on-latency': True,
+            'latency': max(latency, 500),
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
-        # Force TCP transport (protocols=4) by default to prevent UDP packet loss, socket buffer
-        # allocation errors, and silence timeout stalls on Linux SBCs
-        rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "tcp") or "tcp").lower()
-        if rtsp_protocol == 'udp':
+        rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "all") or "all").lower()
+        if rtsp_protocol == 'tcp':
+            rtsp_props['protocols'] = 4
+        elif rtsp_protocol == 'udp':
             rtsp_props['protocols'] = 1
-        elif rtsp_protocol == 'tcp':
-            rtsp_props['protocols'] = 4
-        else:
-            # Default 'all' or unrecognized values to TCP for maximum stability on Rockchip RK3588
-            rtsp_props['protocols'] = 4
+        # When 'all' or '', omit 'protocols' so GStreamer automatically negotiates UDP/TCP with the camera
 
-        # Add timeouts to fail fast and prevent indefinite hang on network loss
-        rtsp_props['tcp-timeout'] = 10000000  # 10 seconds in microseconds
-        rtsp_props['timeout'] = 10000000      # 10 seconds
-        rtsp_props['retry'] = 10
         gst.rtspsrc(rtsp_props)
         gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
 
@@ -289,7 +280,7 @@ class VoyagerRuntime(BaseRuntime):
         self.networks_dir = resolve_networks_dir(vcfg.get("networks_dir"), vcfg.get("sdk_path"))
         build_root = vcfg.get("build_root")
         self.build_root = Path(build_root).expanduser().resolve() if build_root else None
-        self.rtsp_latency = int(vcfg.get("rtsp_latency_ms", 200))
+        self.rtsp_latency = int(vcfg.get("rtsp_latency_ms", 500))
         # Must match deploy.py (which has no low-latency flag): in SDK 1.6.0 low_latency=True
         # forces 1-core builds (build/<net>/<model>/1/), so a mismatch triggers a full
         # recompile inside create_inference_stream at startup / on every tier change.
@@ -299,9 +290,7 @@ class VoyagerRuntime(BaseRuntime):
         self.reconnect_s = float(vcfg.get("reconnect_interval_s", 5.0))
         self.disable_tracers = bool(vcfg.get("disable_tracers", False))
         self.build_opts = build_options_from_config(vcfg)
-        rtsp_proto = str(vcfg.get("rtsp_transport", "tcp")).lower()
-        if rtsp_proto in ("all", ""):
-            rtsp_proto = "tcp"
+        rtsp_proto = str(vcfg.get("rtsp_transport", "all")).lower()
         os.environ["AXELERA_RTSP_PROTOCOL"] = rtsp_proto
         clock = vcfg.get("aipu_clock_mhz")
         mvm = vcfg.get("mvm_utilization")
