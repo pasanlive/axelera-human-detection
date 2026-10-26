@@ -123,8 +123,16 @@ def check_pcie() -> None:
             print("  power-saving state, MSI interrupts from the Metis AIPU can be dropped, causing:")
             print("    'axl 0000:01:00.0: IRQ MSI timeout'")
             print("    'waitForQueueBinaryCompletion: Wait kernel failed with return code -1301'")
-            print("  Recommendation: Disable PCIe ASPM via:")
-            print("    sudo setpci -d 1f9d: CAP_EXP+0x10.w=0x0000")
+            if os.geteuid() == 0:
+                print("\n  [AUTO-FIX] Root detected. Disabling PCIe ASPM on Axelera Metis (1f9d:)...")
+                rc_fix, out_fix = run_cmd(["setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"])
+                if rc_fix == 0:
+                    print("  [SUCCESS] Executed 'setpci -d 1f9d: CAP_EXP+0x10.w=0x0000'. ASPM is now DISABLED.")
+                else:
+                    print(f"  [ERROR] setpci failed: {out_fix}")
+            else:
+                print("  Recommendation: Disable PCIe ASPM via:")
+                print("    sudo setpci -d 1f9d: CAP_EXP+0x10.w=0x0000")
     elif "Capabilities:" not in out:
         print("\n  [NOTE] PCIe Capabilities are hidden by non-root permissions.")
         print("  Run with sudo to view detailed ASPM power states: 'sudo python tools/diag_metis.py'")

@@ -52,7 +52,7 @@ voyager:
   num_calibration_images: 400
   aipu_cores: 4
   hardware_decode: false # software decode (avdec_h264) prevents Rockchip MPP (rkvdec2) driver crashes
-  rtsp_transport: all
+  rtsp_transport: tcp # TCP prevents UDP buffer permission errors, dropped packets, and silence stalls
   rtsp_latency_ms: 200
   low_latency: false
   aipu_clock_mhz: null # Native 800 MHz profile prevents kernel MSI interrupt timeouts

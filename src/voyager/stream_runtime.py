@@ -197,15 +197,21 @@ def _patch_voyager_stream_input() -> None:
             'drop-on-latency': True,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
-        rtsp_protocol = ax_config.env.rtsp_protocol.lower()
-        if rtsp_protocol == 'tcp':
-            rtsp_props['protocols'] = 4
-        elif rtsp_protocol == 'udp':
+        # Force TCP transport (protocols=4) by default to prevent UDP packet loss, socket buffer
+        # allocation errors, and silence timeout stalls on Linux SBCs
+        rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "tcp") or "tcp").lower()
+        if rtsp_protocol == 'udp':
             rtsp_props['protocols'] = 1
-        elif rtsp_protocol not in ('all', ''):
-            io.LOG.warning(
-                f"Invalid AXELERA_RTSP_PROTOCOL value: {rtsp_protocol}. Valid values are 'tcp', 'udp', or 'all'."
-            )
+        elif rtsp_protocol == 'tcp':
+            rtsp_props['protocols'] = 4
+        else:
+            # Default 'all' or unrecognized values to TCP for maximum stability on Rockchip RK3588
+            rtsp_props['protocols'] = 4
+
+        # Add timeouts to fail fast and prevent indefinite hang on network loss
+        rtsp_props['tcp-timeout'] = 10000000  # 10 seconds in microseconds
+        rtsp_props['timeout'] = 10000000      # 10 seconds
+        rtsp_props['retry'] = 10
         gst.rtspsrc(rtsp_props)
         gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
 
@@ -293,7 +299,10 @@ class VoyagerRuntime(BaseRuntime):
         self.reconnect_s = float(vcfg.get("reconnect_interval_s", 5.0))
         self.disable_tracers = bool(vcfg.get("disable_tracers", False))
         self.build_opts = build_options_from_config(vcfg)
-        os.environ["AXELERA_RTSP_PROTOCOL"] = str(vcfg.get("rtsp_transport", "all"))
+        rtsp_proto = str(vcfg.get("rtsp_transport", "tcp")).lower()
+        if rtsp_proto in ("all", ""):
+            rtsp_proto = "tcp"
+        os.environ["AXELERA_RTSP_PROTOCOL"] = rtsp_proto
         clock = vcfg.get("aipu_clock_mhz")
         mvm = vcfg.get("mvm_utilization")
         if clock or mvm is not None:

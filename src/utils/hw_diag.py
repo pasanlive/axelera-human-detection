@@ -124,12 +124,35 @@ class HardwareWatchdog:
         self._last_dmesg_seen: set = set()
         self._initial_dmesg_logged = False
 
+    def disable_pcie_aspm(self) -> bool:
+        """Disables PCIe ASPM on Axelera Metis (1f9d:1100) to prevent RK3588 MSI timeout stalls."""
+        try:
+            res = subprocess.run(["setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
+                                 capture_output=True, text=True, timeout=2)
+            if res.returncode == 0:
+                print("[PCIe OPTIMIZATION] Successfully disabled PCIe ASPM on Metis device via setpci.")
+                return True
+        except Exception:
+            pass
+
+        try:
+            res_sudo = subprocess.run(["sudo", "-n", "setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
+                                      capture_output=True, text=True, timeout=2)
+            if res_sudo.returncode == 0:
+                print("[PCIe OPTIMIZATION] Successfully disabled PCIe ASPM on Metis device via sudo setpci.")
+                return True
+        except Exception:
+            pass
+
+        return False
+
     def start(self) -> None:
         """Starts the background diagnostic watchdog thread."""
         with self._lock:
             if self._running:
                 return
             self._running = True
+            self.disable_pcie_aspm()
             self._thread = threading.Thread(target=self._monitor_loop, name="hw-watchdog", daemon=True)
             self._thread.start()
 
