@@ -162,11 +162,98 @@ def _patch_voyager_stream_input() -> None:
         from axelera.app.pipe import io
         from axelera.app import config as ax_config
         from axelera.app import gst_builder
+        from axelera.app.pipe import gst_helper
     except ImportError:
         return
 
-    # Note: gst_builder.Builder.queue and appsink are kept non-leaky (stock SDK behavior)
+    # Patch terminal appsink to drop stale buffers when full.
+    # Note: internal queues before AIPU remain non-leaky (stock SDK behavior)
     # to guarantee Level-Zero command list buffers are never discarded before host synchronization.
+    _orig_builder_appsink = getattr(gst_builder.Builder, "appsink", None)
+    if _orig_builder_appsink is not None:
+        def patched_builder_appsink(self: Any, props: Any = None, **kwargs: Any) -> None:
+            p = dict(props or {})
+            p['max-buffers'] = 2
+            p['drop'] = True
+            p['sync'] = False
+            return _orig_builder_appsink(self, p, **kwargs)
+
+        gst_builder.Builder.appsink = patched_builder_appsink
+
+    # Patch gst_helper._create_element to intercept rtspsrc and decodebin
+    _orig_create_element = getattr(gst_helper, "_create_element", None)
+    if _orig_create_element is not None:
+        def patched_create_element(element: dict[str, Any]) -> Any:
+            elem = _orig_create_element(element)
+            inst = element.get("instance", "")
+            if inst == "rtspsrc":
+                def _on_select_stream(rtspsrc_elem: Any, num: int, caps: Any) -> bool:
+                    caps_str = caps.to_string() if caps is not None else ""
+                    # Select video only; filter out audio/metadata tracks before RTSP SETUP
+                    # to prevent unlinked audio sessions from timing out after 25s
+                    is_video = "media=(string)video" in caps_str or "video/" in caps_str
+                    if not is_video:
+                        print(f"[RTSP FILTER] Excluding non-video track #{num} ({caps_str[:50]}...) from RTSP session")
+                    return is_video
+
+                try:
+                    elem.connect("select-stream", _on_select_stream)
+                except Exception as e:
+                    print(f"[RTSP] Warning: could not connect select-stream signal: {e}")
+
+            elif inst == "decodebin":
+                force_sw = str(element.get('force-sw-decoders', False)).lower() == 'true'
+                if force_sw:
+                    def _prefer_software_decoder(bin_elem: Any, pad: Any, caps: Any, factories: Any) -> Any:
+                        if not factories:
+                            return factories
+                        sw_decoders = []
+                        hw_decoders = []
+                        for factory in factories:
+                            fname = factory.get_name()
+                            if fname.startswith("avdec_") or fname.startswith("openh264") or "sw" in fname:
+                                sw_decoders.append(factory)
+                            elif fname.startswith("mpp") or fname.startswith("rga"):
+                                hw_decoders.append(factory)
+                            else:
+                                sw_decoders.append(factory)
+                        return sw_decoders + hw_decoders
+
+                    try:
+                        elem.connect("autoplug-sort", _prefer_software_decoder)
+                    except Exception:
+                        pass
+            return elem
+
+        gst_helper._create_element = patched_create_element
+
+    # Patch gst_helper._on_pad_added so any unhandled secondary pads sink safely to fakesink
+    _orig_on_pad_added = getattr(gst_helper, "_on_pad_added", None)
+    if _orig_on_pad_added is not None:
+        def patched_on_pad_added(element: Any, newPad: Any, sinkPad: Any, prop: Any, key: Any) -> None:
+            if sinkPad.is_linked() and not newPad.is_linked():
+                # Secondary pad arrived while primary sink pad is already linked:
+                # divert to fakesink to avoid 'streaming stopped, reason not-linked (-1)'
+                try:
+                    import gi
+                    gi.require_version("Gst", "1.0")
+                    from gi.repository import Gst
+                    pipeline = element.get_parent()
+                    if pipeline and isinstance(pipeline, Gst.Pipeline):
+                        fakesink = Gst.ElementFactory.make("fakesink", None)
+                        if fakesink:
+                            fakesink.set_property("sync", False)
+                            pipeline.add(fakesink)
+                            fakesink.sync_state_with_parent()
+                            fsink_pad = fakesink.get_static_pad("sink")
+                            if fsink_pad:
+                                newPad.link(fsink_pad)
+                                return
+                except Exception:
+                    pass
+            return _orig_on_pad_added(element, newPad, sinkPad, prop, key)
+
+        gst_helper._on_pad_added = patched_on_pad_added
 
     def patched_build_gst_rtsp(gst: Any, location: str, stream_idx: str, latency: int = 500):
         username, password, loc = io._parse_livestream_location(location)
@@ -175,6 +262,7 @@ def _patch_voyager_stream_input() -> None:
             'user-id': f"{username}",
             'user-pw': f"{password}",
             'latency': max(latency, 500),
+            'drop-on-latency': True,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
         rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "all") or "all").lower()
