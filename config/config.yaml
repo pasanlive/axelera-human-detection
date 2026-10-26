@@ -52,11 +52,11 @@ voyager:
   num_calibration_images: 400
   aipu_cores: 4
   hardware_decode: false # software decode (avdec_h264) prevents Rockchip MPP (rkvdec2) driver crashes
-  rtsp_transport: all
+  rtsp_transport: tcp # TCP transport prevents UDP socket buffer permission errors and packet loss
   rtsp_latency_ms: 200
   low_latency: false
-  aipu_clock_mhz: 400 # 400 MHz clock profile prevents PCIe voltage droop
-  mvm_utilization: 40 # 40% MVM limitation protects Antelao RK3588 M.2 power rail from Level-Zero -1301 timeout
+  aipu_clock_mhz: null # Native 800 MHz profile prevents kernel MSI interrupt timeouts
+  mvm_utilization: null # Full MVM capacity prevents megakernel execution timeouts
   specified_frame_rate: 0 # 0 prevents videorate duplicate buffer crash (inplace_addstreamid)
   reconnect_interval_s: 5
   thresholds:

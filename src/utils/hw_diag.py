@@ -65,12 +65,24 @@ def enable_crash_handler(on_crash_callback: Optional[Callable[[], None]] = None)
             print("  (dmesg unavailable or empty)", file=sys.stderr)
 
         print("\n[METIS PROCESSES] Active processes holding /dev/metis*:", file=sys.stderr)
-        try:
-            res = subprocess.run(["fuser", "-v", "/dev/metis-0:1:0"],
-                                 capture_output=True, text=True, timeout=2)
-            print(res.stdout or res.stderr or "  (None detected)")
-        except Exception:
-            pass
+        holders = []
+        if os.path.exists("/proc"):
+            for pid_entry in os.listdir("/proc"):
+                if pid_entry.isdigit():
+                    fd_dir = f"/proc/{pid_entry}/fd"
+                    try:
+                        for fd in os.listdir(fd_dir):
+                            target = os.readlink(f"{fd_dir}/{fd}")
+                            if "metis" in target:
+                                cmdline = open(f"/proc/{pid_entry}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore").strip()
+                                holders.append(f"PID {pid_entry} (fd {fd}): {cmdline or '(unknown)'}")
+                    except Exception:
+                        pass
+        if holders:
+            for h in sorted(set(holders)):
+                print(f"  {h}", file=sys.stderr)
+        else:
+            print("  (None detected)", file=sys.stderr)
 
         if on_crash_callback:
             try:
@@ -196,10 +208,10 @@ class HardwareWatchdog:
         return new_events
 
     def get_pcie_info(self) -> Dict[str, Any]:
-        """Queries lspci for Axelera PCIe device information (Vendor ID 1f76)."""
+        """Queries lspci for Axelera PCIe device information (Vendor ID 1f9d)."""
         info: Dict[str, Any] = {"found": False, "details": []}
         try:
-            res = subprocess.run(["lspci", "-d", "1f76:", "-vvv"], capture_output=True, text=True, timeout=3)
+            res = subprocess.run(["lspci", "-d", "1f9d:", "-vvv"], capture_output=True, text=True, timeout=3)
             if res.returncode == 0 and res.stdout.strip():
                 info["found"] = True
                 lines = res.stdout.strip().splitlines()

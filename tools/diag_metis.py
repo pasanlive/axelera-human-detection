@@ -71,15 +71,15 @@ def check_system() -> None:
 
 def check_pcie() -> None:
     print_header("PCIe Bus & ASPM Power State Inspection")
-    rc, out = run_cmd(["lspci", "-d", "1f76:", "-vvv"])
+    rc, out = run_cmd(["lspci", "-d", "1f9d:", "-vvv"])
     if rc != 0 or not out:
         # Fall back to listing all devices
         rc_all, out_all = run_cmd(["lspci"])
-        print("[WARNING] Axelera PCIe device (Vendor 1f76) not found via 'lspci -d 1f76:'")
-        if "1f76" in out_all or "Axelera" in out_all or "Processing accelerators" in out_all:
+        print("[WARNING] Axelera PCIe device (Vendor 1f9d) not found via 'lspci -d 1f9d:'")
+        if "1f9d" in out_all or "Axelera" in out_all or "Processing accelerators" in out_all:
             print("Found potential accelerator in full lspci:")
             for l in out_all.splitlines():
-                if any(k in l for k in ("Axelera", "1f76", "Processing accelerators")):
+                if any(k in l for k in ("Axelera", "1f9d", "Processing accelerators")):
                     print(f"  --> {l}")
         else:
             print("Available PCIe devices:")
@@ -116,9 +116,10 @@ def check_pcie() -> None:
             print("\n  [CRITICAL NOTICE FOR RK3588]")
             print("  PCIe ASPM L1 is ENABLED. On Rockchip RK3588, when the PCIe controller enters L1")
             print("  power-saving state, MSI interrupts from the Metis AIPU can be dropped, causing:")
+            print("    'axl 0000:01:00.0: IRQ MSI timeout'")
             print("    'waitForQueueBinaryCompletion: Wait kernel failed with return code -1301'")
-            print("  Recommendation: Disable PCIe ASPM by adding 'pcie_aspm=off' to kernel cmdline or:")
-            print("    sudo setpci -d 1f76: CAP_EXP+0x10.w=0x0000")
+            print("  Recommendation: Disable PCIe ASPM via:")
+            print("    sudo setpci -d 1f9d: CAP_EXP+0x10.w=0x0000")
 
 
 def check_metis_device() -> None:
@@ -144,11 +145,23 @@ def check_metis_device() -> None:
 
     # Check for active processes holding the device
     print_header("Processes Accessing Metis Device")
-    rc_fus, out_fus = run_cmd(["fuser", "-v", "/dev/metis-0:1:0"])
-    if out_fus.strip():
-        print("Active processes:")
-        for l in out_fus.splitlines():
-            print(f"  {l}")
+    holders = []
+    if os.path.exists("/proc"):
+        for pid_entry in os.listdir("/proc"):
+            if pid_entry.isdigit():
+                fd_dir = f"/proc/{pid_entry}/fd"
+                try:
+                    for fd in os.listdir(fd_dir):
+                        target = os.readlink(f"{fd_dir}/{fd}")
+                        if "metis" in target:
+                            cmdline = open(f"/proc/{pid_entry}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="ignore").strip()
+                            holders.append(f"PID {pid_entry} (fd {fd}): {cmdline or '(unknown)'}")
+                except Exception:
+                    pass
+    if holders:
+        print("Active processes locking /dev/metis*:")
+        for h in sorted(set(holders)):
+            print(f"  {h}")
     else:
         print("No processes currently locking /dev/metis-0:1:0.")
 
@@ -183,7 +196,7 @@ def main() -> None:
 
     if args.fix_aspm:
         print_header("Disabling PCIe ASPM on Axelera Device")
-        rc, out = run_cmd(["setpci", "-d", "1f76:", "CAP_EXP+0x10.w=0x0000"])
+        rc, out = run_cmd(["setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"])
         print(f"setpci result: code={rc} output={out}")
 
     print_header("Diagnostic Complete")
