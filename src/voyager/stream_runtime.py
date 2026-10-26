@@ -169,10 +169,10 @@ def _patch_voyager_stream_input() -> None:
     if _orig_builder_queue is not None:
         def patched_builder_queue(self: Any, props: Any = None, **kwargs: Any) -> None:
             p = dict(props or {})
-            p.setdefault('max-size-buffers', 2)
-            p.setdefault('max-size-time', 0)
-            p.setdefault('max-size-bytes', 0)
-            p.setdefault('leaky', 2)  # 2 = GST_QUEUE_LEAK_DOWNSTREAM (drop oldest buffer when full)
+            p['max-size-buffers'] = 1
+            p['max-size-time'] = 0
+            p['max-size-bytes'] = 0
+            p['leaky'] = 2  # 2 = GST_QUEUE_LEAK_DOWNSTREAM (drop oldest buffer when full)
             return _orig_builder_queue(self, p, **kwargs)
 
         gst_builder.Builder.queue = patched_builder_queue
@@ -250,25 +250,11 @@ def _patch_voyager_stream_input() -> None:
         if requires_decodebin:
             decodebin_link = io.build_decodebin(gst, self._allow_hardware_codec, stream_idx)
 
-        # Enforce target camera FPS and drop burst frames from RTSP / network jitter.
-        # drop-only=True ensures videorate ONLY drops excess frames and NEVER duplicates buffers.
-        if target_fps and self._src.type not in (ax_config.SourceType.IMAGE_FILES, ax_config.SourceType.DATA_SOURCE):
-            rate_props = {'drop-only': True, 'skip-to-first': True}
-            if decodebin_link:
-                gst.videorate(props=rate_props, name=decodebin_link)
-            else:
-                gst.videorate(props=rate_props)
-            gst.capsfilter(caps=f'video/x-raw,framerate={target_fps}/1')
-            decodebin_link = ''
-
-        axinplace_kwargs = {}
-        if decodebin_link:
-            axinplace_kwargs['name'] = decodebin_link
         gst.axinplace(
+            name=decodebin_link,
             lib='libinplace_addstreamid.so',
             mode='meta',
             options=f'stream_id:{stream_idx or 0}{fps_limit}',
-            **axinplace_kwargs,
         )
 
     io._build_gst_rtsp = patched_build_gst_rtsp
