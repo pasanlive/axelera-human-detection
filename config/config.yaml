@@ -52,7 +52,7 @@ models:
     num_keypoints: 17
 
   face_recognizer:
-    enabled: true
+    enabled: false
     conf_threshold: 0.5
     # Face embedder (ArcFace MobileFaceNet)
     embedder_onnx: models/onnx/arcface_mobilefacenet.onnx
@@ -86,7 +86,7 @@ models:
 
   # ── Model Zoo: Pose Alternative (mutually exclusive with pose_estimator) ──
   keypoint_detector:
-    enabled: true
+    enabled: false
     model_name: yolo11n-pose.pt
     onnx_path: models/onnx/yolo11n-pose_512.onnx
     axm_path: models/axm/yolo11n-pose_512.axm   # Optional: compile with Voyager SDK
