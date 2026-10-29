@@ -102,8 +102,8 @@ def main():
         os.environ["ZE_DEBUG"] = "1"
         os.environ["AXELERA_LOG_LEVEL"] = "DEBUG"
         if not os.environ.get("GST_DEBUG"):
-            os.environ["GST_DEBUG"] = "2,openclallocator:0,axinferencenet:4,axinplace:4"
-        print("[DIAG] Detailed diagnostic logging active (ZE_DEBUG=1, GST_DEBUG=2,openclallocator:0,axinferencenet:4)")
+            os.environ["GST_DEBUG"] = "2,openclallocator:0,axinplace:2,axinferencenet:4"
+        print("[DIAG] Detailed diagnostic logging active (ZE_DEBUG=1, GST_DEBUG=2,openclallocator:0,axinplace:2,axinferencenet:4)")
 
     # Optimize Voyager runtime environment for Rockchip RK3588 + Metis PCIe:
     # 1. Disable OpenCL preprocessing on host GPU (ARM Mali G610) to avoid memory queue conflicts

@@ -125,7 +125,7 @@ class HardwareWatchdog:
         self._initial_dmesg_logged = False
 
     def disable_pcie_aspm(self) -> bool:
-        """Disables PCIe ASPM on Axelera Metis (1f9d:1100), Root Port, and kernel policy to prevent RK3588 MSI timeout stalls."""
+        """Disables PCIe ASPM on Axelera Metis (1f9d:1100), all Root Ports / bridges, and kernel policy to prevent RK3588 MSI timeout stalls."""
         # 1. Global Linux kernel ASPM policy -> performance (disables L0s/L1 system-wide)
         try:
             res_pol = subprocess.run(["sudo", "-n", "sh", "-c", "echo performance > /sys/module/pcie_aspm/parameters/policy"],
@@ -135,28 +135,44 @@ class HardwareWatchdog:
         except Exception:
             pass
 
-        # 2. Disable ASPM on Metis endpoint (1f9d:)
+        # 2. Disable ASPM on Metis endpoint (1f9d:) and specific bus ID (01:00.0)
         try:
             subprocess.run(["setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
                            capture_output=True, text=True, timeout=2)
             res_sudo = subprocess.run(["sudo", "-n", "setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
                                       capture_output=True, text=True, timeout=2)
+            subprocess.run(["sudo", "-n", "setpci", "-s", "01:00.0", "CAP_EXP+0x10.w=0x0000"],
+                           capture_output=True, text=True, timeout=2)
             if res_sudo.returncode == 0:
                 print("[PCIe OPTIMIZATION] Successfully disabled PCIe ASPM on Metis device via sudo setpci.")
         except Exception:
             pass
 
-        # 3. Disable ASPM on upstream PCIe Root Port (00:00.0)
+        # 3. Disable ASPM on all upstream PCIe Root Ports and Bridges (PCI class 0604)
         try:
-            res_rp = subprocess.run(["sudo", "-n", "setpci", "-s", "00:00.0", "CAP_EXP+0x10.w=0x0000"],
+            res_rp = subprocess.run(["sudo", "-n", "setpci", "-d", "::0604", "CAP_EXP+0x10.w=0x0000"],
                                     capture_output=True, text=True, timeout=2)
             if res_rp.returncode == 0:
-                print("[PCIe OPTIMIZATION] Successfully disabled PCIe ASPM on Root Port (00:00.0).")
-                return True
+                print("[PCIe OPTIMIZATION] Successfully disabled PCIe ASPM on all PCIe Bridges / Root Ports (-d ::0604).")
+            # Also explicitly set 00:00.0 as fallback
+            subprocess.run(["sudo", "-n", "setpci", "-s", "00:00.0", "CAP_EXP+0x10.w=0x0000"],
+                           capture_output=True, text=True, timeout=2)
         except Exception:
             pass
 
-        return False
+        # 4. Enforce PCI runtime power management to 'on' and disable sysfs ASPM nodes
+        try:
+            subprocess.run(["sudo", "-n", "sh", "-c",
+                            "for d in /sys/bus/pci/devices/*; do "
+                            "[ -f $d/power/control ] && echo on > $d/power/control 2>/dev/null; "
+                            "[ -f $d/link/l1_aspm ] && echo 0 > $d/link/l1_aspm 2>/dev/null; "
+                            "[ -f $d/link/l0s_aspm ] && echo 0 > $d/link/l0s_aspm 2>/dev/null; "
+                            "done"],
+                           capture_output=True, text=True, timeout=2)
+        except Exception:
+            pass
+
+        return True
 
     def optimize_network_buffers(self) -> None:
         """Increases Linux network socket receive buffers to prevent RTSP UDP packet drops."""
