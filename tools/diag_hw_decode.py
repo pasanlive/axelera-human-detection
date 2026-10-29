@@ -236,6 +236,20 @@ def calculate_cpu_percent(t1: Tuple[float, float], t2: Tuple[float, float]) -> f
     return max(0.0, min(100.0, 100.0 * (1.0 - (idle_delta / total_delta))))
 
 
+import urllib.parse
+
+
+def parse_rtsp_url(url: str) -> Tuple[str, str, str]:
+    """Extracts username and password from RTSP URL and returns clean URL."""
+    res = urllib.parse.urlparse(url)
+    username = urllib.parse.unquote(res.username or "")
+    password = urllib.parse.unquote(res.password or "")
+    if "@" in res.netloc:
+        res = res._replace(netloc=res.netloc.rsplit("@", 1)[1])
+    clean_url = urllib.parse.urlunparse(res)
+    return username, password, clean_url
+
+
 def run_python_gst_pipeline(
     decoder: str,
     source_url: str,
@@ -245,7 +259,7 @@ def run_python_gst_pipeline(
     try:
         import gi
         gi.require_version("Gst", "1.0")
-        from gi.repository import Gst, GLib
+        from gi.repository import Gst
         Gst.init(None)
     except Exception:
         return None
@@ -255,7 +269,12 @@ def run_python_gst_pipeline(
     if not rtspsrc:
         return None
 
-    rtspsrc.set_property("location", source_url)
+    username, password, clean_loc = parse_rtsp_url(source_url)
+    rtspsrc.set_property("location", clean_loc)
+    if username:
+        rtspsrc.set_property("user-id", username)
+    if password:
+        rtspsrc.set_property("user-pw", password)
     rtspsrc.set_property("latency", 500)
     try:
         rtspsrc.set_property("drop-on-latency", True)
@@ -269,12 +288,14 @@ def run_python_gst_pipeline(
     parse = Gst.ElementFactory.make("h264parse", "parse0")
     dec = Gst.ElementFactory.make(decoder, "dec0")
     sink = Gst.ElementFactory.make("fakesink", "sink0")
-    if not all([rtp_caps, depay, parse, dec, sink]):
+    audio_sink = Gst.ElementFactory.make("fakesink", "audiosink")
+    if not all([rtp_caps, depay, parse, dec, sink, audio_sink]):
         return None
 
     sink.set_property("sync", False)
+    audio_sink.set_property("sync", False)
 
-    for elem in [rtspsrc, rtp_caps, depay, parse, dec, sink]:
+    for elem in [rtspsrc, rtp_caps, depay, parse, dec, sink, audio_sink]:
         pipeline.add(elem)
 
     rtp_caps.link(depay)
@@ -293,22 +314,17 @@ def run_python_gst_pipeline(
         pass
 
     def on_pad_added(src: Any, new_pad: Any) -> None:
-        caps = new_pad.get_current_caps() or new_pad.query_caps(None)
-        caps_str = caps.to_string() if caps else ""
-        if "video" in caps_str:
-            sink_pad = rtp_caps.get_static_pad("sink")
-            if sink_pad and not sink_pad.is_linked():
-                new_pad.link(sink_pad)
+        sink_pad = rtp_caps.get_static_pad("sink")
+        if sink_pad and not sink_pad.is_linked():
+            # Attempt linking video pad
+            ret = new_pad.link(sink_pad)
+            if ret == Gst.PadLinkReturn.OK:
                 return
+
         # Sink audio or auxiliary pads safely to prevent 'not-linked (-1)' error
-        fs = Gst.ElementFactory.make("fakesink", None)
-        if fs:
-            fs.set_property("sync", False)
-            pipeline.add(fs)
-            fs.sync_state_with_parent()
-            fpad = fs.get_static_pad("sink")
-            if fpad and not fpad.is_linked():
-                new_pad.link(fpad)
+        audio_pad = audio_sink.get_static_pad("sink")
+        if audio_pad and not audio_pad.is_linked():
+            new_pad.link(audio_pad)
 
     rtspsrc.connect("pad-added", on_pad_added)
 
@@ -406,12 +422,16 @@ def run_pipeline_test(
 
     # Build pipeline according to source
     if source_type == "rtsp" and source_url:
-        # Multi-branch CLI pipeline: links video pad to decoder and secondary audio pad to fakesink
-        # to prevent 'udpsrc: Internal data stream error (reason not-linked -1)'
+        username, password, clean_url = parse_rtsp_url(source_url)
+        user_props = []
+        if username:
+            user_props.extend([f"user-id={username}", f"user-pw={password}"])
         pipeline = [
             gst_launch,
             "-v",
-            "rtspsrc", f"location={source_url}", "latency=500", "drop-on-latency=true", "name=rtspsrc0",
+            "rtspsrc", f"location={clean_url}", "latency=500", "drop-on-latency=true",
+        ] + user_props + [
+            "name=rtspsrc0",
             "rtspsrc0.", "!", "application/x-rtp,media=video",
             "!", "rtph264depay",
             "!", "h264parse",
