@@ -268,8 +268,7 @@ def run_python_gst_pipeline(
     rtspsrc = Gst.ElementFactory.make("rtspsrc", "rtspsrc0")
     decodebin = Gst.ElementFactory.make("decodebin", "dec0")
     sink = Gst.ElementFactory.make("fakesink", "sink0")
-    audio_sink = Gst.ElementFactory.make("fakesink", "audiosink")
-    if not all([rtspsrc, decodebin, sink, audio_sink]):
+    if not all([rtspsrc, decodebin, sink]):
         return None
 
     username, password, clean_loc = parse_rtsp_url(source_url)
@@ -285,17 +284,23 @@ def run_python_gst_pipeline(
         pass
 
     sink.set_property("sync", False)
-    audio_sink.set_property("sync", False)
 
-    # Force software decoders on decodebin if avdec is requested
-    if "avdec" in decoder or "sw" in decoder:
+    for elem in [rtspsrc, decodebin, sink]:
+        pipeline.add(elem)
+
+    def divert_pad(pad: Any) -> None:
+        """Dynamically sinks unhandled pads (audio, RTCP, auxiliary) to a fakesink."""
         try:
-            decodebin.set_property("force-sw-decoders", True)
+            fs = Gst.ElementFactory.make("fakesink", None)
+            if fs:
+                fs.set_property("sync", False)
+                pipeline.add(fs)
+                fs.sync_state_with_parent()
+                target_pad = fs.get_static_pad("sink")
+                if target_pad and not target_pad.is_linked():
+                    pad.link(target_pad)
         except Exception:
             pass
-
-    for elem in [rtspsrc, decodebin, sink, audio_sink]:
-        pipeline.add(elem)
 
     def on_select_stream(src: Any, num: int, caps: Any) -> bool:
         caps_str = caps.to_string() if caps else ""
@@ -307,21 +312,28 @@ def run_python_gst_pipeline(
         pass
 
     def on_rtspsrc_pad_added(src: Any, new_pad: Any) -> None:
+        caps = new_pad.get_current_caps() or new_pad.query_caps(None)
+        caps_str = caps.to_string() if caps else ""
+        is_video = "video" in caps_str or "media=(string)video" in caps_str or caps_str == "ANY"
+
         dec_sink = decodebin.get_static_pad("sink")
-        if dec_sink and not dec_sink.is_linked():
+        if is_video and dec_sink and not dec_sink.is_linked():
             ret = new_pad.link(dec_sink)
             if ret == Gst.PadLinkReturn.OK:
                 return
 
-        # Divert non-video / auxiliary stream to audio_sink
-        audio_pad = audio_sink.get_static_pad("sink")
-        if audio_pad and not audio_pad.is_linked():
-            new_pad.link(audio_pad)
+        divert_pad(new_pad)
 
     rtspsrc.connect("pad-added", on_rtspsrc_pad_added)
 
     # Sort decoders: prioritize mppvideodec for hardware, avdec for software
     def on_autoplug_sort(bin_elem: Any, pad: Any, caps: Any, factories: Any) -> Any:
+        if caps:
+            c_str = caps.to_string().lower()
+            if "h265" in c_str or "hevc" in c_str:
+                metrics["codec"] = "H.265 (HEVC)"
+            elif "h264" in c_str or "avc" in c_str:
+                metrics["codec"] = "H.264 (AVC)"
         if not factories:
             return factories
         hw_f = []
@@ -332,7 +344,7 @@ def run_python_gst_pipeline(
                 hw_f.append(f)
             else:
                 sw_f.append(f)
-        if decoder == "mppvideodec":
+        if decoder == "mppvideodec" or "hw" in decoder:
             return hw_f + sw_f
         else:
             return sw_f
@@ -344,9 +356,17 @@ def run_python_gst_pipeline(
 
     # Link decodebin output to fakesink
     def on_decodebin_pad_added(bin_elem: Any, new_pad: Any) -> None:
+        caps = new_pad.get_current_caps() or new_pad.query_caps(None)
+        caps_str = caps.to_string() if caps else ""
+        is_raw_video = "video/x-raw" in caps_str or caps_str == "ANY"
+
         sink_pad = sink.get_static_pad("sink")
-        if sink_pad and not sink_pad.is_linked():
-            new_pad.link(sink_pad)
+        if is_raw_video and sink_pad and not sink_pad.is_linked():
+            ret = new_pad.link(sink_pad)
+            if ret == Gst.PadLinkReturn.OK:
+                return
+
+        divert_pad(new_pad)
 
     decodebin.connect("pad-added", on_decodebin_pad_added)
 
@@ -422,6 +442,7 @@ def run_python_gst_pipeline(
     return {
         "decoder": decoder,
         "success": metrics["frames"] > 0,
+        "codec": metrics["codec"],
         "frames": metrics["frames"],
         "fps": round(metrics["frames"] / t_elapsed, 1),
         "cpu_pct": round(calculate_cpu_percent(cpu_t1, cpu_t2), 1),
@@ -449,6 +470,7 @@ def run_pipeline_test(
     result: Dict[str, Any] = {
         "decoder": decoder,
         "success": False,
+        "codec": "Unknown",
         "frames": 0,
         "fps": 0.0,
         "cpu_pct": 0.0,
@@ -612,29 +634,40 @@ def run_comparison_benchmark(
     print("Testing Pipeline 1: Hardware Decoder (mppvideodec)...")
     hw_res = run_pipeline_test("mppvideodec", source_type, source_url, duration_s=duration_s)
 
-    print("Testing Pipeline 2: Software Decoder (avdec_h264)...")
-    sw_res = run_pipeline_test("avdec_h264", source_type, source_url, duration_s=duration_s)
+    detected_codec = hw_res.get("codec") or "Unknown"
+    codec_tag = "avdec_h265" if "h265" in detected_codec.lower() else ("avdec_h264" if "h264" in detected_codec.lower() else "avdec")
+    print(f"Testing Pipeline 2: Software Decoder ({codec_tag})...")
+    sw_res = run_pipeline_test("software", source_type, source_url, duration_s=duration_s)
+
+    if detected_codec == "Unknown" and sw_res.get("codec") and sw_res["codec"] != "Unknown":
+        detected_codec = sw_res["codec"]
+        codec_tag = "avdec_h265" if "h265" in detected_codec.lower() else ("avdec_h264" if "h264" in detected_codec.lower() else "avdec")
+
+    sw_header = f"Software ({codec_tag})"
 
     print("\n" + "-" * 65)
-    print(f"{'Metric':<26} | {'Hardware (mppvideodec)':<18} | {'Software (avdec_h264)':<18}")
+    print(f"{'Metric':<26} | {'Hardware (mppvideodec)':<22} | {sw_header:<22}")
     print("-" * 65)
+
+    if detected_codec != "Unknown":
+        print(f"{'Detected Codec':<26} | {detected_codec:<22} | {detected_codec:<22}")
 
     hw_status = "SUCCESS" if hw_res["success"] else "FAILED"
     sw_status = "SUCCESS" if sw_res["success"] else "FAILED"
-    print(f"{'Pipeline Status':<26} | {hw_status:<18} | {sw_status:<18}")
+    print(f"{'Pipeline Status':<26} | {hw_status:<22} | {sw_status:<22}")
 
     hw_fps_str = f"{hw_res['fps']} FPS"
     sw_fps_str = f"{sw_res['fps']} FPS"
     hw_cpu_str = f"{hw_res['cpu_pct']}%"
     sw_cpu_str = f"{sw_res['cpu_pct']}%"
 
-    print(f"{'Frames Processed':<26} | {str(hw_res['frames']):<18} | {str(sw_res['frames']):<18}")
-    print(f"{'Throughput':<26} | {hw_fps_str:<18} | {sw_fps_str:<18}")
-    print(f"{'Host CPU Utilization':<26} | {hw_cpu_str:<18} | {sw_cpu_str:<18}")
+    print(f"{'Frames Processed':<26} | {str(hw_res['frames']):<22} | {str(sw_res['frames']):<22}")
+    print(f"{'Throughput':<26} | {hw_fps_str:<22} | {sw_fps_str:<22}")
+    print(f"{'Host CPU Utilization':<26} | {hw_cpu_str:<22} | {sw_cpu_str:<22}")
 
     hw_pts = "WARN (missing PTS)" if hw_res["pts_warning"] else ("VALID" if hw_res["success"] else "N/A")
     sw_pts = "VALID" if sw_res["success"] else "N/A"
-    print(f"{'PTS Timestamps':<26} | {hw_pts:<18} | {sw_pts:<18}")
+    print(f"{'PTS Timestamps':<26} | {hw_pts:<22} | {sw_pts:<22}")
     print("-" * 65)
 
     if hw_res["error_msg"]:
