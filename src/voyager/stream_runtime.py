@@ -203,19 +203,7 @@ def _patch_voyager_stream_input() -> None:
                     except Exception:
                         pass
 
-                def _on_select_stream(rtspsrc_elem: Any, num: int, caps: Any) -> bool:
-                    caps_str = caps.to_string() if caps is not None else ""
-                    # Select video only; filter out audio/metadata tracks before RTSP SETUP
-                    # to prevent unlinked audio sessions from timing out after 25s
-                    is_video = "media=(string)video" in caps_str or "video/" in caps_str
-                    if not is_video:
-                        print(f"[RTSP FILTER] Excluding non-video track #{num} ({caps_str[:50]}...) from RTSP session")
-                    return is_video
 
-                try:
-                    elem.connect("select-stream", _on_select_stream)
-                except Exception as e:
-                    print(f"[RTSP] Warning: could not connect select-stream signal: {e}")
 
             elif inst == "decodebin":
                 force_sw = str(element.get('force-sw-decoders', False)).lower() == 'true'
