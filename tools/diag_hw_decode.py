@@ -143,6 +143,15 @@ def check_hardware_nodes() -> Dict[str, bool]:
             for l in mpp_lines[-6:]:
                 print(f"  {l}")
 
+    # Check permissions for /dev/rga (Rockchip 2D raster graphic acceleration)
+    if os.path.exists("/dev/rga") and not (os.access("/dev/rga", os.R_OK) and os.access("/dev/rga", os.W_OK)):
+        print("\n  [PERMISSION NOTICE] /dev/rga lacks read/write access for current user.")
+        res_rga = subprocess.run(["sudo", "-n", "chmod", "666", "/dev/rga"], capture_output=True, text=True)
+        if res_rga.returncode == 0:
+            print("  [FIX APPLIED] Successfully executed 'sudo chmod 666 /dev/rga'. Permissions updated!")
+        else:
+            print("  Recommendation: Run 'sudo chmod 666 /dev/rga' so mppvideodec can use RGA 2D scaling.")
+
     return status
 
 
@@ -227,6 +236,143 @@ def calculate_cpu_percent(t1: Tuple[float, float], t2: Tuple[float, float]) -> f
     return max(0.0, min(100.0, 100.0 * (1.0 - (idle_delta / total_delta))))
 
 
+def run_python_gst_pipeline(
+    decoder: str,
+    source_url: str,
+    duration_s: float = 5.0,
+) -> Optional[Dict[str, Any]]:
+    """Runs a Python GStreamer pipeline with select-stream filtering and buffer probes."""
+    try:
+        import gi
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst, GLib
+        Gst.init(None)
+    except Exception:
+        return None
+
+    pipeline = Gst.Pipeline.new("diag_pipeline")
+    rtspsrc = Gst.ElementFactory.make("rtspsrc", "rtspsrc0")
+    if not rtspsrc:
+        return None
+
+    rtspsrc.set_property("location", source_url)
+    rtspsrc.set_property("latency", 500)
+    try:
+        rtspsrc.set_property("drop-on-latency", True)
+    except Exception:
+        pass
+
+    rtp_caps = Gst.ElementFactory.make("capsfilter", "rtpcaps")
+    rtp_caps.set_property("caps", Gst.Caps.from_string("application/x-rtp,media=video"))
+
+    depay = Gst.ElementFactory.make("rtph264depay", "depay0")
+    parse = Gst.ElementFactory.make("h264parse", "parse0")
+    dec = Gst.ElementFactory.make(decoder, "dec0")
+    sink = Gst.ElementFactory.make("fakesink", "sink0")
+    if not all([rtp_caps, depay, parse, dec, sink]):
+        return None
+
+    sink.set_property("sync", False)
+
+    for elem in [rtspsrc, rtp_caps, depay, parse, dec, sink]:
+        pipeline.add(elem)
+
+    rtp_caps.link(depay)
+    depay.link(parse)
+    parse.link(dec)
+    dec.link(sink)
+
+    def on_select_stream(src: Any, num: int, caps: Any) -> bool:
+        caps_str = caps.to_string() if caps else ""
+        # Strictly select video; drop audio and metadata before RTSP SETUP
+        return "media=(string)video" in caps_str or "video/" in caps_str
+
+    try:
+        rtspsrc.connect("select-stream", on_select_stream)
+    except Exception:
+        pass
+
+    def on_pad_added(src: Any, new_pad: Any) -> None:
+        caps = new_pad.get_current_caps() or new_pad.query_caps(None)
+        caps_str = caps.to_string() if caps else ""
+        if "video" in caps_str:
+            sink_pad = rtp_caps.get_static_pad("sink")
+            if sink_pad and not sink_pad.is_linked():
+                new_pad.link(sink_pad)
+                return
+        # Sink audio or auxiliary pads safely to prevent 'not-linked (-1)' error
+        fs = Gst.ElementFactory.make("fakesink", None)
+        if fs:
+            fs.set_property("sync", False)
+            pipeline.add(fs)
+            fs.sync_state_with_parent()
+            fpad = fs.get_static_pad("sink")
+            if fpad and not fpad.is_linked():
+                new_pad.link(fpad)
+
+    rtspsrc.connect("pad-added", on_pad_added)
+
+    metrics = {
+        "frames": 0,
+        "pts_valid": True,
+        "pts_warning": False,
+        "error_msg": "",
+    }
+
+    def sink_probe(pad: Any, info: Any) -> Any:
+        buf = info.get_buffer()
+        if buf:
+            metrics["frames"] += 1
+            if buf.pts == Gst.CLOCK_TIME_NONE:
+                metrics["pts_valid"] = False
+                metrics["pts_warning"] = True
+        return Gst.PadProbeReturn.OK
+
+    sink_pad = sink.get_static_pad("sink")
+    if sink_pad:
+        sink_pad.add_probe(Gst.PadProbeType.BUFFER, sink_probe)
+
+    bus = pipeline.get_bus()
+
+    cpu_t1 = get_cpu_times()
+    t_start = time.time()
+    pipeline.set_state(Gst.State.PLAYING)
+
+    deadline = t_start + duration_s
+    while time.time() < deadline:
+        msg = bus.timed_pop_filtered(
+            int(100 * Gst.MSECOND),
+            Gst.MessageType.ERROR | Gst.MessageType.WARNING | Gst.MessageType.EOS
+        )
+        if msg:
+            if msg.type == Gst.MessageType.ERROR:
+                err, debug = msg.parse_error()
+                metrics["error_msg"] = f"{err.message} ({debug})"
+                break
+            elif msg.type == Gst.MessageType.WARNING:
+                w_err, w_debug = msg.parse_warning()
+                if "pts" in (w_err.message + w_debug).lower():
+                    metrics["pts_warning"] = True
+                    metrics["pts_valid"] = False
+
+    t_elapsed = max(0.001, time.time() - t_start)
+    cpu_t2 = get_cpu_times()
+
+    pipeline.set_state(Gst.State.NULL)
+
+    return {
+        "decoder": decoder,
+        "success": metrics["frames"] > 0,
+        "frames": metrics["frames"],
+        "fps": round(metrics["frames"] / t_elapsed, 1),
+        "cpu_pct": round(calculate_cpu_percent(cpu_t1, cpu_t2), 1),
+        "pts_valid": metrics["pts_valid"],
+        "pts_warning": metrics["pts_warning"],
+        "error_msg": metrics["error_msg"],
+        "logs": "",
+    }
+
+
 def run_pipeline_test(
     decoder: str,
     source_type: str,
@@ -235,6 +381,12 @@ def run_pipeline_test(
     max_frames: int = 150,
 ) -> Dict[str, Any]:
     """Runs a GStreamer pipeline with the specified decoder and collects metrics."""
+    # First: attempt native Python GStreamer pipeline if on RTSP (most reliable for track filtering)
+    if source_type == "rtsp" and source_url:
+        py_result = run_python_gst_pipeline(decoder, source_url, duration_s=duration_s)
+        if py_result is not None and (py_result["success"] or "not found" not in py_result["error_msg"].lower()):
+            return py_result
+
     result: Dict[str, Any] = {
         "decoder": decoder,
         "success": False,
@@ -254,14 +406,18 @@ def run_pipeline_test(
 
     # Build pipeline according to source
     if source_type == "rtsp" and source_url:
+        # Multi-branch CLI pipeline: links video pad to decoder and secondary audio pad to fakesink
+        # to prevent 'udpsrc: Internal data stream error (reason not-linked -1)'
         pipeline = [
             gst_launch,
             "-v",
-            "rtspsrc", f"location={source_url}", "latency=500", "drop-on-latency=true",
+            "rtspsrc", f"location={source_url}", "latency=500", "drop-on-latency=true", "name=rtspsrc0",
+            "rtspsrc0.", "!", "application/x-rtp,media=video",
             "!", "rtph264depay",
             "!", "h264parse",
             "!", decoder,
             "!", "fakesink", "sync=false",
+            "rtspsrc0.", "!", "fakesink", "sync=false",
         ]
     elif source_type == "file" and source_url:
         pipeline = [
