@@ -159,12 +159,17 @@ def _patch_voyager_stream_input() -> None:
     if _VOYAGER_INPUT_PATCHED:
         return
 
-    # Disable OpenCL preprocessing on host GPU (ARM Mali G610).
-    # On Rockchip RK3588, Mali OpenCL unified memory queues conflict with
-    # Metis PCIe Level-Zero wait queues, causing 'waitForQueueBinaryCompletion -1301'.
-    os.environ["AX_DISABLE_OPENCL"] = "1"
-    os.environ["AX_OPENCL_PREFERENCE"] = "NONE"
-    os.environ["AXELERA_USE_CL_DOUBLE_BUFFER"] = "0"
+    # Optimize Voyager runtime for embedded Rockchip RK3588 + Metis PCIe:
+    # 1. Disable OpenCL to eliminate Mali GPU unified memory queue collisions with Metis Level-Zero.
+    # 2. Disable double-buffering so inference executes synchronously per frame (queue depth = 1).
+    # 3. Disable zero-copy dmabuf to prevent CMA heap allocation fragmentation on raw CPU frames.
+    # 4. Default to TCP for RTSP to guarantee in-order delivery without dropped packets.
+    os.environ.setdefault("AX_DISABLE_OPENCL", "1")
+    os.environ.setdefault("AX_OPENCL_PREFERENCE", "NONE")
+    os.environ.setdefault("AXELERA_USE_CL_DOUBLE_BUFFER", "0")
+    os.environ.setdefault("AXELERA_USE_DOUBLE_BUFFER", "0")
+    os.environ.setdefault("AXELERA_USE_DMABUF", "0")
+    os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
 
     try:
         from axelera.app.pipe import io

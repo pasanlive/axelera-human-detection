@@ -102,13 +102,20 @@ def main():
         os.environ["ZE_DEBUG"] = "1"
         os.environ["AXELERA_LOG_LEVEL"] = "DEBUG"
         if not os.environ.get("GST_DEBUG"):
-            os.environ["GST_DEBUG"] = "2,axinferencenet:4,axinplace:4"
-        print("[DIAG] Detailed diagnostic logging active (ZE_DEBUG=1, GST_DEBUG=2,axinferencenet:4)")
+            os.environ["GST_DEBUG"] = "2,openclallocator:0,axinferencenet:4,axinplace:4"
+        print("[DIAG] Detailed diagnostic logging active (ZE_DEBUG=1, GST_DEBUG=2,openclallocator:0,axinferencenet:4)")
 
-    # Prevent OpenCL host GPU queue conflicts with Metis Level-Zero on embedded RK3588 boards
+    # Optimize Voyager runtime environment for Rockchip RK3588 + Metis PCIe:
+    # 1. Disable OpenCL preprocessing on host GPU (ARM Mali G610) to avoid memory queue conflicts
+    # 2. Disable double buffering to prevent command list build-up and -1301 wait kernel timeouts
+    # 3. Disable zero-copy dmabuf to prevent CMA heap fragmentation with software video decoding
+    # 4. Enforce TCP RTSP transport for lossless frame delivery without dropped reference frames
     os.environ.setdefault("AX_DISABLE_OPENCL", "1")
     os.environ.setdefault("AX_OPENCL_PREFERENCE", "NONE")
     os.environ.setdefault("AXELERA_USE_CL_DOUBLE_BUFFER", "0")
+    os.environ.setdefault("AXELERA_USE_DOUBLE_BUFFER", "0")
+    os.environ.setdefault("AXELERA_USE_DMABUF", "0")
+    os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
 
     if args.headless or not os.environ.get("DISPLAY"):
         # Explicit headless mode: prevent X11 auth warnings and Pyglet display probe errors

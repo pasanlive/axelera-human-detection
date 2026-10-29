@@ -51,8 +51,8 @@ voyager:
   calibration_dir: data/calibration
   num_calibration_images: 400
   aipu_cores: 4
-  hardware_decode: false # software decode (avdec_h264) prevents Rockchip MPP (rkvdec2) driver crashes
-  rtsp_transport: all # 'all' enables automatic UDP/TCP negotiation with camera
+  hardware_decode: false # software decode (avdec_h265) prevents Rockchip MPP (rkvdec2) driver crashes
+  rtsp_transport: tcp # 'tcp' ensures lossless RTSP transmission (prevents UDP packet drops / missing POC frames)
   rtsp_latency_ms: 500 # 500ms jitter buffer absorbs network packet delays
   low_latency: false
   aipu_clock_mhz: null # Native 800 MHz profile prevents kernel MSI interrupt timeouts
