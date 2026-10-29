@@ -255,7 +255,7 @@ def run_python_gst_pipeline(
     source_url: str,
     duration_s: float = 5.0,
 ) -> Optional[Dict[str, Any]]:
-    """Runs a Python GStreamer pipeline with select-stream filtering and buffer probes."""
+    """Runs a Python GStreamer pipeline using decodebin with autoplug-sort and buffer probes."""
     try:
         import gi
         gi.require_version("Gst", "1.0")
@@ -266,7 +266,10 @@ def run_python_gst_pipeline(
 
     pipeline = Gst.Pipeline.new("diag_pipeline")
     rtspsrc = Gst.ElementFactory.make("rtspsrc", "rtspsrc0")
-    if not rtspsrc:
+    decodebin = Gst.ElementFactory.make("decodebin", "dec0")
+    sink = Gst.ElementFactory.make("fakesink", "sink0")
+    audio_sink = Gst.ElementFactory.make("fakesink", "audiosink")
+    if not all([rtspsrc, decodebin, sink, audio_sink]):
         return None
 
     username, password, clean_loc = parse_rtsp_url(source_url)
@@ -281,31 +284,21 @@ def run_python_gst_pipeline(
     except Exception:
         pass
 
-    rtp_caps = Gst.ElementFactory.make("capsfilter", "rtpcaps")
-    rtp_caps.set_property("caps", Gst.Caps.from_string("application/x-rtp,media=video"))
-
-    depay = Gst.ElementFactory.make("rtph264depay", "depay0")
-    parse = Gst.ElementFactory.make("h264parse", "parse0")
-    dec = Gst.ElementFactory.make(decoder, "dec0")
-    sink = Gst.ElementFactory.make("fakesink", "sink0")
-    audio_sink = Gst.ElementFactory.make("fakesink", "audiosink")
-    if not all([rtp_caps, depay, parse, dec, sink, audio_sink]):
-        return None
-
     sink.set_property("sync", False)
     audio_sink.set_property("sync", False)
 
-    for elem in [rtspsrc, rtp_caps, depay, parse, dec, sink, audio_sink]:
-        pipeline.add(elem)
+    # Force software decoders on decodebin if avdec is requested
+    if "avdec" in decoder or "sw" in decoder:
+        try:
+            decodebin.set_property("force-sw-decoders", True)
+        except Exception:
+            pass
 
-    rtp_caps.link(depay)
-    depay.link(parse)
-    parse.link(dec)
-    dec.link(sink)
+    for elem in [rtspsrc, decodebin, sink, audio_sink]:
+        pipeline.add(elem)
 
     def on_select_stream(src: Any, num: int, caps: Any) -> bool:
         caps_str = caps.to_string() if caps else ""
-        # Strictly select video; drop audio and metadata before RTSP SETUP
         return "media=(string)video" in caps_str or "video/" in caps_str
 
     try:
@@ -313,20 +306,49 @@ def run_python_gst_pipeline(
     except Exception:
         pass
 
-    def on_pad_added(src: Any, new_pad: Any) -> None:
-        sink_pad = rtp_caps.get_static_pad("sink")
-        if sink_pad and not sink_pad.is_linked():
-            # Attempt linking video pad
-            ret = new_pad.link(sink_pad)
+    def on_rtspsrc_pad_added(src: Any, new_pad: Any) -> None:
+        dec_sink = decodebin.get_static_pad("sink")
+        if dec_sink and not dec_sink.is_linked():
+            ret = new_pad.link(dec_sink)
             if ret == Gst.PadLinkReturn.OK:
                 return
 
-        # Sink audio or auxiliary pads safely to prevent 'not-linked (-1)' error
+        # Divert non-video / auxiliary stream to audio_sink
         audio_pad = audio_sink.get_static_pad("sink")
         if audio_pad and not audio_pad.is_linked():
             new_pad.link(audio_pad)
 
-    rtspsrc.connect("pad-added", on_pad_added)
+    rtspsrc.connect("pad-added", on_rtspsrc_pad_added)
+
+    # Sort decoders: prioritize mppvideodec for hardware, avdec for software
+    def on_autoplug_sort(bin_elem: Any, pad: Any, caps: Any, factories: Any) -> Any:
+        if not factories:
+            return factories
+        hw_f = []
+        sw_f = []
+        for f in factories:
+            fname = f.get_name()
+            if fname.startswith("mpp") or fname.startswith("rga"):
+                hw_f.append(f)
+            else:
+                sw_f.append(f)
+        if decoder == "mppvideodec":
+            return hw_f + sw_f
+        else:
+            return sw_f
+
+    try:
+        decodebin.connect("autoplug-sort", on_autoplug_sort)
+    except Exception:
+        pass
+
+    # Link decodebin output to fakesink
+    def on_decodebin_pad_added(bin_elem: Any, new_pad: Any) -> None:
+        sink_pad = sink.get_static_pad("sink")
+        if sink_pad and not sink_pad.is_linked():
+            new_pad.link(sink_pad)
+
+    decodebin.connect("pad-added", on_decodebin_pad_added)
 
     metrics = {
         "frames": 0,
@@ -426,16 +448,15 @@ def run_pipeline_test(
         user_props = []
         if username:
             user_props.extend([f"user-id={username}", f"user-pw={password}"])
+        dec_bin = ["!", "decodebin"] if decoder == "mppvideodec" else ["!", "decodebin", "force-sw-decoders=true"]
         pipeline = [
             gst_launch,
             "-v",
             "rtspsrc", f"location={clean_url}", "latency=500", "drop-on-latency=true",
         ] + user_props + [
             "name=rtspsrc0",
-            "rtspsrc0.", "!", "application/x-rtp,media=video",
-            "!", "rtph264depay",
-            "!", "h264parse",
-            "!", decoder,
+            "rtspsrc0.",
+        ] + dec_bin + [
             "!", "fakesink", "sync=false",
             "rtspsrc0.", "!", "fakesink", "sync=false",
         ]
