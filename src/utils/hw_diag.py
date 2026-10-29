@@ -136,12 +136,14 @@ class HardwareWatchdog:
             pass
 
         # 2. Disable ASPM on Metis endpoint (1f9d:) and specific bus ID (01:00.0)
+        # Using mask '00:03' modifies ONLY bits 0 and 1 (ASPM L0s/L1 disable) while strictly preserving
+        # bit 6 (Common Clock Configuration) and bit 3 (Read Completion Boundary).
         try:
-            subprocess.run(["setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
+            subprocess.run(["setpci", "-d", "1f9d:", "CAP_EXP+0x10.b=00:03"],
                            capture_output=True, text=True, timeout=2)
-            res_sudo = subprocess.run(["sudo", "-n", "setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
+            res_sudo = subprocess.run(["sudo", "-n", "setpci", "-d", "1f9d:", "CAP_EXP+0x10.b=00:03"],
                                       capture_output=True, text=True, timeout=2)
-            subprocess.run(["sudo", "-n", "setpci", "-s", "01:00.0", "CAP_EXP+0x10.w=0x0000"],
+            subprocess.run(["sudo", "-n", "setpci", "-s", "01:00.0", "CAP_EXP+0x10.b=00:03"],
                            capture_output=True, text=True, timeout=2)
             if res_sudo.returncode == 0:
                 print("[PCIe OPTIMIZATION] Successfully disabled PCIe ASPM on Metis device via sudo setpci.")
@@ -150,25 +152,47 @@ class HardwareWatchdog:
 
         # 3. Disable ASPM on all upstream PCIe Root Ports and Bridges (PCI class 0604)
         try:
-            res_rp = subprocess.run(["sudo", "-n", "setpci", "-d", "::0604", "CAP_EXP+0x10.w=0x0000"],
+            res_rp = subprocess.run(["sudo", "-n", "setpci", "-d", "::0604", "CAP_EXP+0x10.b=00:03"],
                                     capture_output=True, text=True, timeout=2)
             if res_rp.returncode == 0:
                 print("[PCIe OPTIMIZATION] Successfully disabled PCIe ASPM on all PCIe Bridges / Root Ports (-d ::0604).")
-            # Also explicitly set 00:00.0 as fallback
-            subprocess.run(["sudo", "-n", "setpci", "-s", "00:00.0", "CAP_EXP+0x10.w=0x0000"],
+            subprocess.run(["sudo", "-n", "setpci", "-s", "00:00.0", "CAP_EXP+0x10.b=00:03"],
                            capture_output=True, text=True, timeout=2)
         except Exception:
             pass
 
-        # 4. Enforce PCI runtime power management to 'on' and disable sysfs ASPM nodes
+        # 4. Configure PCIe Latency Timer (0x40 = 64 clocks) on Metis and PCIe bridges
+        # This prevents the host PCIe root arbiter from prematurely preempting Metis DMA burst transfers.
         try:
-            subprocess.run(["sudo", "-n", "sh", "-c",
+            subprocess.run(["sudo", "-n", "setpci", "-d", "1f9d:", "latency_timer=40"],
+                           capture_output=True, text=True, timeout=2)
+            subprocess.run(["sudo", "-n", "setpci", "-s", "01:00.0", "latency_timer=40"],
+                           capture_output=True, text=True, timeout=2)
+            subprocess.run(["sudo", "-n", "setpci", "-d", "::0604", "latency_timer=40"],
+                           capture_output=True, text=True, timeout=2)
+            subprocess.run(["sudo", "-n", "setpci", "-s", "00:00.0", "latency_timer=40"],
+                           capture_output=True, text=True, timeout=2)
+            print("[PCIe OPTIMIZATION] Set PCIe Latency Timer to 64 cycles (latency_timer=40).")
+        except Exception:
+            pass
+
+        # 5. Disable d3cold_allowed, force runtime PM 'on', and disable sysfs L1 PM substates
+        # On Rockchip RK3588, d3cold_allowed is 1 by default, which cuts PCIe clock/aux power during idle gaps.
+        try:
+            res_pm = subprocess.run(["sudo", "-n", "sh", "-c",
                             "for d in /sys/bus/pci/devices/*; do "
+                            "[ -f $d/d3cold_allowed ] && echo 0 > $d/d3cold_allowed 2>/dev/null; "
                             "[ -f $d/power/control ] && echo on > $d/power/control 2>/dev/null; "
                             "[ -f $d/link/l1_aspm ] && echo 0 > $d/link/l1_aspm 2>/dev/null; "
                             "[ -f $d/link/l0s_aspm ] && echo 0 > $d/link/l0s_aspm 2>/dev/null; "
+                            "[ -f $d/link/l1_1_aspm ] && echo 0 > $d/link/l1_1_aspm 2>/dev/null; "
+                            "[ -f $d/link/l1_2_aspm ] && echo 0 > $d/link/l1_2_aspm 2>/dev/null; "
+                            "[ -f $d/link/l1_1_pcipm ] && echo 0 > $d/link/l1_1_pcipm 2>/dev/null; "
+                            "[ -f $d/link/l1_2_pcipm ] && echo 0 > $d/link/l1_2_pcipm 2>/dev/null; "
                             "done"],
                            capture_output=True, text=True, timeout=2)
+            if res_pm.returncode == 0:
+                print("[PCIe OPTIMIZATION] Successfully disabled d3cold and L1 substates across all PCIe devices.")
         except Exception:
             pass
 

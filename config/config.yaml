@@ -53,7 +53,7 @@ voyager:
   aipu_cores: 4
   hardware_decode: false # software decode (avdec_h265) prevents Rockchip MPP (rkvdec2) driver crashes
   rtsp_transport: tcp # 'tcp' ensures lossless RTSP transmission (prevents UDP packet drops / missing POC frames)
-  rtsp_latency_ms: 500 # 500ms jitter buffer absorbs network packet delays
+  rtsp_latency_ms: 100 # 100ms jitter buffer eliminates startup frame queue backlog on LAN
   low_latency: false
   aipu_clock_mhz: null # Native 800 MHz profile prevents kernel MSI interrupt timeouts
   mvm_utilization: null # Full MVM capacity prevents megakernel execution timeouts

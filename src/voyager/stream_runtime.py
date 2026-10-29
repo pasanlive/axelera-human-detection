@@ -170,6 +170,9 @@ def _patch_voyager_stream_input() -> None:
     os.environ["AXELERA_USE_DOUBLE_BUFFER"] = "0"
     os.environ["AXELERA_USE_DMABUF"] = "0"
     os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
+    os.environ.setdefault("AXELERA_CONFIGURE_DEVICE", "0")
+    os.environ.setdefault("AXELERA_CONFIGURE_BOARD", "0")
+    os.environ.setdefault("ZE_AFFINITY_MASK", "0")
 
     try:
         from axelera.app.pipe import io
@@ -192,11 +195,13 @@ def _patch_voyager_stream_input() -> None:
                 #    preventing the camera's RTSP server from closing the connection after its 15-30s session timeout.
                 # 3. tcp-timeout=60000000: Sets 60s timeout in microseconds.
                 # 4. drop-on-latency=True: Drops late frames during network bursts instead of building latency.
+                # 5. buffer-mode=0 (none): Dispatches incoming packets without timestamp smoothing delays.
                 for prop_name, prop_val in [
                     ("do-rtcp", False),
                     ("do-rtsp-keep-alive", True),
                     ("tcp-timeout", 60000000),
                     ("drop-on-latency", True),
+                    ("buffer-mode", 0),
                 ]:
                     try:
                         elem.set_property(prop_name, prop_val)
