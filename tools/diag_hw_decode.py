@@ -352,6 +352,8 @@ def run_python_gst_pipeline(
 
     metrics = {
         "frames": 0,
+        "first_frame_time": 0.0,
+        "codec": "Unknown",
         "pts_valid": True,
         "pts_warning": False,
         "error_msg": "",
@@ -361,6 +363,8 @@ def run_python_gst_pipeline(
         buf = info.get_buffer()
         if buf:
             metrics["frames"] += 1
+            if metrics["first_frame_time"] == 0.0:
+                metrics["first_frame_time"] = time.time()
             if buf.pts == Gst.CLOCK_TIME_NONE:
                 metrics["pts_valid"] = False
                 metrics["pts_warning"] = True
@@ -372,14 +376,30 @@ def run_python_gst_pipeline(
 
     bus = pipeline.get_bus()
 
-    cpu_t1 = get_cpu_times()
     t_start = time.time()
     pipeline.set_state(Gst.State.PLAYING)
 
-    deadline = t_start + duration_s
-    while time.time() < deadline:
+    # Allow up to 10s for RTSP handshake & keyframe preroll,
+    # then measure exactly duration_s of active streaming once the first frame arrives.
+    preroll_deadline = t_start + 10.0
+    active_deadline: Optional[float] = None
+    cpu_t1 = get_cpu_times()
+    t_decode_start = t_start
+
+    while True:
+        now = time.time()
+        if metrics["first_frame_time"] > 0:
+            if active_deadline is None:
+                active_deadline = metrics["first_frame_time"] + duration_s
+                t_decode_start = metrics["first_frame_time"]
+                cpu_t1 = get_cpu_times()
+            if now >= active_deadline:
+                break
+        elif now >= preroll_deadline:
+            break
+
         msg = bus.timed_pop_filtered(
-            int(100 * Gst.MSECOND),
+            int(50 * Gst.MSECOND),
             Gst.MessageType.ERROR | Gst.MessageType.WARNING | Gst.MessageType.EOS
         )
         if msg:
@@ -393,7 +413,8 @@ def run_python_gst_pipeline(
                     metrics["pts_warning"] = True
                     metrics["pts_valid"] = False
 
-    t_elapsed = max(0.001, time.time() - t_start)
+    t_decode_end = time.time()
+    t_elapsed = max(0.001, t_decode_end - t_decode_start)
     cpu_t2 = get_cpu_times()
 
     pipeline.set_state(Gst.State.NULL)
