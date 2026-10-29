@@ -179,20 +179,6 @@ def _patch_voyager_stream_input() -> None:
     except ImportError:
         return
 
-    # Patch terminal appsink to drop stale buffers when full.
-    # Note: internal queues before AIPU remain non-leaky (stock SDK behavior)
-    # to guarantee Level-Zero command list buffers are never discarded before host synchronization.
-    _orig_builder_appsink = getattr(gst_builder.Builder, "appsink", None)
-    if _orig_builder_appsink is not None:
-        def patched_builder_appsink(self: Any, props: Any = None, **kwargs: Any) -> None:
-            p = dict(props or {})
-            p['max-buffers'] = 2
-            p['drop'] = True
-            p['sync'] = False
-            return _orig_builder_appsink(self, p, **kwargs)
-
-        gst_builder.Builder.appsink = patched_builder_appsink
-
     # Patch gst_helper._create_element to intercept rtspsrc and decodebin
     _orig_create_element = getattr(gst_helper, "_create_element", None)
     if _orig_create_element is not None:
@@ -200,6 +186,24 @@ def _patch_voyager_stream_input() -> None:
             elem = _orig_create_element(element)
             inst = element.get("instance", "")
             if inst == "rtspsrc":
+                # Critical RTSP stability parameters for continuous IP camera streaming:
+                # 1. do-rtcp=False: IP cameras rarely send valid RTCP packets over interleaved TCP.
+                #    Disabling RTCP prevents GStreamer's rtpsession from falsely timing out at ~18s.
+                # 2. do-rtsp-keep-alive=True: Periodically sends GET_PARAMETER/OPTIONS keep-alives to port 554,
+                #    preventing the camera's RTSP server from closing the connection after its 15-30s session timeout.
+                # 3. tcp-timeout=60000000: Sets 60s timeout in microseconds.
+                # 4. drop-on-latency=True: Drops late frames during network bursts instead of building latency.
+                for prop_name, prop_val in [
+                    ("do-rtcp", False),
+                    ("do-rtsp-keep-alive", True),
+                    ("tcp-timeout", 60000000),
+                    ("drop-on-latency", True),
+                ]:
+                    try:
+                        elem.set_property(prop_name, prop_val)
+                    except Exception:
+                        pass
+
                 def _on_select_stream(rtspsrc_elem: Any, num: int, caps: Any) -> bool:
                     caps_str = caps.to_string() if caps is not None else ""
                     # Select video only; filter out audio/metadata tracks before RTSP SETUP
@@ -276,6 +280,9 @@ def _patch_voyager_stream_input() -> None:
             'user-pw': f"{password}",
             'latency': max(latency, 500),
             'drop-on-latency': True,
+            'do-rtcp': False,
+            'do-rtsp-keep-alive': True,
+            'tcp-timeout': 60000000,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
         rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "all") or "all").lower()

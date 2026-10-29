@@ -105,7 +105,7 @@ def enable_crash_handler(on_crash_callback: Optional[Callable[[], None]] = None)
 class HardwareWatchdog:
     """Monitors hardware health, PCIe/UIO kernel errors, and inference heartbeat."""
 
-    def __init__(self, stall_threshold_s: float = 3.0):
+    def __init__(self, stall_threshold_s: float = 10.0):
         self.stall_threshold_s = stall_threshold_s
         self._lock = threading.Lock()
         self._running = False
