@@ -203,51 +203,6 @@ def _patch_voyager_stream_input() -> None:
                     except Exception:
                         pass
 
-                def _divert_pad_to_fakesink(src_elem: Any, pad: Any) -> None:
-                    try:
-                        import gi
-                        gi.require_version("Gst", "1.0")
-                        from gi.repository import Gst
-                        pipeline = src_elem.get_parent()
-                        while pipeline and not isinstance(pipeline, Gst.Pipeline):
-                            pipeline = pipeline.get_parent()
-                        if pipeline and not pad.is_linked():
-                            fs = Gst.ElementFactory.make("fakesink", None)
-                            if fs:
-                                fs.set_property("sync", False)
-                                pipeline.add(fs)
-                                fs.sync_state_with_parent()
-                                fs_pad = fs.get_static_pad("sink")
-                                if fs_pad and not fs_pad.is_linked():
-                                    pad.link(fs_pad)
-                    except Exception:
-                        pass
-
-                def _on_rtspsrc_pad_added(src_elem: Any, new_pad: Any) -> None:
-                    caps = new_pad.get_current_caps() or new_pad.query_caps(None)
-                    caps_str = caps.to_string() if caps else ""
-                    is_video = "media=(string)video" in caps_str or "video/" in caps_str
-                    if not is_video and caps_str and caps_str != "ANY":
-                        _divert_pad_to_fakesink(src_elem, new_pad)
-                        return
-
-                    # On the next main loop cycle, verify the pad was successfully linked downstream.
-                    # If left unlinked (e.g. secondary video track or unexpected pad), sink it safely.
-                    def _verify_linked():
-                        if not new_pad.is_linked():
-                            _divert_pad_to_fakesink(src_elem, new_pad)
-
-                    try:
-                        from gi.repository import GLib
-                        GLib.idle_add(_verify_linked)
-                    except Exception:
-                        pass
-
-                try:
-                    elem.connect("pad-added", _on_rtspsrc_pad_added)
-                except Exception as e:
-                    print(f"[RTSP] Warning: could not connect pad-added signal: {e}")
-
                 def _on_select_stream(rtspsrc_elem: Any, num: int, caps: Any) -> bool:
                     caps_str = caps.to_string() if caps is not None else ""
                     # Select video only; filter out audio/metadata tracks before RTSP SETUP

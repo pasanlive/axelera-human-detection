@@ -210,6 +210,21 @@ class HardwareWatchdog:
         except Exception:
             pass
 
+    def optimize_kernel_driver(self) -> None:
+        """Configures Linux axl/metis kernel driver options for Rockchip RK3588 MSI stability."""
+        try:
+            # On Rockchip RK3588, allocating 32 MSI vectors causes GIC-ITS MSI dropped interrupts / timeout (0 30).
+            # single_msi=1 restricts allocation to 1 MSI vector, ensuring 100% reliable interrupt delivery.
+            # dma_poll=1 enables polling fallback for DMA completion.
+            conf = "options axl single_msi=1 dma_poll=1\\noptions metis single_msi=1 dma_poll=1\\n"
+            res = subprocess.run(["sudo", "-n", "sh", "-c",
+                                  f"printf '{conf}' > /etc/modprobe.d/axl.conf 2>/dev/null"],
+                                 capture_output=True, text=True, timeout=2)
+            if res.returncode == 0:
+                print("[KERNEL OPTIMIZATION] Configured axl driver options (single_msi=1, dma_poll=1) in /etc/modprobe.d/axl.conf.")
+        except Exception:
+            pass
+
     def start(self) -> None:
         """Starts the background diagnostic watchdog thread."""
         with self._lock:
@@ -218,6 +233,7 @@ class HardwareWatchdog:
             self._running = True
             self.disable_pcie_aspm()
             self.optimize_network_buffers()
+            self.optimize_kernel_driver()
             self._thread = threading.Thread(target=self._monitor_loop, name="hw-watchdog", daemon=True)
             self._thread.start()
 
