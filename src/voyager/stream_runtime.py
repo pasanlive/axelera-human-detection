@@ -174,40 +174,9 @@ def _patch_voyager_stream_input() -> None:
     try:
         from axelera.app.pipe import io
         from axelera.app import config as ax_config
-        from axelera.app import gst_builder
         from axelera.app.pipe import gst_helper
     except ImportError:
         return
-
-    # Patch gst_builder queue and appsink to keep buffer depth minimal (<=2) and avoid blocking upstream
-    for cls in (getattr(gst_builder, "Builder", None), getattr(gst_builder, "_OldBuilder", None)):
-        if cls is not None and hasattr(cls, "queue"):
-            _orig_q = cls.queue
-
-            def _make_patched_queue(orig: Any) -> Any:
-                def patched_q(self: Any, props: dict = {}, **kwargs: Any) -> None:
-                    p = dict(kwargs)
-                    p.update(props)
-                    p.setdefault("max-size-buffers", 2)
-                    p.setdefault("max-size-time", 0)
-                    p.setdefault("max-size-bytes", 0)
-                    p.setdefault("leaky", 2)  # GST_QUEUE_LEAK_DOWNSTREAM = 2 (drop oldest buffer when full)
-                    return orig(self, p)
-                return patched_q
-
-            cls.queue = _make_patched_queue(_orig_q)
-
-    if hasattr(gst_builder, "Builder") and hasattr(gst_builder.Builder, "appsink"):
-        _orig_appsink = gst_builder.Builder.appsink
-
-        def patched_appsink(self: Any, props: dict = {}, **kwargs: Any) -> None:
-            p = dict(kwargs)
-            p.update(props)
-            p.setdefault("max-buffers", 1)
-            p.setdefault("drop", True)
-            return _orig_appsink(self, p)
-
-        gst_builder.Builder.appsink = patched_appsink
 
     # Patch gst_helper._create_element to intercept rtspsrc and decodebin
     _orig_create_element = getattr(gst_helper, "_create_element", None)
@@ -367,17 +336,6 @@ def _patch_voyager_stream_input() -> None:
         decodebin_link = ''
         if requires_decodebin:
             decodebin_link = io.build_decodebin(gst, self._allow_hardware_codec, stream_idx)
-
-        # For live RTSP streams, pace frames strictly to target_fps using drop-only videorate
-        # BEFORE entering axinplace / axinference. This eliminates network frame-bursts dumping
-        # into the Metis Level-Zero queue at >60 FPS, preventing PCIe MSI wait kernel timeout -1301.
-        if target_fps > 0 and self._src.type == ax_config.SourceType.RTSP:
-            gst.videorate(
-                name=decodebin_link,
-                props={"drop-only": True, "skip-to-first": True, "max-rate": target_fps},
-            )
-            gst.capsfilter(caps=f'video/x-raw,framerate={target_fps}/1')
-            decodebin_link = ''
 
         gst.axinplace(
             name=decodebin_link,
