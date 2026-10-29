@@ -105,6 +105,11 @@ def main():
             os.environ["GST_DEBUG"] = "2,axinferencenet:4,axinplace:4"
         print("[DIAG] Detailed diagnostic logging active (ZE_DEBUG=1, GST_DEBUG=2,axinferencenet:4)")
 
+    # Prevent OpenCL host GPU queue conflicts with Metis Level-Zero on embedded RK3588 boards
+    os.environ.setdefault("AX_DISABLE_OPENCL", "1")
+    os.environ.setdefault("AX_OPENCL_PREFERENCE", "NONE")
+    os.environ.setdefault("AXELERA_USE_CL_DOUBLE_BUFFER", "0")
+
     if args.headless or not os.environ.get("DISPLAY"):
         # Explicit headless mode: prevent X11 auth warnings and Pyglet display probe errors
         os.environ.pop("DISPLAY", None)

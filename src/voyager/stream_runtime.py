@@ -158,6 +158,14 @@ def _patch_voyager_stream_input() -> None:
     global _VOYAGER_INPUT_PATCHED
     if _VOYAGER_INPUT_PATCHED:
         return
+
+    # Disable OpenCL preprocessing on host GPU (ARM Mali G610).
+    # On Rockchip RK3588, Mali OpenCL unified memory queues conflict with
+    # Metis PCIe Level-Zero wait queues, causing 'waitForQueueBinaryCompletion -1301'.
+    os.environ["AX_DISABLE_OPENCL"] = "1"
+    os.environ["AX_OPENCL_PREFERENCE"] = "NONE"
+    os.environ["AXELERA_USE_CL_DOUBLE_BUFFER"] = "0"
+
     try:
         from axelera.app.pipe import io
         from axelera.app import config as ax_config
@@ -292,7 +300,9 @@ def _patch_voyager_stream_input() -> None:
         elif self._src.type == ax_config.SourceType.RTSP:
             io._build_gst_rtsp(gst, self._src.location, stream_idx, latency=self._rtsp_latency)
             requires_decodebin = True
-            fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
+            # Live RTSP streams must NOT sleep the GStreamer streaming thread in axinplace.
+            # The camera clock dictates arrival rate; sleeping creates socket backlog and latency bursts.
+            fps_limit = ''
         elif self._src.type == ax_config.SourceType.HLS:
             gst.playbin(uri=self._src.location)
             fps_limit = f';fps_limit:{target_fps}' if target_fps else ''
@@ -492,6 +502,15 @@ class VoyagerRuntime(BaseRuntime):
         sys_kwargs: Dict[str, Any] = dict(allow_hardware_codec=self.allow_hw_codec, timeout=0)
         if self.build_root:
             sys_kwargs["build_root"] = self.build_root
+        try:
+            from axelera.app import config as ax_config
+            sys_kwargs["hardware_caps"] = ax_config.HardwareCaps(
+                vaapi=ax_config.HardwareEnable.disable,
+                opencl=ax_config.HardwareEnable.disable,
+                opengl=ax_config.HardwareEnable.disable,
+            )
+        except Exception:
+            pass
         if self.disable_tracers:
             tracers = []
             print("[VOYAGER HW] Metis tracers disabled (zero background axtrace processes)")
