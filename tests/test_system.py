@@ -468,6 +468,30 @@ class TestWebApi(unittest.TestCase):
             runtime_custom = VoyagerRuntime({"specified_frame_rate": 15}, lambda r: None, lambda *a: None)
             self.assertEqual(runtime_custom._pipeline_kwargs(dummy_plan)["specified_frame_rate"], 15)
 
+    def test_diag_hw_decode_helpers(self):
+        """Verifies hardware video decoding diagnostic helper functions execute reliably."""
+        from tools.diag_hw_decode import (
+            calculate_cpu_percent,
+            check_config_yaml,
+            check_hardware_nodes,
+            check_system,
+        )
+
+        check_system()
+        nodes = check_hardware_nodes()
+        self.assertIn("/dev/mpp_service", nodes)
+        self.assertIn("/dev/rga", nodes)
+
+        pct = calculate_cpu_percent((100.0, 50.0), (200.0, 75.0))
+        self.assertAlmostEqual(pct, 75.0)
+
+        # calculate_cpu_percent with zero delta
+        self.assertEqual(calculate_cpu_percent((100.0, 50.0), (100.0, 50.0)), 0.0)
+
+        # check_config_yaml reads camera stream
+        cam_url = check_config_yaml()
+        self.assertTrue(cam_url is None or cam_url.startswith("rtsp://"))
+
 
 if __name__ == "__main__":
     unittest.main()

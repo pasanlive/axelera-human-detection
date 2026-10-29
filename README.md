@@ -81,6 +81,11 @@ Set `profile: auto` for dynamic planning, or pin a tier from the dashboard or `P
 
 ```bash
 gst-inspect-1.0 mppvideodec   # must succeed for zero-copy HW decode
+
+# Comprehensive hardware video decoding test & benchmark tool:
+python tools/diag_hw_decode.py           # Check device nodes, drivers & plugins
+python tools/diag_hw_decode.py --camera  # Live test with configured camera stream
+python tools/diag_hw_decode.py --compare # Benchmark HW (mppvideodec) vs SW (avdec_h264)
 ```
 
 ---
