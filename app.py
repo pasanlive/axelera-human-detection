@@ -110,17 +110,12 @@ def main():
     # 2. Disable double buffering to prevent command list build-up and -1301 wait kernel timeouts
     # 3. Disable zero-copy dmabuf to prevent CMA heap fragmentation with software video decoding
     # 4. Enforce TCP RTSP transport for lossless frame delivery without dropped reference frames
-    # 5. Prevent pipeline builder from overriding axdevice clock / board configuration
-    # 6. Bind Level-Zero specifically to device 0 (metis-0:1:0)
     os.environ.setdefault("AX_DISABLE_OPENCL", "1")
     os.environ.setdefault("AX_OPENCL_PREFERENCE", "NONE")
     os.environ.setdefault("AXELERA_USE_CL_DOUBLE_BUFFER", "0")
     os.environ.setdefault("AXELERA_USE_DOUBLE_BUFFER", "0")
     os.environ.setdefault("AXELERA_USE_DMABUF", "0")
     os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
-    os.environ.setdefault("AXELERA_CONFIGURE_DEVICE", "0")
-    os.environ.setdefault("AXELERA_CONFIGURE_BOARD", "0")
-    os.environ.setdefault("ZE_AFFINITY_MASK", "0")
 
     if args.headless or not os.environ.get("DISPLAY"):
         # Explicit headless mode: prevent X11 auth warnings and Pyglet display probe errors
