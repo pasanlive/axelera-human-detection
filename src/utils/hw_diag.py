@@ -211,30 +211,16 @@ class HardwareWatchdog:
             pass
 
     def optimize_kernel_driver(self) -> None:
-        """Configures Linux axl/metis kernel driver options for Rockchip RK3588 MSI stability."""
+        """Reports active Linux metis kernel driver parameters."""
         try:
-            # On Rockchip RK3588, allocating 32 MSI vectors causes GIC-ITS MSI dropped interrupts / timeout (0 30).
-            # single_msi=1 restricts allocation to 1 MSI vector, ensuring 100% reliable interrupt delivery.
-            # dma_poll=1 enables polling fallback for DMA completion.
-            conf = "options axl single_msi=1 dma_poll=1\\noptions metis single_msi=1 dma_poll=1\\n"
-            subprocess.run(["sudo", "-n", "sh", "-c",
-                           f"printf '{conf}' > /etc/modprobe.d/axl.conf 2>/dev/null; "
-                           f"printf '{conf}' > /etc/modprobe.d/metis.conf 2>/dev/null"],
-                          capture_output=True, text=True, timeout=2)
-
-            # Check if active driver is currently using single_msi
             for mod in ("metis", "axl"):
-                p = Path(f"/sys/module/{mod}/parameters/single_msi")
-                if p.exists():
-                    val = p.read_text().strip()
-                    if val in ("1", "Y", "y"):
-                        print(f"[KERNEL OPTIMIZATION] Driver '{mod}' is active with single_msi=1 (MSI stability verified).")
-                        return
-                    else:
-                        print(f"[KERNEL WARNING] Driver '{mod}' is currently running with multi-MSI (single_msi={val}).")
-                        print("[KERNEL ACTION REQUIRED] A reboot is required to activate single_msi=1: run 'sudo reboot'.")
-                        return
-            print("[KERNEL OPTIMIZATION] Configured axl/metis driver options (single_msi=1, dma_poll=1).")
+                p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
+                p_to = Path(f"/sys/module/{mod}/parameters/irq_timeout")
+                if p_msi.exists():
+                    msi_val = p_msi.read_text().strip()
+                    to_val = p_to.read_text().strip() if p_to.exists() else "unknown"
+                    print(f"[KERNEL STATUS] Driver '{mod}' active (single_msi={msi_val}, irq_timeout={to_val}s).")
+                    return
         except Exception:
             pass
 
