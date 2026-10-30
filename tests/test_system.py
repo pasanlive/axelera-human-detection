@@ -456,8 +456,22 @@ class TestWebApi(unittest.TestCase):
                 self.assertEqual(status, 200, payload)
                 self.assertIn("Bob", srv.handle_api("GET", "/api/identities", {}, {})[1]["identities"])
 
+                # display & system info endpoints
+                status, disp = srv.handle_api("GET", "/api/display", {}, {})
+                self.assertEqual(status, 200)
+                self.assertIn("draw_boxes", disp)
+                status, disp_post = srv.handle_api("POST", "/api/display", {}, {"draw_boxes": False})
+                self.assertEqual(status, 200)
+                self.assertFalse(disp_post["config"]["draw_boxes"])
+
+                status, sys_info = srv.handle_api("GET", "/api/system_info", {}, {})
+                self.assertEqual(status, 200)
+                self.assertEqual(sys_info["host"]["product_name"], "Upside AI Box")
+
                 if srv.app:
                     client = srv.app.test_client()
+                    self.assertEqual(client.get("/").status_code, 200)
+                    self.assertEqual(client.get("/settings").status_code, 200)
                     self.assertEqual(client.get("/api/status").status_code, 200)
                     self.assertEqual(client.post("/api/models/toggle",
                                                  json={"model_id": "pose_estimator", "enabled": False}).status_code, 200)

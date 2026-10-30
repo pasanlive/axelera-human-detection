@@ -153,6 +153,46 @@ def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
     return out
 
 
+def get_system_info(pipeline=None) -> Dict[str, Any]:
+    """Provides detailed host and Axelera Metis hardware specifications."""
+    import platform
+    local_ip = get_local_ip()
+    host_info = {
+        "product_name": "Upside AI Box",
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "local_ip": local_ip,
+        "python_version": platform.python_version(),
+    }
+    try:
+        import psutil
+        host_info["cpu_count_logical"] = psutil.cpu_count(logical=True)
+        host_info["cpu_count_physical"] = psutil.cpu_count(logical=False)
+        host_info["ram_total_gb"] = round(psutil.virtual_memory().total / (1024 ** 3), 2)
+    except Exception:
+        host_info["cpu_count_logical"] = os.cpu_count() or 1
+        host_info["cpu_count_physical"] = 1
+        host_info["ram_total_gb"] = 0.0
+
+    backend_name = get_hardware_backend_name(pipeline)
+    aipu_info = {
+        "model": "Axelera Metis M.2 Compute Board",
+        "cores": AIPU_CORES,
+        "peak_tops": AIPU_TOPS_MAX,
+        "clock_mhz": 800,
+        "pcie_id": "0000:01:00.0",
+        "driver_mode": "single_msi=1",
+        "firmware": "flver=1.5.0 bcver=7.1",
+        "backend": getattr(getattr(pipeline, "runtime", None), "backend", "unknown"),
+        "backend_name": backend_name,
+    }
+    return {
+        "host": host_info,
+        "aipu": aipu_info,
+    }
+
+
 def ensure_self_signed_cert(cert_path: str = "data/ssl/cert.pem", key_path: str = "data/ssl/key.pem") -> Tuple[Optional[str], Optional[str]]:
     """Preserves existing certificates (e.g. Let's Encrypt / mkcert) or generates a self-signed fallback with SAN IP extensions."""
     cert_path = os.path.abspath(cert_path)
@@ -307,7 +347,7 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = {k: v[-1] for k, v in urllib.parse.parse_qs(parsed.query).items()}
 
-        if method == "GET" and path in ("/", "/index.html"):
+        if method == "GET" and path in ("/", "/index.html", "/settings"):
             html_path = os.path.join(os.path.dirname(__file__), "templates", "index.html")
             self.send_response(200)
             self.send_header("Content-type", "text/html; charset=utf-8")
@@ -548,6 +588,34 @@ class WebServer:
                 text = urllib.parse.unquote(path.split("/")[-1])
                 return 200, {"success": p.plate_db.remove_plate(text), "plate_text": text}
 
+            # ── display settings ────────────────────────────────────────────
+            if method == "GET" and path == "/api/display":
+                vis = getattr(p, "visualizer", None)
+                return 200, {
+                    "draw_boxes": getattr(vis, "draw_boxes", True) if vis else True,
+                    "draw_pose": getattr(vis, "draw_pose", True) if vis else True,
+                    "draw_faces": getattr(vis, "draw_faces", True) if vis else True,
+                    "draw_plates": getattr(vis, "draw_plates", True) if vis else True,
+                    "draw_zones": getattr(vis, "draw_zones", True) if vis else True,
+                    "draw_fps": getattr(vis, "draw_fps", True) if vis else True,
+                }
+            if method == "POST" and path == "/api/display":
+                vis = getattr(p, "visualizer", None)
+                cfg = {}
+                for k in ("draw_boxes", "draw_pose", "draw_faces", "draw_plates", "draw_zones", "draw_fps"):
+                    if k in body:
+                        val = bool(body[k])
+                        cfg[k] = val
+                        if vis:
+                            setattr(vis, k, val)
+                if cfg:
+                    self._persist({"visualization": cfg})
+                return 200, {"success": True, "config": cfg}
+
+            # ── system info ─────────────────────────────────────────────────
+            if method == "GET" and path == "/api/system_info":
+                return 200, get_system_info(p)
+
             # ── auto-update ─────────────────────────────────────────────────
             au = self.auto_updater
             if method == "GET" and path == "/api/update/status":
@@ -587,6 +655,7 @@ class WebServer:
     def _register_flask_routes(self):
         """Registers Flask web routes."""
         @self.app.route('/')
+        @self.app.route('/settings')
         def index():
             return render_template('index.html')
 
