@@ -238,6 +238,8 @@ def main():
                 waited = int(time.time() - start_state["t0"])
                 print(f"[STARTING] Still building Voyager stream ({waited}s) - loading models / "
                       f"GStreamer preroll / RTSP connect...")
+                if waited >= 15 and waited % 15 < 5:
+                    print("  [HINT] Waiting for IP camera to release prior session (typical camera RTSP timeout: ~30s)...")
                 if waited >= 60 and waited % 30 < 5:
                     print("[STARTING] >60s usually means the RTSP source is unreachable or the decoder "
                           "is stuck. Check the camera URL, try --no-hw-decode, or run with GST_DEBUG=3.")

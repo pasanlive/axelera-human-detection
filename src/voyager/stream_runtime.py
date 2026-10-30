@@ -185,6 +185,7 @@ def _patch_voyager_stream_input() -> None:
                 # 1. do-rtsp-keep-alive=True: Periodically sends keep-alives to prevent camera session timeout.
                 # 2. tcp-timeout=30000000: 30s timeout prevents false reconnect loops during camera GOP intervals.
                 # 3. drop-on-latency=True: Drops late frames during network bursts instead of building latency.
+                # 4. protocols=4 (GST_RTSP_LOWER_TRANS_TCP): Force interleaved TCP to eliminate UDP packet loss/firewalls.
                 for prop_name, prop_val in [
                     ("do-rtsp-keep-alive", True),
                     ("tcp-timeout", 30000000),
@@ -192,6 +193,14 @@ def _patch_voyager_stream_input() -> None:
                 ]:
                     try:
                         elem.set_property(prop_name, prop_val)
+                    except Exception:
+                        pass
+
+                for p_val in (4, "tcp"):
+                    try:
+                        elem.set_property("protocols", p_val)
+                        print(f"[RTSP PROTOCOL] rtspsrc configured transport: {elem.get_property('protocols')}")
+                        break
                     except Exception:
                         pass
 
