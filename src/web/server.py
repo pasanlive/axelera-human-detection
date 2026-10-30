@@ -153,10 +153,12 @@ def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
     return out
 
 
-def get_system_info(pipeline=None) -> Dict[str, Any]:
+def get_system_info(pipeline=None, config_path: Optional[str] = None) -> Dict[str, Any]:
     """Provides detailed host and Axelera Metis hardware specifications."""
     import platform
+    from src.utils.config_manager import DEFAULT_SYSTEM_CONFIG_PATH, UPSIDE_LOGS_DIR
     local_ip = get_local_ip()
+    resolved_cfg = config_path or getattr(pipeline, "config_path", None) or DEFAULT_SYSTEM_CONFIG_PATH
     host_info = {
         "product_name": "Upside AI Box",
         "system": platform.system(),
@@ -164,6 +166,8 @@ def get_system_info(pipeline=None) -> Dict[str, Any]:
         "machine": platform.machine(),
         "local_ip": local_ip,
         "python_version": platform.python_version(),
+        "config_path": resolved_cfg,
+        "logs_dir": UPSIDE_LOGS_DIR,
     }
     try:
         import psutil
@@ -428,9 +432,10 @@ class WebServer:
 
     def __init__(self, pipeline, host: str = "0.0.0.0", port: int = 8000, use_https: bool = True,
                  cert_file: Optional[str] = "data/ssl/cert.pem", key_file: Optional[str] = "data/ssl/key.pem",
-                 auto_updater: Optional[Any] = None):
+                 auto_updater: Optional[Any] = None, config_path: Optional[str] = None):
         self.pipeline = pipeline
         self.auto_updater = auto_updater
+        self.config_path = config_path
         self.host = host
         self.port = port
         self.use_https = use_https
@@ -469,8 +474,9 @@ class WebServer:
 
     # ── shared API implementation ────────────────────────────────────────────
     def _cfg_path(self) -> str:
-        return getattr(self.auto_updater, "config_path", None) or getattr(self.pipeline, "config_path", None) \
-            or "config/config.yaml"
+        from src.utils.config_manager import DEFAULT_SYSTEM_CONFIG_PATH
+        return self.config_path or getattr(self.auto_updater, "config_path", None) \
+            or getattr(self.pipeline, "config_path", None) or DEFAULT_SYSTEM_CONFIG_PATH
 
     def _status_payload(self) -> Dict[str, Any]:
         p = self.pipeline
@@ -517,6 +523,7 @@ class WebServer:
                 p.set_model_enabled(model_id, enabled, body.get("camera_id", "all"))
                 if body.get("camera_id", "all") in (None, "all"):
                     self._sync_visualizer(model_id, enabled)
+                    self._persist({"models": {model_id: {"enabled": enabled}}})
                 return 200, {"success": True, "model_id": model_id, "enabled": enabled,
                              "models": p.get_models_status()}
             if method == "POST" and path == "/api/toggle":
@@ -636,7 +643,7 @@ class WebServer:
 
             # ── system info ─────────────────────────────────────────────────
             if method == "GET" and path == "/api/system_info":
-                return 200, get_system_info(p)
+                return 200, get_system_info(p, config_path=self._cfg_path())
 
             # ── logs ────────────────────────────────────────────────────────
             if method == "GET" and path == "/api/logs/list":

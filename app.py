@@ -39,7 +39,7 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def enroll_face_cli(name: str, image_path: str, config: dict, simulate: bool):
+def enroll_face_cli(name: str, image_path: str, config: dict, simulate: bool, config_path: str = None):
     """CLI handler for enrolling a face identity (RetinaFace + FaceNet on the AIPU)."""
     import cv2
 
@@ -47,7 +47,7 @@ def enroll_face_cli(name: str, image_path: str, config: dict, simulate: bool):
     if img is None:
         print(f"[FACE ENROLLMENT FAILED] Cannot read image: {image_path}")
         sys.exit(1)
-    pipeline = MultiCameraPipeline(config, simulate=simulate)
+    pipeline = MultiCameraPipeline(config, simulate=simulate, config_path=config_path)
     print(f"[FACE ENROLLMENT] Enrolling '{name}' from image: {image_path}...")
     ok, msg = pipeline.enroll_identity(name, image=img)
     pipeline.preview.stop()
@@ -71,7 +71,7 @@ def list_faces_cli(config: dict):
 
 def main():
     parser = argparse.ArgumentParser(description="Axelera Metis Multi-Camera Detection System")
-    parser.add_argument("--config", type=str, default="config/config.yaml", help="Path to config YAML file")
+    parser.add_argument("--config", type=str, default=None, help="Path to config YAML file (defaults to ~/.upside-ai/config/config.yaml)")
     parser.add_argument("--simulate", action="store_true", help="Run without Metis hardware (synthetic results)")
     parser.add_argument("--enroll", type=str, help="Enroll face identity name")
     parser.add_argument("--image", type=str, help="Image filepath for face enrollment")
@@ -95,9 +95,10 @@ def main():
     parser.add_argument("--reload-firmware", action="store_true", help="Force reload Metis AIPU firmware before startup")
     args = parser.parse_args()
 
-    # Initialize daily rolling logger with 30-day automatic retention
+    # Initialize daily rolling logger with 30-day automatic retention in ~/.upside-ai/logs
+    from src.utils.config_manager import resolve_active_config_path, UPSIDE_LOGS_DIR
     from src.utils.logger import setup_daily_logger
-    setup_daily_logger(log_dir="data/logs", max_retention_days=30, capture_stdout=True)
+    setup_daily_logger(log_dir=UPSIDE_LOGS_DIR, max_retention_days=30, capture_stdout=True)
 
     # Enable crash handler for C++ abort / L0::Exception
     from src.utils.hw_diag import enable_crash_handler, get_watchdog
@@ -127,7 +128,9 @@ def main():
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
         os.environ["MPLBACKEND"] = "Agg"
 
-    config = load_config(args.config)
+    active_config = resolve_active_config_path(args.config)
+    print(f"[UPSIDE CONFIG] Active system config: {active_config}")
+    config = load_config(active_config)
     # Runtime-only overrides (not persisted unless the dashboard later saves config).
     if args.no_hw_decode:
         config.setdefault("voyager", {})["hardware_decode"] = False
@@ -156,7 +159,7 @@ def main():
         if not args.image:
             print("[ERROR] Please provide --image filepath for face enrollment.")
             sys.exit(1)
-        enroll_face_cli(args.enroll, args.image, config, args.simulate)
+        enroll_face_cli(args.enroll, args.image, config, args.simulate, config_path=active_config)
         return
 
     if args.list_faces:
@@ -172,7 +175,7 @@ def main():
             pass
 
     # Planning is pure Python, so --print-plan never needs the SDK/hardware.
-    pipeline = MultiCameraPipeline(config, simulate=args.simulate or args.print_plan, config_path=args.config)
+    pipeline = MultiCameraPipeline(config, simulate=args.simulate or args.print_plan, config_path=active_config)
 
     if args.print_plan:
         print(json.dumps(pipeline.get_capacity_plan(), indent=2))
@@ -192,7 +195,7 @@ def main():
         python = sys.executable
         os.execv(python, [python] + sys.argv)
 
-    auto_updater = AutoUpdater(config, config_path=args.config, restart_callback=restart_application)
+    auto_updater = AutoUpdater(config, config_path=active_config, restart_callback=restart_application)
 
     # Dashboard first: building the Voyager stream (model load, GStreamer preroll, RTSP
     # connect) can take a while or hang, and the dashboard must stay reachable meanwhile.
@@ -208,6 +211,7 @@ def main():
             cert_file=args.cert or web_cfg.get("cert_file", "data/ssl/cert.pem"),
             key_file=args.key or web_cfg.get("key_file", "data/ssl/key.pem"),
             auto_updater=auto_updater,
+            config_path=active_config,
         )
         web_server.start_background()
 

@@ -615,6 +615,71 @@ class TestWebApi(unittest.TestCase):
             self.assertIn(f"app_{recent_date}.log", remaining)
             self.assertNotIn(f"app_{old_date}.log", remaining)
 
+    def test_system_config_manager_and_first_launch(self):
+        """Verifies system-specific configuration files in ~/.upside-ai/config on first launch and preservation."""
+        from src.utils.config_manager import ensure_system_configs, resolve_active_config_path
+
+        with tempfile.TemporaryDirectory() as tmp_home:
+            # 1. First launch: ensure_system_configs should create tmp_home/config and copy config.yaml
+            active_cfg = ensure_system_configs(project_config_dir="config", custom_home=tmp_home)
+            self.assertTrue(os.path.isfile(active_cfg))
+            self.assertEqual(active_cfg, os.path.join(tmp_home, "config", "config.yaml"))
+
+            with open(active_cfg, "r") as f:
+                loaded = yaml.safe_load(f)
+            self.assertIn("cameras", loaded)
+
+            # 2. Modify config in system config dir
+            loaded["web"]["port"] = 9999
+            with open(active_cfg, "w") as f:
+                yaml.safe_dump(loaded, f)
+
+            # 3. Subsequent launch: ensure_system_configs must NOT overwrite customized config
+            active_cfg_2 = ensure_system_configs(project_config_dir="config", custom_home=tmp_home)
+            with open(active_cfg_2, "r") as f:
+                loaded_2 = yaml.safe_load(f)
+            self.assertEqual(loaded_2["web"]["port"], 9999)
+
+            # 4. resolve_active_config_path with None -> returns system config
+            resolved = resolve_active_config_path(cli_config_arg=None, project_config_dir="config", custom_home=tmp_home)
+            self.assertEqual(resolved, active_cfg)
+
+            # 5. resolve_active_config_path with custom file
+            custom_file = os.path.join(tmp_home, "custom.yaml")
+            with open(custom_file, "w") as f:
+                yaml.safe_dump({"custom": True}, f)
+            resolved_custom = resolve_active_config_path(cli_config_arg=custom_file, project_config_dir="config", custom_home=tmp_home)
+            self.assertEqual(resolved_custom, os.path.abspath(custom_file))
+
+    def test_settings_persist_to_active_config_and_system_info(self):
+        """Verifies changes made in settings save into the active config file and system_info exposes paths."""
+        from src.pipeline import MultiCameraPipeline
+        from src.web.server import WebServer, get_system_info
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg_file = os.path.join(tmp_dir, "config.yaml")
+            with open("config/config.yaml", "r") as f:
+                orig_cfg = yaml.safe_load(f)
+            with open(cfg_file, "w") as f:
+                yaml.safe_dump(orig_cfg, f)
+
+            pipeline = MultiCameraPipeline(orig_cfg, simulate=True, config_path=cfg_file)
+            server = WebServer(pipeline, config_path=cfg_file)
+
+            # Verify system_info payload includes config_path and logs_dir
+            status, info = server.handle_api("GET", "/api/system_info", {}, {})
+            self.assertEqual(status, 200)
+            self.assertEqual(info["host"]["config_path"], cfg_file)
+            self.assertIn(".upside-ai/logs", info["host"]["logs_dir"])
+
+            # Verify settings change (e.g. model toggle) persists into cfg_file
+            status, res = server.handle_api("POST", "/api/models/toggle", {}, {"model_id": "human_detector", "enabled": False})
+            self.assertEqual(status, 200)
+
+            with open(cfg_file, "r") as f:
+                persisted = yaml.safe_load(f)
+            self.assertFalse(persisted["models"]["human_detector"]["enabled"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ import threading
 import subprocess
 import yaml
 from typing import Dict, Any, List, Optional, Callable
+from src.utils.config_manager import DEFAULT_SYSTEM_CONFIG_PATH
 
 CHECK_INTERVALS_SEC = {
     "hourly": 3600,
@@ -20,8 +21,8 @@ CHECK_INTERVALS_SEC = {
 class AutoUpdater:
     """Manages periodic GitHub repository checks, scheduled update installations, and application restarts."""
 
-    def __init__(self, config: Dict[str, Any], config_path: str = "config/config.yaml", restart_callback: Optional[Callable[[], None]] = None):
-        self.config_path = config_path
+    def __init__(self, config: Dict[str, Any], config_path: Optional[str] = None, restart_callback: Optional[Callable[[], None]] = None):
+        self.config_path = config_path or DEFAULT_SYSTEM_CONFIG_PATH
         self.restart_callback = restart_callback
 
         update_cfg = config.get("auto_update", {})

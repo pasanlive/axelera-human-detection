@@ -19,7 +19,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-DEFAULT_LOG_DIR = "data/logs"
+DEFAULT_LOG_DIR = os.path.expanduser("~/.upside-ai/logs")
 DEFAULT_RETENTION_DAYS = 30
 LOG_FILENAME_PATTERN = re.compile(r"^app_(\d{4}-\d{2}-\d{2})\.log$")
 

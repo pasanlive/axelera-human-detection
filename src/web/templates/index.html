@@ -1750,6 +1750,8 @@
                             <div>• Python Runtime: <span id="sys-python" style="color: var(--text-main);">--</span></div>
                             <div>• Metis Firmware: <span style="color: var(--text-main);">Device 0 flver=1.5.0 bcver=7.1 clock=800MHz</span></div>
                             <div>• Linux ASPM State: <span style="color: var(--accent-success);">default [performance] powersave</span></div>
+                            <div>• Active Config: <span id="sys-config-path" style="color: var(--text-main);">~/.upside-ai/config/config.yaml</span></div>
+                            <div>• Logs Directory: <span id="sys-logs-path" style="color: var(--text-main);">~/.upside-ai/logs</span></div>
                         </div>
                     </div>
 
@@ -2578,6 +2580,12 @@
 
                     const py = document.getElementById('sys-python');
                     if (py) py.innerText = h.python_version || '3.x';
+
+                    const cfgPath = document.getElementById('sys-config-path');
+                    if (cfgPath && h.config_path) cfgPath.innerText = h.config_path;
+
+                    const logsPath = document.getElementById('sys-logs-path');
+                    if (logsPath && h.logs_dir) logsPath.innerText = h.logs_dir;
                 })
                 .catch(() => {});
         }
