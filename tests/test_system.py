@@ -229,6 +229,36 @@ class TestResultParser(unittest.TestCase):
         self.assertEqual(fa.persons, [])
         self.assertEqual(fa.faces, [])
 
+    def test_parse_pedestrian_and_vehicle_tracker(self):
+        # Native tracker object (matches yolov5m-v7-coco-tracker / upside_remote_cross_line_monitor.py)
+        class MockTrack:
+            def __init__(self, track_id, class_id, history, score=0.92):
+                self.track_id = track_id
+                self.class_id = class_id
+                self.history = history
+                self.score = score
+
+        tracks = [
+            MockTrack(101, 0, np.array([[10, 20, 80, 150], [12, 22, 82, 152]])),  # person
+            MockTrack(102, 2, np.array([[200, 300, 400, 500]])),  # car (class_id=2, ignored)
+            MockTrack(103, 0, np.array([[50, 60, 100, 180]])),  # person
+        ]
+        res = SimpleNamespace(
+            meta={},
+            stream_id=1,
+            image=SimpleNamespace(width=1280, height=720),
+            pedestrian_and_vehicle_tracker=tracks,
+        )
+        fa = parse_frame_result(res, 2.0)
+        self.assertEqual(fa.stream_id, 1)
+        self.assertEqual(fa.frame_size, (1280, 720))
+        self.assertEqual(len(fa.persons), 2)
+        self.assertEqual(fa.persons[0]["track_id"], 101)
+        self.assertEqual(fa.persons[0]["bbox"], [12, 22, 82, 152])
+        self.assertEqual(fa.persons[0]["confidence"], 0.92)
+        self.assertEqual(fa.persons[1]["track_id"], 103)
+        self.assertEqual(fa.persons[1]["bbox"], [50, 60, 100, 180])
+
 
 class TestFaceDatabase(unittest.TestCase):
 

@@ -37,7 +37,7 @@ models:
   human_detector:
     enabled: true
   pose_estimator:
-    enabled: true
+    enabled: false
   face_recognizer:
     enabled: false
     match_threshold: 0.55
@@ -73,7 +73,7 @@ voyager:
     min_hits: 3
     iou_threshold: 0.3
 capacity:
-  profile: auto # Selects high tier with upside-yolov8spose
+  profile: tracker # Selects tracker tier with yolov5m-v7-coco-tracker (Voyager SDK example)
   target_utilization: 0.85
   derating: 0.6
   decode_mpx_per_s: 1000

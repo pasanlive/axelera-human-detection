@@ -43,6 +43,7 @@ class Tier:
 
 
 TIERS: Tuple[Tier, ...] = (
+    Tier("tracker", "sub", "yolov5m-v7-coco-tracker", False, 25, 10, "Sub stream · YOLOv5m + OC-SORT Tracker (Voyager SDK)"),
     Tier("ultra", "main", "yolov8spose", True, 25, 15, "Main stream · YOLOv8s-pose · SAHI tiling"),
     Tier("high", "main", "yolov8spose", False, 25, 12, "Main stream · YOLOv8s-pose"),
     Tier("standard", "main", "yolov8npose", False, 20, 10, "Main stream · YOLOv8n-pose"),
@@ -55,6 +56,7 @@ PROFILES: Tuple[str, ...] = ("auto",) + tuple(t.name for t in TIERS)
 
 # Axelera Model Zoo reference throughput (FPS, single model, 4 cores, Voyager 1.6).
 DEFAULT_MODEL_FPS: Dict[str, float] = {
+    "yolov5m-v7-coco-tracker": 350.0,
     "yolov8npose": 723.0,
     "yolov8spose": 471.0,
     "retinaface": 774.0,
@@ -242,7 +244,7 @@ class CapacityPlanner:
     def plan(self, cams: Sequence[CameraSpec], profile: str = "auto") -> CapacityPlan:
         b = self.budgets
         cams = list(cams)
-        candidates = [t for t in TIERS if b.enable_tiling or not t.tiling]
+        candidates = [t for t in TIERS if (b.enable_tiling or not t.tiling) and t.name != "tracker"]
         if profile != "auto":
             if profile not in TIER_BY_NAME:
                 raise ValueError(f"Unknown performance profile {profile!r}; expected one of {PROFILES}")

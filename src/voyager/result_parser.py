@@ -169,28 +169,73 @@ def parse_frame_result(result: Any, timestamp: float, track_iou: float = 0.3) ->
                 continue
     fa = FrameAnalysis(stream_id=int(getattr(result, "stream_id", 0)), timestamp=timestamp, frame_size=size)
 
-    # Persons + keypoints
-    persons = _meta_get(meta, TASK_PERSONS)
-    p_boxes = _arr(getattr(persons, "boxes", None), 4) if persons is not None else np.zeros((0, 4), np.float32)
-    p_scores = _arr(getattr(persons, "scores", None)) if persons is not None else np.zeros(0, np.float32)
-    kpts = getattr(persons, "keypoints", None) if persons is not None else None
-    kpts = np.asarray(kpts, dtype=np.float32) if kpts is not None and len(kpts) else None
-    if kpts is not None:
-        kpts = kpts.reshape(len(p_boxes), -1, 3) if kpts.size == len(p_boxes) * 51 else kpts
+    # 1. Native tracker support (e.g. from yolov5m-v7-coco-tracker)
+    tracker = getattr(result, "pedestrian_and_vehicle_tracker", None) or _meta_get(meta, "pedestrian_and_vehicle_tracker")
+    if tracker is not None:
+        try:
+            for veh in tracker:
+                class_id = getattr(veh, "class_id", -1)
+                # Class 0 in COCO dataset is 'person' / human
+                if class_id == 0 or getattr(veh, "label", "").lower() == "person":
+                    history = getattr(veh, "history", None)
+                    if history is not None and len(history) > 0:
+                        bbox = history[-1].tolist() if hasattr(history[-1], "tolist") else list(history[-1])
+                    else:
+                        bbox = getattr(veh, "bbox", [0, 0, 0, 0])
+                    score = float(getattr(veh, "score", getattr(veh, "confidence", 1.0)))
+                    track_id = int(getattr(veh, "track_id", -1))
+                    fa.persons.append({
+                        "bbox": list(bbox),
+                        "confidence": score,
+                        "keypoints": None,
+                        "track_id": track_id if track_id >= 0 else None,
+                    })
+        except Exception:
+            pass
 
-    # Track association
-    tids, t_boxes = _track_boxes(_meta_get(meta, TASK_TRACKS))
-    track_of = np.full(len(p_boxes), -1, dtype=np.int64)
-    for r, c in greedy_match(iou_matrix(p_boxes, t_boxes), track_iou):
-        track_of[r] = tids[c]
+    # 2. Raw detections fallback (e.g. from yolov5m detections)
+    if not fa.persons:
+        dets = getattr(result, "detections", None) or _meta_get(meta, "detections")
+        if dets is not None:
+            try:
+                for det in dets:
+                    class_id = getattr(det, "class_id", -1)
+                    label = getattr(det, "label", "")
+                    if class_id == 0 or label.lower() == "person":
+                        bbox = getattr(det, "bbox", [0, 0, 0, 0])
+                        score = float(getattr(det, "score", getattr(det, "confidence", 1.0)))
+                        fa.persons.append({
+                            "bbox": list(bbox) if hasattr(bbox, "tolist") else list(bbox),
+                            "confidence": score,
+                            "keypoints": None,
+                            "track_id": None,
+                        })
+            except Exception:
+                pass
 
-    for i in range(len(p_boxes)):
-        fa.persons.append({
-            "bbox": p_boxes[i].tolist(),
-            "confidence": float(p_scores[i]) if i < len(p_scores) else 0.0,
-            "keypoints": kpts[i] if kpts is not None and i < len(kpts) else None,
-            "track_id": int(track_of[i]) if track_of[i] >= 0 else None,
-        })
+    # 3. Persons + keypoints from custom pipeline (TASK_PERSONS)
+    if not fa.persons:
+        persons = _meta_get(meta, TASK_PERSONS)
+        p_boxes = _arr(getattr(persons, "boxes", None), 4) if persons is not None else np.zeros((0, 4), np.float32)
+        p_scores = _arr(getattr(persons, "scores", None)) if persons is not None else np.zeros(0, np.float32)
+        kpts = getattr(persons, "keypoints", None) if persons is not None else None
+        kpts = np.asarray(kpts, dtype=np.float32) if kpts is not None and len(kpts) else None
+        if kpts is not None:
+            kpts = kpts.reshape(len(p_boxes), -1, 3) if kpts.size == len(p_boxes) * 51 else kpts
+
+        # Track association
+        tids, t_boxes = _track_boxes(_meta_get(meta, TASK_TRACKS))
+        track_of = np.full(len(p_boxes), -1, dtype=np.int64)
+        for r, c in greedy_match(iou_matrix(p_boxes, t_boxes), track_iou):
+            track_of[r] = tids[c]
+
+        for i in range(len(p_boxes)):
+            fa.persons.append({
+                "bbox": p_boxes[i].tolist(),
+                "confidence": float(p_scores[i]) if i < len(p_scores) else 0.0,
+                "keypoints": kpts[i] if kpts is not None and i < len(kpts) else None,
+                "track_id": int(track_of[i]) if track_of[i] >= 0 else None,
+            })
 
     # Faces + embeddings
     faces = _meta_get(meta, TASK_FACES)

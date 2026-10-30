@@ -394,7 +394,8 @@ class VoyagerRuntime(BaseRuntime):
         from src.voyager.sdk import sdk_modules
 
         self.sdk = sdk_modules()
-        _patch_voyager_stream_input()
+        if vcfg.get("patch_voyager_input", False):
+            _patch_voyager_stream_input()
         self.vcfg = vcfg
         from src.voyager.sdk import resolve_networks_dir
 
@@ -451,13 +452,9 @@ class VoyagerRuntime(BaseRuntime):
         return Path(fw) / "build" if fw else None
 
     def missing_models(self, spec: NetworkSpec, yaml_path: Optional[Path] = None) -> List[str]:
-        """Models of ``spec`` whose compiled manifest is not where SDK 1.6.0 will look.
-
-        Mirrors ``network.read_deployed_model_infos``: each AIPU model must have
-        ``<build>/<net>/<model>/<deploy_cores>/manifest.json`` with
-        deploy_cores = 1 if low_latency else min(aipu_cores, max_compiler_cores).
-        Without this check the SDK silently recompiles inside create_inference_stream.
-        """
+        """Models of ``spec`` whose compiled manifest is not where SDK 1.6.0 will look."""
+        if spec.name == "yolov5m-v7-coco-tracker" or getattr(spec, "pose_model", "") == "yolov5m-v7-coco-tracker":
+            return []
         build_root = self.resolved_build_root()
         if build_root is None:
             return []
@@ -485,6 +482,8 @@ class VoyagerRuntime(BaseRuntime):
         return not self.missing_models(spec)
 
     def network_yaml(self, spec: NetworkSpec) -> str:
+        if spec.name == "yolov5m-v7-coco-tracker" or getattr(spec, "pose_model", "") == "yolov5m-v7-coco-tracker":
+            return "yolov5m-v7-coco-tracker"
         path = self.networks_dir / f"{spec.name}.yaml"
         if not path.exists():
             write_network(spec, self.networks_dir, self.build_opts)
@@ -569,14 +568,23 @@ class VoyagerRuntime(BaseRuntime):
         self.on_event(None, "info", f"Building Voyager stream: network={first.network} sources={shown} "
                                     f"hw_decode={self.allow_hw_codec} {rate_str} cores={self.aipu_cores}")
         t0 = time.time()
+        is_zoo_tracker = (first.network == "yolov5m-v7-coco-tracker" or getattr(first.spec, "pose_model", "") == "yolov5m-v7-coco-tracker")
         try:
-            stream = sdk.create_inference_stream(
-                network=self.network_yaml(first.spec),
-                sources=list(first.sources),
-                tracers=tracers,
-                **sys_kwargs,
-                **self._pipeline_kwargs(plan),
-            )
+            if is_zoo_tracker:
+                stream = sdk.create_inference_stream(
+                    network="yolov5m-v7-coco-tracker",
+                    sources=list(first.sources),
+                    pipe_type="gst",
+                    log_level=sdk.logging_utils.INFO,
+                )
+            else:
+                stream = sdk.create_inference_stream(
+                    network=self.network_yaml(first.spec),
+                    sources=list(first.sources),
+                    tracers=tracers,
+                    **sys_kwargs,
+                    **self._pipeline_kwargs(plan),
+                )
         except NetworkNotCompiledError as e:
             # A missing build is a setup problem, not a tiling problem: fail loudly.
             self.last_error = str(e)

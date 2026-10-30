@@ -210,6 +210,8 @@ class NetworkSpec:
 
     @property
     def name(self) -> str:
+        if self.pose_model == "yolov5m-v7-coco-tracker":
+            return "yolov5m-v7-coco-tracker"
         parts = [NETWORK_PREFIX, self.pose_model]
         if self.face:
             parts.append("face")
@@ -223,6 +225,8 @@ class NetworkSpec:
 
     @classmethod
     def from_name(cls, name: str) -> "NetworkSpec":
+        if name == "yolov5m-v7-coco-tracker":
+            return cls(pose_model="yolov5m-v7-coco-tracker", face=False, lpr=False)
         parts = name.split("-")
         if len(parts) < 2 or parts[0] != NETWORK_PREFIX:
             raise ValueError(f"Not an application network name: {name!r}")
