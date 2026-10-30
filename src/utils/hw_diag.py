@@ -172,23 +172,43 @@ class HardwareWatchdog:
             pass
 
     def optimize_kernel_driver(self) -> None:
-        """Reports active Linux metis kernel driver parameters and alerts if multi-MSI is active."""
+        """Reports and optimizes Linux metis kernel driver parameters for Rockchip RK3588."""
         try:
-            for mod in ("metis", "axl"):
-                p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
-                p_to = Path(f"/sys/module/{mod}/parameters/irq_timeout")
-                p_dto = Path(f"/sys/module/{mod}/parameters/dma_timeout")
-                p_poll = Path(f"/sys/module/{mod}/parameters/dma_poll")
-                if p_msi.exists():
-                    msi_val = p_msi.read_text().strip()
-                    to_val = p_to.read_text().strip() if p_to.exists() else "unknown"
-                    dto_val = p_dto.read_text().strip() if p_dto.exists() else "unknown"
-                    poll_val = p_poll.read_text().strip() if p_poll.exists() else "unknown"
-                    print(f"[KERNEL STATUS] Driver '{mod}' active (single_msi={msi_val}, irq_timeout={to_val}s, dma_timeout={dto_val}s, dma_poll={poll_val}).")
-                    if msi_val == "0":
-                        print("  [ALERT] single_msi=0 (Multi-MSI). On Rockchip RK3588, multi-MSI causes 'Failed to wait for MSI 0' aborts.")
-                        print("  Recommend setting 'options metis single_msi=1' in /etc/modprobe.d/metis.conf.")
-                    return
+            # 1. Inspect available module parameters from modinfo
+            try:
+                res_mi = subprocess.run(["modinfo", "-p", "metis"], capture_output=True, text=True, timeout=2)
+                if res_mi.returncode == 0 and res_mi.stdout.strip():
+                    parm_str = ", ".join(res_mi.stdout.strip().splitlines())
+                    print(f"[KERNEL PARMS] metis parameters: {parm_str}")
+            except Exception:
+                pass
+
+            # 2. Try applying dma_poll=1, irq_timeout=30, dma_timeout=10 dynamically via sysfs if writable
+            for param, val in [("dma_poll", "1"), ("irq_timeout", "30"), ("dma_timeout", "10"), ("single_msi", "1")]:
+                p = Path(f"/sys/module/metis/parameters/{param}")
+                if p.exists():
+                    try:
+                        subprocess.run(["sudo", "-n", "sh", "-c", f"echo {val} > {p} 2>/dev/null"],
+                                       capture_output=True, text=True, timeout=1)
+                    except Exception:
+                        pass
+
+            # 3. Report active driver parameters
+            p_msi = Path("/sys/module/metis/parameters/single_msi")
+            p_to = Path("/sys/module/metis/parameters/irq_timeout")
+            p_dto = Path("/sys/module/metis/parameters/dma_timeout")
+            p_poll = Path("/sys/module/metis/parameters/dma_poll")
+            if p_msi.exists() or p_poll.exists():
+                msi_val = p_msi.read_text().strip() if p_msi.exists() else "unknown"
+                to_val = p_to.read_text().strip() if p_to.exists() else "unknown"
+                dto_val = p_dto.read_text().strip() if p_dto.exists() else "unknown"
+                poll_val = p_poll.read_text().strip() if p_poll.exists() else "unknown"
+                print(f"[KERNEL STATUS] Driver 'metis' active (single_msi={msi_val}, irq_timeout={to_val}s, dma_timeout={dto_val}s, dma_poll={poll_val}).")
+                if poll_val == "1":
+                    print("  [OK] dma_poll=1 active (DMA polling protects against RK3588 dropped MSI interrupts).")
+                elif msi_val == "0":
+                    print("  [ALERT] single_msi=0 and dma_poll=0. If MSI timeouts occur, set 'options metis dma_poll=1' in /etc/modprobe.d/metis.conf.")
+                return
         except Exception as e:
             print(f"[KERNEL STATUS] Could not read /sys/module/metis: {e}")
 
