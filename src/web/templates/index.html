@@ -683,6 +683,18 @@
             color: #000;
         }
 
+        .btn-quick.danger {
+            background: rgba(239, 68, 68, 0.15);
+            border-color: rgba(239, 68, 68, 0.4);
+            color: var(--accent-danger);
+        }
+
+        .btn-quick.danger:hover {
+            background: var(--accent-danger);
+            color: #fff;
+            border-color: var(--accent-danger);
+        }
+
         /* ── Sidebar: Alerts & Notifications Feed ─────────────────────────── */
         .sidebar-column {
             display: flex;
@@ -1599,6 +1611,9 @@
                             <button class="btn-quick" onclick="saveUpdateConfig()">
                                 <span>💾</span> Save Update Preferences
                             </button>
+                            <button class="btn-quick danger" id="btn-settings-restart-update" onclick="triggerSystemRestart()">
+                                <span>⚡</span> Restart System
+                            </button>
                         </div>
                     </div>
 
@@ -1752,6 +1767,21 @@
                             <div>• Linux ASPM State: <span style="color: var(--accent-success);">default [performance] powersave</span></div>
                             <div>• Active Config: <span id="sys-config-path" style="color: var(--text-main);">~/.upside-ai/config/config.yaml</span></div>
                             <div>• Logs Directory: <span id="sys-logs-path" style="color: var(--text-main);">~/.upside-ai/logs</span></div>
+                        </div>
+
+                        <!-- System Power & Control -->
+                        <div style="margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+                            <div>
+                                <div style="font-weight: 600; font-size: 0.92rem; display: flex; align-items: center; gap: 0.4rem;">
+                                    <span>⚡</span> System Power &amp; Service Control
+                                </div>
+                                <div style="font-size: 0.78rem; color: var(--text-dim); margin-top: 0.2rem;">
+                                    Gracefully stop the Metis AI pipelines, re-initialize hardware PCIe drivers, and reload application services.
+                                </div>
+                            </div>
+                            <button class="btn-quick danger" id="btn-settings-restart-sysinfo" onclick="triggerSystemRestart()">
+                                <span>⚡</span> Restart System
+                            </button>
                         </div>
                     </div>
 
@@ -2521,6 +2551,24 @@
                     setTimeout(() => window.location.reload(), 5000);
                 })
                 .catch(e => showToast('Update error: ' + e, true));
+        }
+
+        function triggerSystemRestart() {
+            if (!confirm('Are you sure you want to restart the Upside AI Box application services? Running video pipelines will be re-initialized.')) return;
+            fetch('/api/system/restart', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        showToast('System restart initiated! Reconnecting in 6 seconds...');
+                        setTimeout(() => window.location.reload(), 6000);
+                    } else {
+                        showToast('Restart error: ' + (data.error || 'Failed to trigger restart'), true);
+                    }
+                })
+                .catch(e => {
+                    showToast('Restart signal sent! Reconnecting in 6 seconds...');
+                    setTimeout(() => window.location.reload(), 6000);
+                });
         }
 
         // ── Display Settings Handlers ─────────────────────────────────────────

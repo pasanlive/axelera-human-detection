@@ -206,6 +206,22 @@ class AutoUpdater:
                 self.error_message = err_str
             return {"success": False, "error": err_str}
 
+    def restart_system(self) -> Dict[str, Any]:
+        """Triggers application restart gracefully in a deferred thread."""
+        with self.lock:
+            self.status = "restarting"
+
+        def deferred_restart():
+            time.sleep(1.0)
+            self._execute_restart()
+
+        threading.Thread(target=deferred_restart, daemon=True).start()
+        return {
+            "success": True,
+            "message": "System restart initiated. Reconnecting in a few moments...",
+            "status": "restarting"
+        }
+
     def _execute_restart(self):
         """Executes application restart."""
         print("==========================================================")

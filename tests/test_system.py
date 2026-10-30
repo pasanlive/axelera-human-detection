@@ -680,6 +680,29 @@ class TestWebApi(unittest.TestCase):
                 persisted = yaml.safe_load(f)
             self.assertFalse(persisted["models"]["human_detector"]["enabled"])
 
+    def test_system_restart_api(self):
+        """Verifies /api/system/restart triggers graceful restart response."""
+        import threading
+        from src.pipeline import MultiCameraPipeline
+        from src.web.server import WebServer
+        from src.utils.auto_updater import AutoUpdater
+
+        restarted = threading.Event()
+        def mock_restart():
+            restarted.set()
+
+        pipeline = MultiCameraPipeline({"cameras": []}, simulate=True)
+        updater = AutoUpdater({"auto_update": {"enabled": False}}, restart_callback=mock_restart)
+        server = WebServer(pipeline, auto_updater=updater)
+
+        status, payload = server.handle_api("POST", "/api/system/restart", {}, {})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["status"], "restarting")
+
+        # Wait for deferred restart thread to execute callback
+        self.assertTrue(restarted.wait(timeout=2.5))
+
 
 if __name__ == "__main__":
     unittest.main()

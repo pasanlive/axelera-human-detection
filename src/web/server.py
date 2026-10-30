@@ -676,11 +676,37 @@ class WebServer:
                 return 200, (au.check_for_updates() if au else {"success": False, "error": "Auto-updater not initialized"})
             if method == "POST" and path == "/api/update/install":
                 return 200, (au.apply_update_and_restart() if au else {"success": False, "error": "Auto-updater not initialized"})
+
+            # ── system restart ──────────────────────────────────────────────
+            if method == "POST" and path in ("/api/system/restart", "/api/restart"):
+                return 200, self.restart_application()
         except ValueError as e:
             return 400, {"error": str(e)}
         except Exception as e:
             return 500, {"error": str(e)}
         return 404, {"error": f"Unknown endpoint {method} {path}"}
+
+    def restart_application(self) -> Dict[str, Any]:
+        """Triggers application restart either via auto_updater or fallback."""
+        if self.auto_updater and hasattr(self.auto_updater, "restart_system"):
+            return self.auto_updater.restart_system()
+
+        def deferred_restart():
+            time.sleep(1.0)
+            try:
+                self.pipeline.stop()
+            except Exception:
+                pass
+            time.sleep(0.5)
+            python = sys.executable
+            os.execv(python, [python] + sys.argv)
+
+        threading.Thread(target=deferred_restart, daemon=True).start()
+        return {
+            "success": True,
+            "message": "System restart initiated. Reconnecting in a few moments...",
+            "status": "restarting"
+        }
 
     def _persist(self, patch: Dict[str, Any]):
         try:
