@@ -247,7 +247,13 @@ def check_compiled_models() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Axelera Metis Diagnostics on RK3588")
     parser.add_argument("--fix-aspm", action="store_true", help="Attempt to disable PCIe ASPM on Axelera device")
+    parser.add_argument("--rescan", action="store_true", help="Trigger PCIe bus rescan to recover unattached/removed device")
     args = parser.parse_args()
+
+    if args.rescan:
+        print_header("Triggering PCIe Bus Rescan")
+        rc, out = run_cmd(["sudo", "-n", "sh", "-c", "echo 1 > /sys/bus/pci/rescan"], timeout=10)
+        print(f"PCIe rescan result: code={rc} output={out or '(ok)'}")
 
     check_system()
     check_pcie()

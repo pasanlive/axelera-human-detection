@@ -11,6 +11,7 @@ Provides:
 from __future__ import annotations
 
 import faulthandler
+import glob
 import os
 import re
 import shutil
@@ -215,88 +216,90 @@ class HardwareWatchdog:
             print(f"[KERNEL STATUS] Could not read /sys/module/metis: {e}")
 
     def ensure_device_ready(self, force: bool = False) -> bool:
-        """Checks if the Metis AIPU is ready. If a prior MSI timeout is detected in recent kernel logs,
-        or if single_msi=0 is active on Rockchip RK3588, automatically configures single_msi=1 and dma_poll=1,
-        reloads the kernel drivers (axl + metis), and reloads firmware using 'axdevice --reload-firmware'."""
+        """Checks if the Metis AIPU is ready. Ensures PCIe ASPM is disabled, single_msi=1 and
+        dma_poll=1 are active, and performs a PCIe bus rescan if device nodes are missing."""
         try:
             # 1. Enforce PCIe ASPM performance policy and disable Link L0s/L1 states immediately
             self.disable_pcie_aspm()
 
-            # 2. Kill any orphaned axtrace processes first so device nodes are not held open
+            # 2. Kill any orphaned axtrace processes so device nodes are not held open
             subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
 
+            # 3. Apply single_msi=1, dma_poll=1, irq_timeout=30, dma_timeout=10 to sysfs directly
+            for mod in ("metis", "axl"):
+                for param, val in [("dma_poll", "1"), ("irq_timeout", "30"), ("dma_timeout", "10"), ("single_msi", "1")]:
+                    p = Path(f"/sys/module/{mod}/parameters/{param}")
+                    if p.exists():
+                        try:
+                            subprocess.run(["sudo", "-n", "sh", "-c", f"echo {val} > {p} 2>/dev/null"],
+                                           capture_output=True, text=True, timeout=1)
+                        except Exception:
+                            pass
+
+            # Configure modprobe.d for BOTH axl and metis to persist options
+            conf = "options metis single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10\\noptions axl single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10\\n"
+            subprocess.run(["sudo", "-n", "sh", "-c", f"printf '{conf}' > /etc/modprobe.d/metis.conf 2>/dev/null"], capture_output=True, timeout=2)
+            subprocess.run(["sudo", "-n", "sh", "-c", f"printf '{conf}' > /etc/modprobe.d/axl.conf 2>/dev/null"], capture_output=True, timeout=2)
+
+            # 4. Check device nodes in /dev and PCIe driver binding
+            metis_devs = sorted(glob.glob("/dev/metis*") + glob.glob("/dev/axl*"))
+            bound_pci = list(Path("/sys/bus/pci/drivers/metis").glob("0000:*")) + list(Path("/sys/bus/pci/drivers/axl").glob("0000:*"))
+            dev_missing = (len(metis_devs) == 0) or (len(bound_pci) == 0)
+
+            # If device node or driver binding is missing, trigger PCIe bus rescan
+            if dev_missing:
+                print("[METIS HW] Device node (/dev/metis*) or driver binding missing; triggering PCIe bus rescan...")
+                subprocess.run(["sudo", "-n", "sh", "-c", "echo 1 > /sys/bus/pci/rescan 2>/dev/null"], capture_output=True, timeout=10)
+                time.sleep(1.0)
+                # Re-check device nodes and driver binding
+                metis_devs = sorted(glob.glob("/dev/metis*") + glob.glob("/dev/axl*"))
+                bound_pci = list(Path("/sys/bus/pci/drivers/metis").glob("0000:*")) + list(Path("/sys/bus/pci/drivers/axl").glob("0000:*"))
+
+                # If still not bound, search for Axelera PCIe vendor ID 0x1f9d and bind
+                if not bound_pci:
+                    for pci_dev in Path("/sys/bus/pci/devices").glob("0000:*"):
+                        v_file = pci_dev / "vendor"
+                        if v_file.exists():
+                            try:
+                                if "0x1f9d" in v_file.read_text().strip().lower():
+                                    print(f"[METIS HW] Binding Axelera PCIe device {pci_dev.name} to metis driver...")
+                                    subprocess.run(["sudo", "-n", "sh", "-c", f"echo {pci_dev.name} > /sys/bus/pci/drivers/metis/bind 2>/dev/null"],
+                                                   capture_output=True, timeout=5)
+                                    time.sleep(0.5)
+                                    break
+                            except Exception:
+                                pass
+                    metis_devs = sorted(glob.glob("/dev/metis*") + glob.glob("/dev/axl*"))
+                    bound_pci = list(Path("/sys/bus/pci/drivers/metis").glob("0000:*")) + list(Path("/sys/bus/pci/drivers/axl").glob("0000:*"))
+
+                if metis_devs:
+                    print(f"[METIS HW] Metis PCIe device restored: {metis_devs}")
+
+            # 5. Check if multi-MSI (single_msi=0) is active and needs switching
             curr_single_msi = None
-            active_mod = "metis"
             for mod in ("axl", "metis"):
                 p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
                 if p_msi.exists():
                     curr_single_msi = p_msi.read_text().strip()
-                    active_mod = mod
                     break
 
-            recent_k = self.get_dmesg_tail(40)
-            msi_timeout = any(("IRQ MSI timeout" in l or "Failed to wait for MSI" in l) for l in recent_k)
-            dev_missing = not os.path.exists("/dev/metis-0:1:0")
-            multi_msi_in_dmesg = any("MSI registered 32" in l or "nmsi=32" in l for l in recent_k)
-            single_msi_needed = (curr_single_msi != "1") or multi_msi_in_dmesg
-
-            if force or msi_timeout or dev_missing or single_msi_needed:
-                reasons = []
-                if force:
-                    reasons.append("force requested")
-                if msi_timeout:
-                    reasons.append("prior IRQ MSI timeout in dmesg")
-                if dev_missing:
-                    reasons.append("device node missing")
-                if multi_msi_in_dmesg:
-                    reasons.append("32 MSI vectors detected in dmesg")
-                elif single_msi_needed:
-                    reasons.append(f"enforcing single_msi=1 (currently {curr_single_msi or '0'})")
-                reason_str = ", ".join(reasons)
-                print(f"[METIS HW] Hardware/driver re-initialization needed ({reason_str})...")
-
-                # 1. Apply single_msi=1, dma_poll=1, irq_timeout=30, dma_timeout=10 to sysfs directly
-                for mod in ("metis", "axl"):
-                    for param, val in [("dma_poll", "1"), ("irq_timeout", "30"), ("dma_timeout", "10"), ("single_msi", "1")]:
-                        p = Path(f"/sys/module/{mod}/parameters/{param}")
-                        if p.exists():
-                            try:
-                                subprocess.run(["sudo", "-n", "sh", "-c", f"echo {val} > {p} 2>/dev/null"],
-                                               capture_output=True, text=True, timeout=1)
-                            except Exception:
-                                pass
-
-                # Configure modprobe.d for BOTH axl and metis to enforce single_msi=1 and dma_poll=1
-                conf = "options metis single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10\\noptions axl single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10\\n"
-                subprocess.run(["sudo", "-n", "sh", "-c", f"printf '{conf}' > /etc/modprobe.d/metis.conf 2>/dev/null"], capture_output=True, timeout=2)
-                subprocess.run(["sudo", "-n", "sh", "-c", f"printf '{conf}' > /etc/modprobe.d/axl.conf 2>/dev/null"], capture_output=True, timeout=2)
-
-                # Kill any orphaned axtrace processes first so device nodes are not held open
-                subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
-
-                # Unbind and re-bind PCIe device to re-trigger probe() with single_msi=1:
-                # In Docker containers, 'modprobe -r' removes the module from the host kernel, but 'modprobe'
-                # cannot reload it because /lib/modules/$(uname -r) is on the host filesystem.
-                # Rebinding the PCIe device forces the kernel's metis_probe() to re-run while single_msi=1
-                # is active, registering 1 MSI vector (MSI registered 1 (1)).
-                dev_pci = "0000:01:00.0"
-                for pci_path in Path("/sys/bus/pci/drivers/metis").glob("0000:*"):
-                    dev_pci = pci_path.name
-                    break
-
-                print(f"[METIS HW] Rebinding PCIe device {dev_pci} with single_msi=1...")
-                res_ub = subprocess.run(["sudo", "-n", "sh", "-c", f"echo {dev_pci} > /sys/bus/pci/drivers/metis/unbind"], capture_output=True, text=True, timeout=3)
+            if curr_single_msi == "0" and bound_pci:
+                dev_pci = bound_pci[0].name
+                print(f"[METIS HW] Rebinding PCIe device {dev_pci} to switch single_msi=0 -> 1...")
+                subprocess.run(["sudo", "-n", "sh", "-c", f"echo {dev_pci} > /sys/bus/pci/drivers/metis/unbind 2>/dev/null"], capture_output=True, timeout=5)
                 time.sleep(0.5)
-                res_b = subprocess.run(["sudo", "-n", "sh", "-c", f"echo {dev_pci} > /sys/bus/pci/drivers/metis/bind"], capture_output=True, text=True, timeout=3)
+                res_b = subprocess.run(["sudo", "-n", "sh", "-c", f"echo {dev_pci} > /sys/bus/pci/drivers/metis/bind 2>/dev/null"], capture_output=True, timeout=5)
                 time.sleep(0.5)
+                if res_b.returncode != 0:
+                    try:
+                        subprocess.run(["sudo", "-n", "sh", "-c", f"echo 1 > /sys/bus/pci/devices/{dev_pci}/remove 2>/dev/null"], capture_output=True, timeout=10)
+                        time.sleep(0.5)
+                    finally:
+                        subprocess.run(["sudo", "-n", "sh", "-c", "echo 1 > /sys/bus/pci/rescan 2>/dev/null"], capture_output=True, timeout=10)
+                        time.sleep(1.0)
 
-                if res_b.returncode != 0 or not os.path.exists(f"/sys/bus/pci/drivers/metis/{dev_pci}"):
-                    subprocess.run(["sudo", "-n", "sh", "-c", f"echo 1 > /sys/bus/pci/devices/{dev_pci}/remove 2>/dev/null"], capture_output=True, timeout=3)
-                    time.sleep(0.5)
-                    subprocess.run(["sudo", "-n", "sh", "-c", "echo 1 > /sys/bus/pci/rescan 2>/dev/null"], capture_output=True, timeout=3)
-                    time.sleep(1.0)
-
-                # Reload AIPU firmware
+            # 6. Reload firmware if explicitly requested (force=True)
+            if force:
                 axdev = shutil.which("axdevice")
                 if not axdev:
                     sdk_axdev = Path.home() / "voyager-sdk" / "venv" / "bin" / "axdevice"
@@ -310,27 +313,10 @@ class HardwareWatchdog:
                     if res.returncode == 0:
                         out = res.stdout.strip().replace("\n", " | ")
                         print(f"[METIS HW] Firmware reloaded: {out}")
-                        time.sleep(1.0)
                     else:
                         err_out = (res.stderr or res.stdout or "").strip().replace("\n", " | ")
                         print(f"[METIS HW] Firmware reload status: {err_out[:80]}")
-                        res2 = subprocess.run([axdev, "--refresh"], capture_output=True, text=True, timeout=12)
-                        out2 = (res2.stdout or res2.stderr).strip().replace("\n", " | ")
-                        print(f"[METIS HW] Device refreshed: {out2}")
-                        time.sleep(0.5)
-
-                # Report updated driver parameter
-                for mod in ("axl", "metis"):
-                    p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
-                    if p_msi.exists():
-                        val = p_msi.read_text().strip()
-                        print(f"[METIS HW] Active kernel module '{mod}' running with single_msi={val}.")
-                        break
-
-                recent_k2 = self.get_dmesg_tail(15)
-                msi_lines = [l for l in recent_k2 if any(k in l.lower() for k in ("msi registered", "initializing metis msi"))]
-                if msi_lines:
-                    print(f"[METIS HW] Kernel MSI registration: {msi_lines[-1]}")
+                        subprocess.run([axdev, "--refresh"], capture_output=True, text=True, timeout=10)
         except Exception as e:
             print(f"[METIS HW] Note: Device check encountered exception: {e}")
         return True

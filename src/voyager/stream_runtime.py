@@ -593,6 +593,19 @@ class VoyagerRuntime(BaseRuntime):
             self.last_error = str(e)
             raise
         except Exception as e:
+            err_str = str(e)
+            if ("No devices found" in err_str or "device count mismatch" in err_str) and not getattr(self, "_device_recovery_attempted", False):
+                self._device_recovery_attempted = True
+                self.on_event(None, "warning", f"Metis device not accessible ({err_str}). Performing automated PCIe bus recovery...")
+                try:
+                    from src.utils.hw_diag import get_watchdog
+                    get_watchdog().ensure_device_ready(force=True)
+                    time.sleep(1.0)
+                    self.on_event(None, "info", "Retrying Voyager stream creation after PCIe recovery...")
+                    return self._rebuild(plan)
+                except Exception as rec_err:
+                    self.on_event(None, "error", f"PCIe recovery failed: {rec_err}")
+
             if any(s.startswith("tile[") for g in plan.groups for s in g.sources):
                 # Tiling with keypoint models is not verified on every SDK build: degrade, don't die.
                 self.on_event(None, "warning", f"Tiled pipeline failed to build ({e}); retrying without tiling")
