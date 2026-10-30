@@ -282,11 +282,15 @@ class HardwareWatchdog:
 
                 if axdev:
                     res = subprocess.run([axdev, "--reload-firmware"], capture_output=True, text=True, timeout=15)
+                    if res.returncode != 0:
+                        res = subprocess.run(["sudo", "-n", axdev, "--reload-firmware"], capture_output=True, text=True, timeout=15)
                     if res.returncode == 0:
                         out = res.stdout.strip().replace("\n", " | ")
                         print(f"[METIS HW] Firmware reloaded: {out}")
                         time.sleep(1.0)
                     else:
+                        err_out = (res.stderr or res.stdout or "").strip().replace("\n", " | ")
+                        print(f"[METIS HW] Firmware reload status: {err_out[:80]}")
                         res2 = subprocess.run([axdev, "--refresh"], capture_output=True, text=True, timeout=12)
                         out2 = (res2.stdout or res2.stderr).strip().replace("\n", " | ")
                         print(f"[METIS HW] Device refreshed: {out2}")
