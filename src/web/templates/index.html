@@ -2743,17 +2743,29 @@
                 stopWebcam();
                 fileSec.style.display = 'none';
                 webcamSec.style.display = 'none';
-                // Snap live stream
+                capturedBase64 = null;
+                // Snap live stream for visual preview
                 const streamImg = document.getElementById('mjpeg-stream');
-                const canvas = document.createElement('canvas');
-                canvas.width = streamImg.naturalWidth || 640;
-                canvas.height = streamImg.naturalHeight || 480;
-                canvas.getContext('2d').drawImage(streamImg, 0, 0);
-                capturedBase64 = canvas.toDataURL('image/jpeg');
-                preview.src = capturedBase64;
-                preview.style.display = 'block';
-                placeholder.style.display = 'none';
-                showToast('Current stream frame captured!');
+                if (streamImg && (streamImg.naturalWidth || streamImg.clientWidth)) {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = streamImg.naturalWidth || 640;
+                        canvas.height = streamImg.naturalHeight || 480;
+                        canvas.getContext('2d').drawImage(streamImg, 0, 0);
+                        preview.src = canvas.toDataURL('image/jpeg');
+                        preview.style.display = 'block';
+                        placeholder.style.display = 'none';
+                    } catch (e) {
+                        preview.style.display = 'none';
+                        placeholder.innerText = 'Enrolling face from active camera stream';
+                        placeholder.style.display = 'block';
+                    }
+                } else {
+                    preview.style.display = 'none';
+                    placeholder.innerText = 'Enrolling face from active camera stream';
+                    placeholder.style.display = 'block';
+                }
+                showToast('Using active camera stream face frame');
             }
         }
 
@@ -2788,7 +2800,17 @@
             statusDiv.style.color = 'var(--accent-primary)';
             statusDiv.innerText = 'Extracting face embedding...';
 
-            if (activeEnrollTab === 'file' && document.getElementById('enroll-file-input').files.length > 0) {
+            if (activeEnrollTab === 'live') {
+                const camId = currentFeed !== 'grid' ? currentFeed : 'all';
+                fetch('/api/enroll_face', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, use_live_frame: true, camera_id: camId })
+                })
+                .then(r => r.json())
+                .then(handleEnrollResult)
+                .catch(e => { statusDiv.innerText = 'Enrollment error: ' + e; });
+            } else if (activeEnrollTab === 'file' && document.getElementById('enroll-file-input').files.length > 0) {
                 const fd = new FormData();
                 fd.append('name', name);
                 fd.append('file', document.getElementById('enroll-file-input').files[0]);

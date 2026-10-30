@@ -523,9 +523,29 @@ class TestWebApi(unittest.TestCase):
                 status, payload = srv.handle_api("POST", "/api/enroll_face", {}, {"name": "Bob"})
                 self.assertEqual(status, 400)
                 img = np.random.randint(0, 255, (120, 120, 3), np.uint8)
+
+                # Test enrolling via image even when face_recognizer is disabled
+                p.set_model_enabled("face_recognizer", False)
                 status, payload = srv.handle_api("POST", "/api/enroll_face", {}, {"name": "Bob", "_image": img})
                 self.assertEqual(status, 200, payload)
                 self.assertIn("Bob", srv.handle_api("GET", "/api/identities", {}, {})[1]["identities"])
+
+                # Test use_live_frame requires face_recognizer to be on
+                status, payload = srv.handle_api("POST", "/api/enroll_face", {}, {"name": "Charlie", "use_live_frame": True})
+                self.assertEqual(status, 400)
+                self.assertIn("Face recognition must be enabled", payload.get("error", ""))
+
+                # Re-enable face_recognizer and test live frame enrollment
+                p.set_model_enabled("face_recognizer", True)
+                with p._state_lock:
+                    p._latest.setdefault("cam_00", {})
+                    p._latest["cam_00"].update({
+                        "persons": 1, "faces_detected": 1, "known_faces": 0, "plates": 0,
+                        "faces": [{"bbox": [10, 10, 100, 100], "name": "Unknown", "embedding": np.ones(512)}]
+                    })
+                status, payload = srv.handle_api("POST", "/api/enroll_face", {}, {"name": "Charlie", "use_live_frame": True, "camera_id": "cam_00"})
+                self.assertEqual(status, 200, payload)
+                self.assertIn("Charlie", srv.handle_api("GET", "/api/identities", {}, {})[1]["identities"])
 
                 # display & system info endpoints
                 status, disp = srv.handle_api("GET", "/api/display", {}, {})

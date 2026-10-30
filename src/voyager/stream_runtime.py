@@ -815,15 +815,10 @@ class VoyagerRuntime(BaseRuntime):
     def embed_face_image(self, image_bgr: np.ndarray) -> Optional[np.ndarray]:
         """Runs the small RetinaFace->FaceNet network once over a still image.
 
-        NOTE: this opens a second, short-lived InferenceStream next to the live one.
-        If the device cannot host both, prefer enrolling from a live camera frame.
+        If the live camera stream is currently active on the Metis AIPU, the stream is
+        temporarily suspended to prevent PCIe/driver hardware conflicts, and resumed
+        immediately after the single enrollment frame completes.
         """
-        if self.is_running:
-            raise RuntimeError(
-                "Face embedding from an uploaded image cannot run while the live camera "
-                "stream is actively running on the Metis AIPU. Please enroll from a live "
-                "camera frame instead."
-            )
         import cv2
 
         path = self.networks_dir / "upside-face-enroll.yaml"
@@ -833,34 +828,53 @@ class VoyagerRuntime(BaseRuntime):
         build_root = self.resolved_build_root()
         if build_root is not None and not (build_root / name).exists():
             raise RuntimeError(f"Enrollment network not compiled. Run: python tools/deploy_networks.py --network {name}")
-        with tempfile.TemporaryDirectory() as td:
-            img_path = os.path.join(td, "enroll.jpg")
-            cv2.imwrite(img_path, image_bgr)
-            kwargs: Dict[str, Any] = dict(network=str(path), sources=[img_path], pipe_type="gst",
-                                          aipu_cores=1, frames=1, timeout=30)
-            if self.build_root:
-                kwargs["build_root"] = self.build_root
-            try:
-                from axelera.app import config as ax_config
-                kwargs["hardware_caps"] = ax_config.HardwareCaps(
-                    opencl=ax_config.HardwareEnable.disable,
-                    opengl=ax_config.HardwareEnable.disable,
-                    vaapi=ax_config.HardwareEnable.disable,
-                )
-            except Exception:
-                pass
-            stream = self.sdk.create_inference_stream(**kwargs)
-            try:
-                for fr in stream:
-                    fa = parse_frame_result(fr, time.time())
-                    faces = [f for f in fa.faces if f["embedding"] is not None]
-                    if not faces:
-                        return None
-                    best = max(faces, key=lambda f: (f["bbox"][2] - f["bbox"][0]) * (f["bbox"][3] - f["bbox"][1]))
-                    return best["embedding"]
-            finally:
-                stream.stop()
-        return None
+
+        was_running = self.is_running
+        saved_plan = self.plan
+        saved_cameras = dict(self.cameras)
+
+        try:
+            if was_running:
+                self.on_event(None, "info", "Temporarily suspending live camera stream for face image enrollment...")
+                with self._lock:
+                    self._stop_stream()
+                time.sleep(0.5)
+
+            with tempfile.TemporaryDirectory() as td:
+                img_path = os.path.join(td, "enroll.jpg")
+                cv2.imwrite(img_path, image_bgr)
+                kwargs: Dict[str, Any] = dict(network=str(path), sources=[img_path], pipe_type="gst",
+                                              aipu_cores=1, frames=1, timeout=30)
+                if self.build_root:
+                    kwargs["build_root"] = self.build_root
+                try:
+                    from axelera.app import config as ax_config
+                    kwargs["hardware_caps"] = ax_config.HardwareCaps(
+                        opencl=ax_config.HardwareEnable.disable,
+                        opengl=ax_config.HardwareEnable.disable,
+                        vaapi=ax_config.HardwareEnable.disable,
+                    )
+                except Exception:
+                    pass
+                stream = self.sdk.create_inference_stream(**kwargs)
+                try:
+                    for fr in stream:
+                        fa = parse_frame_result(fr, time.time())
+                        faces = [f for f in fa.faces if f["embedding"] is not None]
+                        if not faces:
+                            return None
+                        best = max(faces, key=lambda f: (f["bbox"][2] - f["bbox"][0]) * (f["bbox"][3] - f["bbox"][1]))
+                        return best["embedding"]
+                finally:
+                    stream.stop()
+            return None
+        finally:
+            if was_running and saved_plan and saved_cameras:
+                self.on_event(None, "info", "Resuming live camera stream after face enrollment...")
+                try:
+                    self.apply_plan(saved_plan, saved_cameras)
+                except Exception as e:
+                    self.on_event(None, "error", f"Failed to resume stream after enrollment: {e}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
