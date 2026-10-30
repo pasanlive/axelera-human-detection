@@ -167,7 +167,10 @@ class MultiCameraPipeline:
         return [c for c in cams if c.get("enabled", True) or not enabled_only]
 
     def _camera_features(self, cam_id: str) -> frozenset:
-        return frozenset(feat for model, feat in NETWORK_FEATURES.items() if self.is_model_enabled(model, cam_id))
+        feats = set(feat for model, feat in NETWORK_FEATURES.items() if self.is_model_enabled(model, cam_id))
+        if self.is_model_enabled("pose_estimator", cam_id):
+            feats.add("pose")
+        return frozenset(feats)
 
     def camera_specs(self) -> List[CameraSpec]:
         specs = []
@@ -214,7 +217,7 @@ class MultiCameraPipeline:
             self._ensure_zone_crossing()
         if model_name == "face_recognizer" and not enabled:
             self.identity.clear(None if not cam_id or cam_id == "all" else cam_id)
-        if model_name in NETWORK_FEATURES:
+        if model_name in NETWORK_FEATURES or model_name == "pose_estimator":
             self.request_replan()
 
     # ─────────────────────────────────────────────────────────────────────────

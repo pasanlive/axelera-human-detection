@@ -28,6 +28,48 @@ COLOR_ZONE_POLY   = (255, 50, 150)    # Magenta
 COLOR_ZONE_TEXT   = (255, 255, 255)   # White
 
 
+def _normalize_keypoints(kpts_raw: Any, img_w: int, img_h: int) -> Optional[np.ndarray]:
+    """Standardizes keypoints into an (N, 3) float32 array [x, y, conf] in pixel coordinates."""
+    if kpts_raw is None:
+        return None
+    try:
+        if isinstance(kpts_raw, (list, tuple)) and len(kpts_raw) > 0 and not isinstance(kpts_raw[0], (int, float, list, tuple, np.ndarray)):
+            pts = []
+            for item in kpts_raw:
+                if isinstance(item, dict):
+                    x = float(item.get("x", item.get("kx", 0.0)))
+                    y = float(item.get("y", item.get("ky", 0.0)))
+                    conf = float(item.get("score", item.get("confidence", item.get("conf", 1.0))))
+                else:
+                    x = float(getattr(item, "x", getattr(item, "kx", 0.0)))
+                    y = float(getattr(item, "y", getattr(item, "ky", 0.0)))
+                    conf = float(getattr(item, "score", getattr(item, "confidence", 1.0)))
+                pts.append([x, y, conf])
+            kpts = np.asarray(pts, dtype=np.float32)
+        else:
+            kpts = np.asarray(kpts_raw, dtype=np.float32)
+            if kpts.size == 51 and kpts.shape != (17, 3):
+                kpts = kpts.reshape(17, 3)
+            elif kpts.size == 34 and kpts.shape != (17, 2):
+                kpts = kpts.reshape(17, 2)
+            if kpts.ndim == 2 and kpts.shape[1] == 2:
+                kpts = np.column_stack([kpts, np.ones(len(kpts), dtype=np.float32)])
+
+        if kpts.ndim != 2 or kpts.shape[1] < 3:
+            return None
+
+        # Check if coordinates are normalized in [0.0, 1.0]
+        max_coord = float(np.max(kpts[:, :2])) if kpts.size > 0 else 0.0
+        if 0.0 < max_coord <= 1.05 and img_w > 0 and img_h > 0:
+            kpts = kpts.copy()
+            kpts[:, 0] *= img_w
+            kpts[:, 1] *= img_h
+
+        return kpts
+    except Exception:
+        return None
+
+
 class Visualizer:
     """Renders multi-modal detection overlays on video frames."""
 
@@ -88,19 +130,30 @@ class Visualizer:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
         # 3. 17-Keypoint Pose Skeleton
-        if self.draw_pose:
+        if self.draw_pose and poses:
+            h, w = out_frame.shape[:2]
             for pose in poses:
-                kpts = pose["keypoints"]  # (17, 3) [x, y, conf]
+                kpts_raw = pose.get("keypoints") if isinstance(pose, dict) else getattr(pose, "keypoints", None)
+                kpts = _normalize_keypoints(kpts_raw, w, h)
+                if kpts is None or len(kpts) == 0:
+                    continue
+
                 for k1_idx, k2_idx in SKELETON_CONNECTIONS:
                     if k1_idx < len(kpts) and k2_idx < len(kpts):
-                        pt1 = (int(kpts[k1_idx][0]), int(kpts[k1_idx][1]))
-                        pt2 = (int(kpts[k2_idx][0]), int(kpts[k2_idx][1]))
-                        conf1, conf2 = kpts[k1_idx][2], kpts[k2_idx][2]
-                        if conf1 > 0.3 and conf2 > 0.3 and pt1[0] > 0 and pt2[0] > 0:
+                        pt1 = (int(round(kpts[k1_idx, 0])), int(round(kpts[k1_idx, 1])))
+                        pt2 = (int(round(kpts[k2_idx, 0])), int(round(kpts[k2_idx, 1])))
+                        conf1, conf2 = float(kpts[k1_idx, 2]), float(kpts[k2_idx, 2])
+                        if (conf1 > 0.1 and conf2 > 0.1 and
+                            (pt1[0] > 0 or pt1[1] > 0) and (pt2[0] > 0 or pt2[1] > 0) and
+                            0 <= pt1[0] < w and 0 <= pt1[1] < h and
+                            0 <= pt2[0] < w and 0 <= pt2[1] < h):
                             cv2.line(out_frame, pt1, pt2, COLOR_LIMB, 2, cv2.LINE_AA)
+
                 for kx, ky, kc in kpts:
-                    if kc > 0.3 and kx > 0 and ky > 0:
-                        cv2.circle(out_frame, (int(kx), int(ky)), 4, COLOR_KEYPOINT, -1, cv2.LINE_AA)
+                    if kc > 0.1 and (kx > 0 or ky > 0):
+                        ix, iy = int(round(kx)), int(round(ky))
+                        if 0 <= ix < w and 0 <= iy < h:
+                            cv2.circle(out_frame, (ix, iy), 4, COLOR_KEYPOINT, -1, cv2.LINE_AA)
 
         # 4. Face Identity Tags
         if self.draw_faces:

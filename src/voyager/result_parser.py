@@ -153,6 +153,102 @@ def _track_boxes(tracks: Any) -> Tuple[np.ndarray, np.ndarray]:
     return np.asarray(ids, dtype=np.int64), _arr(bxs, 4)
 
 
+def _extract_keypoint_detections(result: Any, meta: Any) -> List[Dict[str, Any]]:
+    """
+    Extracts keypoint detections from result and/or meta across various formats:
+    - CocoBodyKeypointsMeta / BottomUpKeypointDetectionMeta
+    - Meta task keys: 'persons', 'keypoint_detections', 'pose', 'poses', 'keypoints'
+    - Direct result attributes: result.persons, result.keypoint_detections, etc.
+    """
+    candidates = []
+    task_keys = [TASK_PERSONS, "keypoint_detections", "pose", "poses", "keypoints"]
+
+    if meta is not None:
+        for k in task_keys:
+            val = _meta_get(meta, k)
+            if val is not None:
+                candidates.append(val)
+        if hasattr(meta, "items"):
+            for k, val in meta.items():
+                if k not in task_keys and val is not None:
+                    if hasattr(val, "keypoints") or "keypoint" in type(val).__name__.lower():
+                        candidates.append(val)
+
+    if result is not None:
+        for attr in task_keys:
+            val = getattr(result, attr, None)
+            if val is not None and val not in candidates:
+                candidates.append(val)
+
+    extracted: List[Dict[str, Any]] = []
+
+    def _format_kpts_array(k: Any) -> Optional[np.ndarray]:
+        if k is None:
+            return None
+        arr = np.asarray(k, dtype=np.float32)
+        if arr.size == 51:
+            arr = arr.reshape(17, 3)
+        elif arr.size == 34:
+            arr = arr.reshape(17, 2)
+        if arr.ndim == 2 and arr.shape[0] == 17:
+            if arr.shape[1] == 2:
+                arr = np.column_stack([arr, np.ones(17, dtype=np.float32)])
+            return arr
+        return None
+
+    for item in candidates:
+        # Format 1: Meta with .boxes / .xyxy and .keypoints
+        if hasattr(item, "boxes") or hasattr(item, "xyxy") or hasattr(item, "keypoints"):
+            raw_boxes = getattr(item, "boxes", None)
+            if raw_boxes is None and hasattr(item, "xyxy"):
+                try:
+                    raw_boxes = item.xyxy()
+                except Exception:
+                    raw_boxes = None
+            boxes = _arr(raw_boxes, 4)
+            scores = _arr(getattr(item, "scores", None))
+            raw_kpts = getattr(item, "keypoints", None)
+
+            if raw_kpts is not None:
+                try:
+                    k_arr = np.asarray(raw_kpts, dtype=np.float32)
+                    if k_arr.ndim == 3 and k_arr.shape[1] == 17:
+                        if k_arr.shape[2] == 2:
+                            ones = np.ones((k_arr.shape[0], 17, 1), dtype=np.float32)
+                            k_arr = np.concatenate([k_arr, ones], axis=2)
+                        for i in range(len(k_arr)):
+                            b = boxes[i].tolist() if i < len(boxes) else [0, 0, 0, 0]
+                            sc = float(scores[i]) if i < len(scores) else 1.0
+                            extracted.append({"bbox": b, "confidence": sc, "keypoints": k_arr[i]})
+                        continue
+                except Exception:
+                    pass
+
+                if isinstance(raw_kpts, (list, tuple)) and len(raw_kpts) > 0:
+                    for i, k in enumerate(raw_kpts):
+                        fk = _format_kpts_array(k)
+                        b = boxes[i].tolist() if i < len(boxes) else [0, 0, 0, 0]
+                        sc = float(scores[i]) if i < len(scores) else 1.0
+                        extracted.append({"bbox": b, "confidence": sc, "keypoints": fk})
+                    continue
+
+        # Format 2: List / sequence of objects with .keypoints and .box / .bbox
+        if isinstance(item, (list, tuple)) or hasattr(item, "__iter__"):
+            try:
+                for obj in item:
+                    k = getattr(obj, "keypoints", None)
+                    if k is not None:
+                        fk = _format_kpts_array(k)
+                        b = getattr(obj, "box", None) or getattr(obj, "bbox", [0, 0, 0, 0])
+                        b = b.tolist() if hasattr(b, "tolist") else list(b)
+                        sc = float(getattr(obj, "score", getattr(obj, "confidence", 1.0)))
+                        extracted.append({"bbox": b, "confidence": sc, "keypoints": fk})
+            except Exception:
+                pass
+
+    return extracted
+
+
 def parse_frame_result(result: Any, timestamp: float, track_iou: float = 0.3) -> FrameAnalysis:
     """FrameResult -> FrameAnalysis."""
     meta = getattr(result, "meta", None)
@@ -169,7 +265,7 @@ def parse_frame_result(result: Any, timestamp: float, track_iou: float = 0.3) ->
                 continue
     fa = FrameAnalysis(stream_id=int(getattr(result, "stream_id", 0)), timestamp=timestamp, frame_size=size)
 
-    # 1. Native tracker support (e.g. from yolov5m-v7-coco-tracker)
+    # 1. Native tracker support (e.g. from yolov5m-v7-coco-tracker or custom tracker)
     tracker = getattr(result, "pedestrian_and_vehicle_tracker", None) or _meta_get(meta, "pedestrian_and_vehicle_tracker")
     if tracker is not None:
         try:
@@ -184,10 +280,17 @@ def parse_frame_result(result: Any, timestamp: float, track_iou: float = 0.3) ->
                         bbox = getattr(veh, "bbox", [0, 0, 0, 0])
                     score = float(getattr(veh, "score", getattr(veh, "confidence", 1.0)))
                     track_id = int(getattr(veh, "track_id", -1))
+                    kpts = getattr(veh, "keypoints", None)
+                    if kpts is not None:
+                        kpts = np.asarray(kpts, dtype=np.float32)
+                        if kpts.size == 51:
+                            kpts = kpts.reshape(17, 3)
+                        elif kpts.size == 34:
+                            kpts = np.column_stack([kpts.reshape(17, 2), np.ones(17, dtype=np.float32)])
                     fa.persons.append({
                         "bbox": list(bbox),
                         "confidence": score,
-                        "keypoints": None,
+                        "keypoints": kpts,
                         "track_id": track_id if track_id >= 0 else None,
                     })
         except Exception:
@@ -204,38 +307,61 @@ def parse_frame_result(result: Any, timestamp: float, track_iou: float = 0.3) ->
                     if class_id == 0 or label.lower() == "person":
                         bbox = getattr(det, "bbox", [0, 0, 0, 0])
                         score = float(getattr(det, "score", getattr(det, "confidence", 1.0)))
+                        kpts = getattr(det, "keypoints", None)
+                        if kpts is not None:
+                            kpts = np.asarray(kpts, dtype=np.float32)
+                            if kpts.size == 51:
+                                kpts = kpts.reshape(17, 3)
+                            elif kpts.size == 34:
+                                kpts = np.column_stack([kpts.reshape(17, 2), np.ones(17, dtype=np.float32)])
                         fa.persons.append({
                             "bbox": list(bbox) if hasattr(bbox, "tolist") else list(bbox),
                             "confidence": score,
-                            "keypoints": None,
+                            "keypoints": kpts,
                             "track_id": None,
                         })
             except Exception:
                 pass
 
-    # 3. Persons + keypoints from custom pipeline (TASK_PERSONS)
-    if not fa.persons:
-        persons = _meta_get(meta, TASK_PERSONS)
-        p_boxes = _arr(getattr(persons, "boxes", None), 4) if persons is not None else np.zeros((0, 4), np.float32)
-        p_scores = _arr(getattr(persons, "scores", None)) if persons is not None else np.zeros(0, np.float32)
-        kpts = getattr(persons, "keypoints", None) if persons is not None else None
-        kpts = np.asarray(kpts, dtype=np.float32) if kpts is not None and len(kpts) else None
-        if kpts is not None:
-            kpts = kpts.reshape(len(p_boxes), -1, 3) if kpts.size == len(p_boxes) * 51 else kpts
+    # 3. Pose keypoints extraction & association
+    extracted_kpts = _extract_keypoint_detections(result, meta)
+    if extracted_kpts:
+        if fa.persons:
+            # Associate extracted keypoints to tracked persons via bounding box IoU
+            p_boxes = np.array([p["bbox"] for p in fa.persons], dtype=np.float32)
+            k_boxes = np.array([k["bbox"] for k in extracted_kpts], dtype=np.float32)
+            matched_k = set()
+            for r, c in greedy_match(iou_matrix(p_boxes, k_boxes), threshold=0.1):
+                if fa.persons[r]["keypoints"] is None:
+                    fa.persons[r]["keypoints"] = extracted_kpts[c]["keypoints"]
+                matched_k.add(c)
+            # Add any unmatched keypoints as additional detections
+            for c, k in enumerate(extracted_kpts):
+                if c not in matched_k and k.get("keypoints") is not None:
+                    fa.persons.append({
+                        "bbox": k["bbox"],
+                        "confidence": k["confidence"],
+                        "keypoints": k["keypoints"],
+                        "track_id": None,
+                    })
+        else:
+            # No prior detections - populate fa.persons from keypoint detections
+            k_boxes = np.array([k["bbox"] for k in extracted_kpts], dtype=np.float32)
+            tids, t_boxes = _track_boxes(_meta_get(meta, TASK_TRACKS))
+            track_of = np.full(len(extracted_kpts), -1, dtype=np.int64)
+            if len(t_boxes) > 0 and len(k_boxes) > 0:
+                for r, c in greedy_match(iou_matrix(k_boxes, t_boxes), track_iou):
+                    track_of[r] = tids[c]
 
-        # Track association
-        tids, t_boxes = _track_boxes(_meta_get(meta, TASK_TRACKS))
-        track_of = np.full(len(p_boxes), -1, dtype=np.int64)
-        for r, c in greedy_match(iou_matrix(p_boxes, t_boxes), track_iou):
-            track_of[r] = tids[c]
+            for i, k in enumerate(extracted_kpts):
+                fa.persons.append({
+                    "bbox": k["bbox"],
+                    "confidence": k["confidence"],
+                    "keypoints": k["keypoints"],
+                    "track_id": int(track_of[i]) if track_of[i] >= 0 else None,
+                })
 
-        for i in range(len(p_boxes)):
-            fa.persons.append({
-                "bbox": p_boxes[i].tolist(),
-                "confidence": float(p_scores[i]) if i < len(p_scores) else 0.0,
-                "keypoints": kpts[i] if kpts is not None and i < len(kpts) else None,
-                "track_id": int(track_of[i]) if track_of[i] >= 0 else None,
-            })
+    p_boxes = np.array([p["bbox"] for p in fa.persons], dtype=np.float32).reshape(-1, 4) if fa.persons else np.zeros((0, 4), dtype=np.float32)
 
     # Faces + embeddings
     faces = _meta_get(meta, TASK_FACES)

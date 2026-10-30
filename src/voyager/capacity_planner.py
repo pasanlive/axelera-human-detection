@@ -246,9 +246,13 @@ class CapacityPlanner:
         cams = list(cams)
         candidates = [t for t in TIERS if (b.enable_tiling or not t.tiling) and t.name != "tracker"]
         if profile != "auto":
-            if profile not in TIER_BY_NAME:
-                raise ValueError(f"Unknown performance profile {profile!r}; expected one of {PROFILES}")
-            candidates = [TIER_BY_NAME[profile]]
+            if profile == "tracker" and any("pose" in c.features for c in cams):
+                # Tracker profile (yolov5m) lacks pose keypoint detection; switch to pose-enabled profile
+                pass
+            else:
+                if profile not in TIER_BY_NAME:
+                    raise ValueError(f"Unknown performance profile {profile!r}; expected one of {PROFILES}")
+                candidates = [TIER_BY_NAME[profile]]
 
         chosen = None
         for tier in candidates:

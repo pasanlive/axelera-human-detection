@@ -156,6 +156,11 @@ class TestCapacityPlanner(unittest.TestCase):
         self.assertEqual(plan.groups[0].network, "yolov5m-v7-coco-tracker")
         self.assertEqual(plan.groups[0].sources[0], "rtsp://cam0/sub")
 
+    def test_tracker_profile_with_pose_feature_upgrades(self):
+        plan = CapacityPlanner().plan(_cams(1, frozenset({"pose"})), profile="tracker")
+        self.assertNotEqual(plan.tier.name, "tracker")
+        self.assertIn(plan.tier.pose_model, ("yolov8npose", "yolov8spose"))
+
     def test_many_cameras_with_faces_scale_down(self):
         planner = CapacityPlanner()
         plan15 = planner.plan(_cams(15, frozenset({"face"})))
@@ -265,6 +270,55 @@ class TestResultParser(unittest.TestCase):
         self.assertEqual(fa.persons[0]["confidence"], 0.92)
         self.assertEqual(fa.persons[1]["track_id"], 103)
         self.assertEqual(fa.persons[1]["bbox"], [50, 60, 100, 180])
+
+    def test_parse_keypoints_with_tracker_association(self):
+        class MockTrack:
+            def __init__(self, track_id, class_id, history, score=0.9):
+                self.track_id = track_id
+                self.class_id = class_id
+                self.history = history
+                self.score = score
+
+        tracks = [
+            MockTrack(10, 0, np.array([[10, 10, 100, 200]])),
+        ]
+        # Keypoints detected for the person at [10, 10, 100, 200]
+        kpts = np.full((1, 17, 3), 42.0, dtype=np.float32)
+        meta = {
+            "keypoint_detections": SimpleNamespace(
+                boxes=np.array([[10, 10, 100, 200]], dtype=np.float32),
+                scores=np.array([0.95], dtype=np.float32),
+                keypoints=kpts,
+            )
+        }
+        res = SimpleNamespace(
+            meta=meta,
+            stream_id=0,
+            image=None,
+            pedestrian_and_vehicle_tracker=tracks,
+        )
+        fa = parse_frame_result(res, 1.0)
+        self.assertEqual(len(fa.persons), 1)
+        self.assertEqual(fa.persons[0]["track_id"], 10)
+        self.assertIsNotNone(fa.persons[0]["keypoints"])
+        self.assertEqual(fa.persons[0]["keypoints"].shape, (17, 3))
+        self.assertEqual(fa.persons[0]["keypoints"][0, 0], 42.0)
+
+    def test_parse_keypoints_from_various_meta_formats(self):
+        # 2D (17, 2) keypoints without confidence -> auto adds 1.0 confidence column
+        kpts_2d = np.ones((1, 17, 2), dtype=np.float32) * 15.0
+        meta = {
+            "pose": SimpleNamespace(
+                boxes=np.array([[5, 5, 50, 100]], dtype=np.float32),
+                scores=np.array([0.88], dtype=np.float32),
+                keypoints=kpts_2d,
+            )
+        }
+        res = SimpleNamespace(meta=meta, image=None, stream_id=0)
+        fa = parse_frame_result(res, 1.0)
+        self.assertEqual(len(fa.persons), 1)
+        self.assertEqual(fa.persons[0]["keypoints"].shape, (17, 3))
+        self.assertEqual(fa.persons[0]["keypoints"][0, 2], 1.0)
 
 
 class TestFaceDatabase(unittest.TestCase):
@@ -388,6 +442,23 @@ class TestPipelineSimulated(unittest.TestCase):
                              poses=[{"keypoints": np.full((17, 3), 50.0)}],
                              faces=[{"bbox": [20, 20, 60, 60], "name": "Alice", "similarity": 0.8}],
                              stream_title="t", fps=10.0)
+        self.assertEqual(out.shape, frame.shape)
+        self.assertGreater(int(out.sum()), 0)
+
+    def test_visualizer_normalized_and_pixel_keypoints(self):
+        vis = Visualizer({})
+        frame = np.zeros((360, 640, 3), np.uint8)
+        # Normalized keypoints in [0.0, 1.0]
+        kpts_norm = np.array([
+            [0.5, 0.1, 0.9], [0.4, 0.15, 0.9], [0.6, 0.15, 0.9],
+            [0.3, 0.2, 0.9], [0.7, 0.2, 0.9], [0.4, 0.3, 0.9],
+            [0.6, 0.3, 0.9], [0.35, 0.4, 0.9], [0.65, 0.4, 0.9],
+            [0.3, 0.5, 0.9], [0.7, 0.5, 0.9], [0.45, 0.6, 0.9],
+            [0.55, 0.6, 0.9], [0.45, 0.75, 0.9], [0.55, 0.75, 0.9],
+            [0.45, 0.9, 0.9], [0.55, 0.9, 0.9],
+        ], dtype=np.float32)
+        out = vis.draw_frame(frame, detections=[], poses=[{"keypoints": kpts_norm}],
+                             faces=[], stream_title="test", fps=15.0)
         self.assertEqual(out.shape, frame.shape)
         self.assertGreater(int(out.sum()), 0)
 
