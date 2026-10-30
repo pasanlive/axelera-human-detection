@@ -184,38 +184,40 @@ class HardwareWatchdog:
                 pass
 
             # 2. Try applying dma_poll=1, irq_timeout=30, dma_timeout=10 dynamically via sysfs if writable
-            for param, val in [("dma_poll", "1"), ("irq_timeout", "30"), ("dma_timeout", "10"), ("single_msi", "1")]:
-                p = Path(f"/sys/module/metis/parameters/{param}")
-                if p.exists():
-                    try:
-                        subprocess.run(["sudo", "-n", "sh", "-c", f"echo {val} > {p} 2>/dev/null"],
-                                       capture_output=True, text=True, timeout=1)
-                    except Exception:
-                        pass
+            for mod in ("metis", "axl"):
+                for param, val in [("dma_poll", "1"), ("irq_timeout", "30"), ("dma_timeout", "10"), ("single_msi", "1")]:
+                    p = Path(f"/sys/module/{mod}/parameters/{param}")
+                    if p.exists():
+                        try:
+                            subprocess.run(["sudo", "-n", "sh", "-c", f"echo {val} > {p} 2>/dev/null"],
+                                           capture_output=True, text=True, timeout=1)
+                        except Exception:
+                            pass
 
             # 3. Report active driver parameters
-            p_msi = Path("/sys/module/metis/parameters/single_msi")
-            p_to = Path("/sys/module/metis/parameters/irq_timeout")
-            p_dto = Path("/sys/module/metis/parameters/dma_timeout")
-            p_poll = Path("/sys/module/metis/parameters/dma_poll")
-            if p_msi.exists() or p_poll.exists():
-                msi_val = p_msi.read_text().strip() if p_msi.exists() else "unknown"
-                to_val = p_to.read_text().strip() if p_to.exists() else "unknown"
-                dto_val = p_dto.read_text().strip() if p_dto.exists() else "unknown"
-                poll_val = p_poll.read_text().strip() if p_poll.exists() else "unknown"
-                print(f"[KERNEL STATUS] Driver 'metis' active (single_msi={msi_val}, irq_timeout={to_val}s, dma_timeout={dto_val}s, dma_poll={poll_val}).")
-                if poll_val == "1":
-                    print("  [OK] dma_poll=1 active (DMA polling protects against RK3588 dropped MSI interrupts).")
-                elif msi_val == "0":
-                    print("  [ALERT] single_msi=0 and dma_poll=0. If MSI timeouts occur, set 'options metis dma_poll=1' in /etc/modprobe.d/metis.conf.")
-                return
+            for mod in ("axl", "metis"):
+                p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
+                p_to = Path(f"/sys/module/{mod}/parameters/irq_timeout")
+                p_dto = Path(f"/sys/module/{mod}/parameters/dma_timeout")
+                p_poll = Path(f"/sys/module/{mod}/parameters/dma_poll")
+                if p_msi.exists() or p_poll.exists():
+                    msi_val = p_msi.read_text().strip() if p_msi.exists() else "unknown"
+                    to_val = p_to.read_text().strip() if p_to.exists() else "unknown"
+                    dto_val = p_dto.read_text().strip() if p_dto.exists() else "unknown"
+                    poll_val = p_poll.read_text().strip() if p_poll.exists() else "unknown"
+                    print(f"[KERNEL STATUS] Driver '{mod}' active (single_msi={msi_val}, irq_timeout={to_val}s, dma_timeout={dto_val}s, dma_poll={poll_val}).")
+                    if poll_val == "1":
+                        print(f"  [OK] {mod} dma_poll=1 active (protects against RK3588 dropped MSI interrupts).")
+                    elif msi_val == "0":
+                        print(f"  [ALERT] {mod} single_msi=0. Run with single_msi=1 to protect against RK3588 dropped MSI interrupts.")
+                    break
         except Exception as e:
             print(f"[KERNEL STATUS] Could not read /sys/module/metis: {e}")
 
     def ensure_device_ready(self, force: bool = False) -> bool:
         """Checks if the Metis AIPU is ready. If a prior MSI timeout is detected in recent kernel logs,
-        or if single_msi=0 is active on Rockchip RK3588, automatically configures single_msi=1,
-        reloads the kernel driver if necessary, and reloads firmware using 'axdevice --reload-firmware'."""
+        or if single_msi=0 is active on Rockchip RK3588, automatically configures single_msi=1 and dma_poll=1,
+        reloads the kernel drivers (axl + metis), and reloads firmware using 'axdevice --reload-firmware'."""
         try:
             # 1. Enforce PCIe ASPM performance policy and disable Link L0s/L1 states immediately
             self.disable_pcie_aspm()
@@ -225,7 +227,7 @@ class HardwareWatchdog:
 
             curr_single_msi = None
             active_mod = "metis"
-            for mod in ("metis", "axl"):
+            for mod in ("axl", "metis"):
                 p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
                 if p_msi.exists():
                     curr_single_msi = p_msi.read_text().strip()
@@ -235,8 +237,9 @@ class HardwareWatchdog:
             recent_k = self.get_dmesg_tail(40)
             msi_timeout = any(("IRQ MSI timeout" in l or "Failed to wait for MSI" in l) for l in recent_k)
             dev_missing = not os.path.exists("/dev/metis-0:1:0")
+            single_msi_needed = (curr_single_msi != "1")
 
-            if force or msi_timeout or dev_missing:
+            if force or msi_timeout or dev_missing or single_msi_needed:
                 reasons = []
                 if force:
                     reasons.append("force requested")
@@ -244,34 +247,27 @@ class HardwareWatchdog:
                     reasons.append("prior IRQ MSI timeout in dmesg")
                 if dev_missing:
                     reasons.append("device node missing")
+                if single_msi_needed:
+                    reasons.append(f"enforcing single_msi=1 (currently {curr_single_msi or '0'})")
                 reason_str = ", ".join(reasons)
                 print(f"[METIS HW] Hardware/driver re-initialization needed ({reason_str})...")
 
-                # Print module parameter capabilities from modinfo
-                try:
-                    res_mi = subprocess.run(["modinfo", active_mod], capture_output=True, text=True, timeout=3)
-                    if res_mi.returncode == 0:
-                        parms = [l.strip() for l in res_mi.stdout.splitlines() if "parm:" in l]
-                        if parms:
-                            print(f"[METIS HW] Module '{active_mod}' parameters: {'; '.join(parms[:4])}")
-                except Exception:
-                    pass
+                # Configure modprobe.d for BOTH axl and metis to enforce single_msi=1 and dma_poll=1
+                conf = "options metis single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10\\noptions axl single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10\\n"
+                subprocess.run(["sudo", "-n", "sh", "-c", f"printf '{conf}' > /etc/modprobe.d/metis.conf"], capture_output=True, timeout=2)
 
-                # Reload the kernel driver module after an MSI timeout or if device node is missing
-                print(f"[METIS HW] Ensuring kernel module '{active_mod}' is loaded...")
+                # Unload drivers cleanly
+                print("[METIS HW] Reloading kernel modules (axl + metis) with single_msi=1 and dma_poll=1...")
                 subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
                 res_rm = subprocess.run(["sudo", "-n", "modprobe", "-r", "metis", "axl"], capture_output=True, text=True, timeout=5)
                 if res_rm.returncode != 0:
                     subprocess.run(["sudo", "-n", "rmmod", "-f", "metis", "axl"], capture_output=True, text=True, timeout=5)
                 time.sleep(0.5)
 
-                # Try loading with single_msi=1, fallback to default modprobe metis
-                res_load = subprocess.run(["sudo", "-n", "modprobe", active_mod, "single_msi=1"], capture_output=True, text=True, timeout=5)
-                if res_load.returncode != 0:
-                    # Remove any faulty modprobe.d file that could block loading
-                    subprocess.run(["sudo", "-n", "rm", "-f", "/etc/modprobe.d/metis.conf"], capture_output=True, text=True, timeout=2)
-                    res_load = subprocess.run(["sudo", "-n", "modprobe", active_mod], capture_output=True, text=True, timeout=5)
-                time.sleep(1.5)
+                # Load axl (underlying PCIe MSI handler) first with single_msi=1, then metis
+                subprocess.run(["sudo", "-n", "modprobe", "axl", "single_msi=1", "dma_poll=1"], capture_output=True, text=True, timeout=5)
+                subprocess.run(["sudo", "-n", "modprobe", "metis", "single_msi=1", "dma_poll=1"], capture_output=True, text=True, timeout=5)
+                time.sleep(1.0)
 
                 # Reload AIPU firmware
                 axdev = shutil.which("axdevice")
@@ -297,7 +293,7 @@ class HardwareWatchdog:
                         time.sleep(0.5)
 
                 # Report updated driver parameter
-                for mod in ("metis", "axl"):
+                for mod in ("axl", "metis"):
                     p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
                     if p_msi.exists():
                         val = p_msi.read_text().strip()
