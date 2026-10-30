@@ -284,12 +284,17 @@ class HardwareWatchdog:
                     dev_pci = pci_path.name
                     break
 
-                if os.path.exists(f"/sys/bus/pci/drivers/metis/{dev_pci}"):
-                    print(f"[METIS HW] Rebinding PCIe device {dev_pci} with single_msi=1...")
-                    subprocess.run(["sudo", "-n", "sh", "-c", f"echo {dev_pci} > /sys/bus/pci/drivers/metis/unbind 2>/dev/null"], capture_output=True, timeout=3)
+                print(f"[METIS HW] Rebinding PCIe device {dev_pci} with single_msi=1...")
+                res_ub = subprocess.run(["sudo", "-n", "sh", "-c", f"echo {dev_pci} > /sys/bus/pci/drivers/metis/unbind"], capture_output=True, text=True, timeout=3)
+                time.sleep(0.5)
+                res_b = subprocess.run(["sudo", "-n", "sh", "-c", f"echo {dev_pci} > /sys/bus/pci/drivers/metis/bind"], capture_output=True, text=True, timeout=3)
+                time.sleep(0.5)
+
+                if res_b.returncode != 0 or not os.path.exists(f"/sys/bus/pci/drivers/metis/{dev_pci}"):
+                    subprocess.run(["sudo", "-n", "sh", "-c", f"echo 1 > /sys/bus/pci/devices/{dev_pci}/remove 2>/dev/null"], capture_output=True, timeout=3)
                     time.sleep(0.5)
-                    subprocess.run(["sudo", "-n", "sh", "-c", f"echo {dev_pci} > /sys/bus/pci/drivers/metis/bind 2>/dev/null"], capture_output=True, timeout=3)
-                    time.sleep(0.5)
+                    subprocess.run(["sudo", "-n", "sh", "-c", "echo 1 > /sys/bus/pci/rescan 2>/dev/null"], capture_output=True, timeout=3)
+                    time.sleep(1.0)
 
                 # Reload AIPU firmware
                 axdev = shutil.which("axdevice")
