@@ -178,25 +178,7 @@ def _patch_voyager_stream_input() -> None:
     except ImportError:
         return
 
-    # Patch gst_builder.Builder.queue so all queues in Voyager pipelines default to max-size-buffers=1, leaky=2
-    try:
-        from axelera.app import gst_builder
-        _orig_builder_queue = getattr(gst_builder.Builder, "queue", None)
-        if _orig_builder_queue is not None:
-            def patched_builder_queue(self: Any, props: Any = None, **kwargs: Any) -> None:
-                p = dict(props or {})
-                p.setdefault("max-size-buffers", 1)
-                p.setdefault("max-size-time", 0)
-                p.setdefault("max-size-bytes", 0)
-                p.setdefault("leaky", 2)
-                return _orig_builder_queue(self, props=p, **kwargs)
-            gst_builder.Builder.queue = patched_builder_queue
-            if hasattr(gst_builder, "_OldBuilder"):
-                gst_builder._OldBuilder.queue = patched_builder_queue
-    except Exception:
-        pass
-
-    # Patch gst_helper._create_element to intercept rtspsrc, decodebin, queue, and appsink
+    # Patch gst_helper._create_element to intercept rtspsrc, decodebin, and queue
     _orig_create_element = getattr(gst_helper, "_create_element", None)
     if _orig_create_element is not None:
         def patched_create_element(element: dict[str, Any]) -> Any:
@@ -204,13 +186,14 @@ def _patch_voyager_stream_input() -> None:
             inst = element.get("instance", "")
             if inst == "rtspsrc":
                 # Critical RTSP stability parameters for continuous IP camera streaming:
-                # 1. do-rtcp=True: IP camera requires periodic RTCP feedback to maintain session.
+                # 1. do-rtcp=False: IP camera rarely sends RTCP packets over interleaved TCP;
+                #    disabling RTCP prevents GStreamer rtpsession from hanging on preroll.
                 # 2. do-rtsp-keep-alive=True: Periodically sends GET_PARAMETER/OPTIONS keep-alives to port 554,
                 #    preventing the camera's RTSP server from closing the connection after its 15-30s session timeout.
                 # 3. tcp-timeout=10000000: Sets 10s timeout in microseconds.
                 # 4. drop-on-latency=True: Drops late frames during network bursts instead of building latency.
                 for prop_name, prop_val in [
-                    ("do-rtcp", True),
+                    ("do-rtcp", False),
                     ("do-rtsp-keep-alive", True),
                     ("tcp-timeout", 10000000),
                     ("drop-on-latency", True),
@@ -222,25 +205,16 @@ def _patch_voyager_stream_input() -> None:
 
             elif inst == "queue":
                 # Ensure queues feeding the AIPU never accumulate backlog.
-                # max-size-buffers=1 with leaky=2 (downstream) ensures that when the camera produces
+                # max-size-buffers=2 with leaky=2 (downstream) ensures that when the camera produces
                 # frames faster than the Metis AIPU infers (e.g. 15fps camera vs 10fps AIPU),
-                # excess incoming frames are dropped immediately at the queue, completely preventing
-                # latency accumulation and Level-Zero -1301 wait kernel timeouts.
+                # excess incoming frames are dropped at the queue, completely preventing
+                # latency accumulation and Level-Zero -1301 wait kernel timeouts, while
+                # allowing the initial preroll frame to pass through.
                 for prop_name, prop_val in [
-                    ("max-size-buffers", 1),
+                    ("max-size-buffers", 2),
                     ("max-size-bytes", 0),
                     ("max-size-time", 0),
                     ("leaky", 2),
-                ]:
-                    try:
-                        elem.set_property(prop_name, prop_val)
-                    except Exception:
-                        pass
-
-            elif inst == "appsink":
-                for prop_name, prop_val in [
-                    ("max-buffers", 1),
-                    ("drop", True),
                 ]:
                     try:
                         elem.set_property(prop_name, prop_val)
@@ -311,7 +285,7 @@ def _patch_voyager_stream_input() -> None:
             'user-pw': f"{password}",
             'latency': max(latency, 200),
             'drop-on-latency': True,
-            'do-rtcp': True,
+            'do-rtcp': False,
             'do-rtsp-keep-alive': True,
             'tcp-timeout': 10000000,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
