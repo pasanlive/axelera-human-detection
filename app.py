@@ -99,8 +99,8 @@ def main():
     from src.utils.hw_diag import enable_crash_handler, get_watchdog
     enable_crash_handler()
 
-    if args.reload_firmware:
-        get_watchdog().ensure_device_ready(force=True)
+    # Check device health and recover firmware if prior MSI timeout is detected in kernel logs
+    get_watchdog().ensure_device_ready(force=args.reload_firmware)
 
     if args.debug:
         os.environ["ZE_DEBUG"] = "1"

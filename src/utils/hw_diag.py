@@ -205,10 +205,12 @@ class HardwareWatchdog:
                 if res.returncode == 0:
                     out = res.stdout.strip().replace("\n", " | ")
                     print(f"[METIS HW] Firmware reloaded: {out}")
+                    time.sleep(1.0)
                 else:
                     res2 = subprocess.run([axdev, "--refresh"], capture_output=True, text=True, timeout=12)
                     out2 = (res2.stdout or res2.stderr).strip().replace("\n", " | ")
                     print(f"[METIS HW] Device refreshed: {out2}")
+                    time.sleep(0.5)
         except Exception as e:
             print(f"[METIS HW] Note: Device check skipped ({e})")
         return True
