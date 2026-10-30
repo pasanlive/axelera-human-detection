@@ -92,11 +92,15 @@ def main():
     parser.add_argument("--no-https", action="store_true", help="Disable HTTPS mode and run plain HTTP server")
     parser.add_argument("--cert", type=str, default=None, help="SSL certificate filepath")
     parser.add_argument("--key", type=str, default=None, help="SSL private key filepath")
+    parser.add_argument("--reload-firmware", action="store_true", help="Force reload Metis AIPU firmware before startup")
     args = parser.parse_args()
 
     # Enable crash handler for C++ abort / L0::Exception
-    from src.utils.hw_diag import enable_crash_handler
+    from src.utils.hw_diag import enable_crash_handler, get_watchdog
     enable_crash_handler()
+
+    if args.reload_firmware:
+        get_watchdog().ensure_device_ready(force=True)
 
     if args.debug:
         os.environ["ZE_DEBUG"] = "1"

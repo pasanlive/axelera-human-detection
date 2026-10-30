@@ -13,6 +13,7 @@ from __future__ import annotations
 import faulthandler
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -179,12 +180,44 @@ class HardwareWatchdog:
         except Exception as e:
             print(f"[KERNEL STATUS] Could not read /sys/module/metis: {e}")
 
+    def ensure_device_ready(self, force: bool = False) -> bool:
+        """Checks if the Metis AIPU is ready. If a prior MSI timeout is detected in recent kernel logs,
+        automatically reloads firmware using 'axdevice --reload-firmware' to prevent return code -1402."""
+        try:
+            axdev = shutil.which("axdevice")
+            if not axdev:
+                sdk_axdev = Path.home() / "voyager-sdk" / "venv" / "bin" / "axdevice"
+                if sdk_axdev.exists():
+                    axdev = str(sdk_axdev)
+            if not axdev:
+                return True
+
+            recent_k = self.get_dmesg_tail(40)
+            msi_timeout = any("IRQ MSI timeout" in l for l in recent_k)
+            dev_missing = not os.path.exists("/dev/metis-0:1:0")
+
+            if force or msi_timeout or dev_missing:
+                reason = "force requested" if force else ("prior IRQ MSI timeout detected in dmesg" if msi_timeout else "device node missing")
+                print(f"[METIS HW] Reloading AIPU firmware ({reason})...")
+                res = subprocess.run([axdev, "--reload-firmware"], capture_output=True, text=True, timeout=12)
+                if res.returncode == 0:
+                    out = res.stdout.strip().replace("\n", " | ")
+                    print(f"[METIS HW] Firmware reloaded: {out}")
+                else:
+                    res2 = subprocess.run([axdev, "--refresh"], capture_output=True, text=True, timeout=12)
+                    out2 = (res2.stdout or res2.stderr).strip().replace("\n", " | ")
+                    print(f"[METIS HW] Device refreshed: {out2}")
+        except Exception as e:
+            print(f"[METIS HW] Note: Device check skipped ({e})")
+        return True
+
     def start(self) -> None:
         """Starts the background diagnostic watchdog thread."""
         with self._lock:
             if self._running:
                 return
             self._running = True
+            self.ensure_device_ready()
             self.disable_pcie_aspm()
             self.optimize_network_buffers()
             self.optimize_kernel_driver()
