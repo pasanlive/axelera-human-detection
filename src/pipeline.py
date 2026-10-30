@@ -472,6 +472,8 @@ class MultiCameraPipeline:
         the largest face currently visible on ``cam_id`` (no extra inference)."""
         if not name:
             return False, "Identity name is required"
+        if not self.is_model_enabled("face_recognizer"):
+            return False, "Face recognition is disabled in the active pipeline (running object tracker)."
         emb = None
         if image is not None:
             try:

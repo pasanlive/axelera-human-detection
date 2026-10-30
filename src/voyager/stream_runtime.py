@@ -818,6 +818,12 @@ class VoyagerRuntime(BaseRuntime):
         NOTE: this opens a second, short-lived InferenceStream next to the live one.
         If the device cannot host both, prefer enrolling from a live camera frame.
         """
+        if self.is_running:
+            raise RuntimeError(
+                "Face embedding from an uploaded image cannot run while the live camera "
+                "stream is actively running on the Metis AIPU. Please enroll from a live "
+                "camera frame instead."
+            )
         import cv2
 
         path = self.networks_dir / "upside-face-enroll.yaml"
@@ -834,6 +840,15 @@ class VoyagerRuntime(BaseRuntime):
                                           aipu_cores=1, frames=1, timeout=30)
             if self.build_root:
                 kwargs["build_root"] = self.build_root
+            try:
+                from axelera.app import config as ax_config
+                kwargs["hardware_caps"] = ax_config.HardwareCaps(
+                    opencl=ax_config.HardwareEnable.disable,
+                    opengl=ax_config.HardwareEnable.disable,
+                    vaapi=ax_config.HardwareEnable.disable,
+                )
+            except Exception:
+                pass
             stream = self.sdk.create_inference_stream(**kwargs)
             try:
                 for fr in stream:

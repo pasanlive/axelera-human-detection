@@ -8,7 +8,7 @@ cameras:
 - id: cam_01
   name: Front Entrance
   enabled: true
-  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
+  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/main/av_stream
   source_sub: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
   main_resolution:
   - 2304
@@ -19,8 +19,8 @@ cameras:
   native_fps: 15
 - id: cam_02
   name: Lobby East
-  enabled: false
-  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/main/av_stream
+  enabled: true
+  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
   source_sub: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
   main_resolution:
   - 1920
