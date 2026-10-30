@@ -215,9 +215,8 @@ class HardwareWatchdog:
             recent_k = self.get_dmesg_tail(40)
             msi_timeout = any(("IRQ MSI timeout" in l or "Failed to wait for MSI" in l) for l in recent_k)
             dev_missing = not os.path.exists("/dev/metis-0:1:0")
-            needs_single_msi_fix = (curr_single_msi == "0")
 
-            if force or msi_timeout or dev_missing or needs_single_msi_fix:
+            if force or msi_timeout or dev_missing:
                 reasons = []
                 if force:
                     reasons.append("force requested")
@@ -225,18 +224,8 @@ class HardwareWatchdog:
                     reasons.append("prior IRQ MSI timeout in dmesg")
                 if dev_missing:
                     reasons.append("device node missing")
-                if needs_single_msi_fix:
-                    reasons.append("enforcing single_msi=1 for RK3588 stability")
                 reason_str = ", ".join(reasons)
                 print(f"[METIS HW] Hardware/driver re-initialization needed ({reason_str})...")
-
-                # Ensure /etc/modprobe.d/metis.conf has single_msi=1 via tee
-                try:
-                    conf_content = "options metis single_msi=1\noptions axl single_msi=1\n"
-                    subprocess.run(["sudo", "-n", "tee", "/etc/modprobe.d/metis.conf"],
-                                   input=conf_content, text=True, capture_output=True, timeout=3)
-                except Exception:
-                    pass
 
                 # Print module parameter capabilities from modinfo
                 try:
@@ -248,20 +237,21 @@ class HardwareWatchdog:
                 except Exception:
                     pass
 
-                # Reload the kernel driver module if single_msi=0 or after an MSI timeout
-                if needs_single_msi_fix or msi_timeout:
-                    print(f"[METIS HW] Reloading kernel module '{active_mod}' with single_msi=1...")
-                    subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
-                    res_rm = subprocess.run(["sudo", "-n", "modprobe", "-r", "metis", "axl"], capture_output=True, text=True, timeout=5)
-                    if res_rm.returncode != 0:
-                        subprocess.run(["sudo", "-n", "rmmod", "-f", "metis", "axl"], capture_output=True, text=True, timeout=5)
-                    time.sleep(0.5)
+                # Reload the kernel driver module after an MSI timeout or if device node is missing
+                print(f"[METIS HW] Ensuring kernel module '{active_mod}' is loaded...")
+                subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
+                res_rm = subprocess.run(["sudo", "-n", "modprobe", "-r", "metis", "axl"], capture_output=True, text=True, timeout=5)
+                if res_rm.returncode != 0:
+                    subprocess.run(["sudo", "-n", "rmmod", "-f", "metis", "axl"], capture_output=True, text=True, timeout=5)
+                time.sleep(0.5)
 
-                    res_load = subprocess.run(["sudo", "-n", "modprobe", active_mod, "single_msi=1"], capture_output=True, text=True, timeout=5)
-                    if res_load.returncode != 0:
-                        alt_mod = "axl" if active_mod == "metis" else "metis"
-                        subprocess.run(["sudo", "-n", "modprobe", alt_mod, "single_msi=1"], capture_output=True, text=True, timeout=5)
-                    time.sleep(1.5)
+                # Try loading with single_msi=1, fallback to default modprobe metis
+                res_load = subprocess.run(["sudo", "-n", "modprobe", active_mod, "single_msi=1"], capture_output=True, text=True, timeout=5)
+                if res_load.returncode != 0:
+                    # Remove any faulty modprobe.d file that could block loading
+                    subprocess.run(["sudo", "-n", "rm", "-f", "/etc/modprobe.d/metis.conf"], capture_output=True, text=True, timeout=2)
+                    res_load = subprocess.run(["sudo", "-n", "modprobe", active_mod], capture_output=True, text=True, timeout=5)
+                time.sleep(1.5)
 
                 # Reload AIPU firmware
                 axdev = shutil.which("axdevice")
