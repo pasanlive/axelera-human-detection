@@ -125,7 +125,7 @@ class HardwareWatchdog:
         self._initial_dmesg_logged = False
 
     def disable_pcie_aspm(self) -> bool:
-        """Checks Linux kernel ASPM policy without modifying PCIe link registers on active devices."""
+        """Configures Linux kernel ASPM policy and PCIe power control via sysfs without link retraining."""
         try:
             pol_path = Path("/sys/module/pcie_aspm/parameters/policy")
             if pol_path.exists():
@@ -136,6 +136,14 @@ class HardwareWatchdog:
                     print("[PCIe STATUS] Set Linux PCIe ASPM policy to 'performance'.")
                 else:
                     print(f"[PCIe STATUS] Linux PCIe ASPM policy is '{curr_pol}'.")
+
+            # Prevent PCIe root and Metis endpoints from entering D3cold or runtime sleep
+            subprocess.run(["sudo", "-n", "sh", "-c",
+                            "for d in /sys/bus/pci/devices/*; do "
+                            "[ -f $d/d3cold_allowed ] && echo 0 > $d/d3cold_allowed 2>/dev/null; "
+                            "[ -f $d/power/control ] && echo on > $d/power/control 2>/dev/null; "
+                            "done"],
+                           capture_output=True, text=True, timeout=2)
         except Exception:
             pass
         return True
@@ -172,6 +180,7 @@ class HardwareWatchdog:
             if self._running:
                 return
             self._running = True
+            self.disable_pcie_aspm()
             self.optimize_network_buffers()
             self.optimize_kernel_driver()
             self._thread = threading.Thread(target=self._monitor_loop, name="hw-watchdog", daemon=True)

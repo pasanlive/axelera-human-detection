@@ -267,11 +267,11 @@ def _patch_voyager_stream_input() -> None:
             'location': f"{loc}",
             'user-id': f"{username}",
             'user-pw': f"{password}",
-            'latency': max(latency, 100),
-            'drop-on-latency': True,
-            'do-rtcp': False,
+            'latency': max(latency, 200),
+            'drop-on-latency': False,
+            'do-rtcp': True,
             'do-rtsp-keep-alive': True,
-            'tcp-timeout': 60000000,
+            'tcp-timeout': 10000000,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
         rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "all") or "all").lower()
