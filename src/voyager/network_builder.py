@@ -205,7 +205,7 @@ class NetworkSpec:
     lpr: bool = False
 
     def __post_init__(self):
-        if self.pose_model not in POSE_MODELS:
+        if self.pose_model not in POSE_MODELS and self.pose_model != "yolov5m-v7-coco-tracker":
             raise ValueError(f"Unknown pose model {self.pose_model!r}; expected one of {POSE_MODELS}")
 
     @property

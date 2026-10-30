@@ -149,6 +149,13 @@ class TestCapacityPlanner(unittest.TestCase):
         self.assertTrue(plan.groups[0].sources[0].startswith("tile[size=640,overlap=10]:rtsp://cam0/main"))
         self.assertEqual(plan.groups[0].network, "upside-yolov8spose")
 
+    def test_tracker_profile(self):
+        plan = CapacityPlanner().plan(_cams(1), profile="tracker")
+        self.assertEqual(plan.tier.name, "tracker")
+        self.assertEqual(plan.tier.pose_model, "yolov5m-v7-coco-tracker")
+        self.assertEqual(plan.groups[0].network, "yolov5m-v7-coco-tracker")
+        self.assertEqual(plan.groups[0].sources[0], "rtsp://cam0/sub")
+
     def test_many_cameras_with_faces_scale_down(self):
         planner = CapacityPlanner()
         plan15 = planner.plan(_cams(15, frozenset({"face"})))
