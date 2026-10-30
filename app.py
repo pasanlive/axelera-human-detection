@@ -95,6 +95,10 @@ def main():
     parser.add_argument("--reload-firmware", action="store_true", help="Force reload Metis AIPU firmware before startup")
     args = parser.parse_args()
 
+    # Initialize daily rolling logger with 30-day automatic retention
+    from src.utils.logger import setup_daily_logger
+    setup_daily_logger(log_dir="data/logs", max_retention_days=30, capture_stdout=True)
+
     # Enable crash handler for C++ abort / L0::Exception
     from src.utils.hw_diag import enable_crash_handler, get_watchdog
     enable_crash_handler()

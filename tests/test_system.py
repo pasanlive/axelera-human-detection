@@ -468,11 +468,23 @@ class TestWebApi(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(sys_info["host"]["product_name"], "Upside AI Box")
 
+                # logs endpoints
+                status, logs_list = srv.handle_api("GET", "/api/logs/list", {}, {})
+                self.assertEqual(status, 200)
+                self.assertIn("logs", logs_list)
+                self.assertIn("retention_days", logs_list)
+
+                status, logs_view = srv.handle_api("GET", "/api/logs/view", {"filename": logs_list.get("current")}, {})
+                self.assertEqual(status, 200)
+                self.assertIn("content", logs_view)
+
                 if srv.app:
                     client = srv.app.test_client()
                     self.assertEqual(client.get("/").status_code, 200)
                     self.assertEqual(client.get("/settings").status_code, 200)
                     self.assertEqual(client.get("/api/status").status_code, 200)
+                    self.assertEqual(client.get("/api/logs/list").status_code, 200)
+                    self.assertEqual(client.get("/api/logs/download").status_code, 200)
                     self.assertEqual(client.post("/api/models/toggle",
                                                  json={"model_id": "pose_estimator", "enabled": False}).status_code, 200)
                     self.assertFalse(p.is_model_enabled("pose_estimator"))
@@ -558,6 +570,50 @@ class TestWebApi(unittest.TestCase):
         # check_config_yaml reads camera stream
         cam_url = check_config_yaml()
         self.assertTrue(cam_url is None or cam_url.startswith("rtsp://"))
+
+    def test_daily_rolling_logger_and_retention(self):
+        """Verifies daily rolling logger creation, record capture, line reading, and 30-day retention pruning."""
+        from src.utils.logger import DailyRollingLogger
+        import datetime
+
+        with tempfile.TemporaryDirectory() as tmp_log_dir:
+            logger = DailyRollingLogger(log_dir=tmp_log_dir, max_retention_days=30, capture_stdout=False)
+            logger.write_record("Line 1: System started.\n")
+            logger.write_record("Line 2: Metis AIPU online.\n")
+
+            logs = logger.list_logs()
+            self.assertEqual(len(logs), 1)
+            self.assertTrue(logs[0]["is_current"])
+
+            # Read log
+            res = logger.read_log(logs[0]["filename"], tail=10)
+            self.assertIn("Metis AIPU online", res["content"])
+            self.assertEqual(res["total_lines"], 2)
+
+            # Create mock old log beyond 30 days retention
+            old_date = (datetime.date.today() - datetime.timedelta(days=35)).isoformat()
+            old_file = os.path.join(tmp_log_dir, f"app_{old_date}.log")
+            with open(old_file, "w") as f:
+                f.write("Old log message\n")
+
+            # Create mock recent log within 30 days
+            recent_date = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
+            recent_file = os.path.join(tmp_log_dir, f"app_{recent_date}.log")
+            with open(recent_file, "w") as f:
+                f.write("Recent log message\n")
+
+            self.assertEqual(len(logger.list_logs()), 3)
+
+            # Run cleanup
+            removed = logger.cleanup_old_logs(max_days=30)
+            self.assertIn(f"app_{old_date}.log", removed)
+            self.assertFalse(os.path.exists(old_file))
+            self.assertTrue(os.path.exists(recent_file))
+
+            # Verify list_logs only has 2 files now
+            remaining = [l["filename"] for l in logger.list_logs()]
+            self.assertIn(f"app_{recent_date}.log", remaining)
+            self.assertNotIn(f"app_{old_date}.log", remaining)
 
 
 if __name__ == "__main__":

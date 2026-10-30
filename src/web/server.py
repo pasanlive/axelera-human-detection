@@ -373,6 +373,28 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
                 pass
             return
 
+        if method == "GET" and (path == "/api/logs/download" or path.startswith("/api/logs/download/")):
+            from src.utils.logger import get_logger
+            fname = query.get("filename")
+            if not fname and path.startswith("/api/logs/download/"):
+                fname = path[len("/api/logs/download/"):].split("/")[0]
+            filepath, safe_name = get_logger().get_log_filepath(fname)
+            if not filepath or not os.path.isfile(filepath):
+                self._send_json(404, {"error": "Log file not found"})
+                return
+            try:
+                with open(filepath, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-type", "text/plain; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+            return
+
         if method == "GET" and path == "/api/snapshot":
             jpeg = srv.snapshot()
             if not jpeg:
@@ -616,6 +638,25 @@ class WebServer:
             if method == "GET" and path == "/api/system_info":
                 return 200, get_system_info(p)
 
+            # ── logs ────────────────────────────────────────────────────────
+            if method == "GET" and path == "/api/logs/list":
+                import datetime
+                from src.utils.logger import get_logger
+                logger = get_logger()
+                logs = logger.list_logs()
+                today = datetime.date.today().isoformat()
+                return 200, {
+                    "logs": logs,
+                    "current": f"app_{today}.log",
+                    "retention_days": logger.max_retention_days,
+                }
+            if method == "GET" and path == "/api/logs/view":
+                from src.utils.logger import get_logger
+                fname = query.get("filename")
+                tail = int(query.get("tail", 1000)) if query.get("tail") else 1000
+                res = get_logger().read_log(filename=fname, tail=tail)
+                return (200 if "error" not in res else 404), res
+
             # ── auto-update ─────────────────────────────────────────────────
             au = self.auto_updater
             if method == "GET" and path == "/api/update/status":
@@ -674,6 +715,19 @@ class WebServer:
                 return jsonify({"error": "No frame available"}), 404
             return Response(jpeg, mimetype='image/jpeg',
                             headers={"Content-Disposition": f'attachment; filename="snapshot_{int(time.time())}.jpg"'})
+
+        @self.app.route('/api/logs/download')
+        @self.app.route('/api/logs/download/<path:filename>')
+        def api_log_download(filename=None):
+            from src.utils.logger import get_logger
+            fname = filename or request.args.get("filename")
+            filepath, safe_name = get_logger().get_log_filepath(fname)
+            if not filepath or not os.path.isfile(filepath):
+                return jsonify({"error": "Log file not found"}), 404
+            with open(filepath, "rb") as f:
+                data = f.read()
+            return Response(data, mimetype='text/plain; charset=utf-8',
+                            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'})
 
         @self.app.route('/api/<path:sub>', methods=['GET', 'POST', 'DELETE'])
         def api_dispatch(sub):

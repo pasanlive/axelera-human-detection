@@ -1415,6 +1415,9 @@
                     <button class="settings-tab-btn" id="tab-btn-sysinfo" onclick="switchSettingsTab('sysinfo')">
                         <span>🖥️</span> System &amp; Hardware
                     </button>
+                    <button class="settings-tab-btn" id="tab-btn-logs" onclick="switchSettingsTab('logs')">
+                        <span>📋</span> System Logs
+                    </button>
                 </div>
 
                 <!-- Settings Content Panes -->
@@ -1749,6 +1752,61 @@
                             <div>• Linux ASPM State: <span style="color: var(--accent-success);">default [performance] powersave</span></div>
                         </div>
                     </div>
+
+                    <!-- ── PANE 6: SYSTEM LOGS & DIAGNOSTICS ── -->
+                    <div class="settings-pane" id="pane-logs">
+                        <div class="settings-pane-header">
+                            <div class="settings-pane-title"><span>📋</span> System Logs &amp; Diagnostics</div>
+                            <div class="settings-pane-desc">Daily rolling log files with automatic 30-day retention. View active output, select historical dates, and download raw logs.</div>
+                        </div>
+
+                        <!-- Action Bar -->
+                        <div style="background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+                                <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                                    <label class="form-label" style="margin-bottom: 0;">Log File:</label>
+                                    <select id="log-file-select" class="form-select" style="min-width: 240px; font-family: var(--font-mono); font-size: 0.82rem;" onchange="onLogFileChange(this.value)">
+                                        <option value="current">Active Today</option>
+                                    </select>
+                                    <select id="log-tail-select" class="form-select" style="width: auto; font-size: 0.82rem;" onchange="fetchLogContent()">
+                                        <option value="500">Last 500 lines</option>
+                                        <option value="1000" selected>Last 1000 lines</option>
+                                        <option value="5000">Last 5000 lines</option>
+                                        <option value="0">All lines</option>
+                                    </select>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                                    <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--text-muted); cursor: pointer; user-select: none;">
+                                        <input type="checkbox" id="log-autorefresh-toggle" checked onchange="toggleLogAutoRefresh(this.checked)">
+                                        <span>Auto-refresh (3s)</span>
+                                    </label>
+                                    <button class="btn-quick" onclick="fetchLogContent(true)">
+                                        <span>🔄</span> Refresh
+                                    </button>
+                                    <button class="btn-quick primary" onclick="downloadActiveLog()">
+                                        <span>📥</span> Download Log File
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; font-size: 0.75rem; color: var(--text-dim);">
+                                <div>Active File: <b id="log-meta-filename" style="font-family: var(--font-mono); color: var(--accent-primary);">--</b> &bull; Size: <span id="log-meta-size">--</span> &bull; Lines: <span id="log-meta-lines">--</span></div>
+                                <div>Retention Policy: <b style="color: var(--accent-success);">30 Days Maximum</b> (logs beyond 30 days automatically pruned)</div>
+                            </div>
+                        </div>
+
+                        <!-- Quick Search Filter -->
+                        <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; align-items: center;">
+                            <input type="text" id="log-search-filter" class="form-input" placeholder="🔍 Search/filter log lines (e.g. ERROR, STATUS, cam_01, MSI, tracker)..." oninput="filterLogView(this.value)" style="flex: 1; font-family: var(--font-mono); font-size: 0.8rem;">
+                            <button class="btn-quick" onclick="clearLogFilter()" style="padding: 0.45rem 0.75rem; font-size: 0.78rem;">Clear</button>
+                            <button class="btn-quick" onclick="scrollLogToBottom()" style="padding: 0.45rem 0.75rem; font-size: 0.78rem;">⬇ Bottom</button>
+                        </div>
+
+                        <!-- Terminal Console Output Box -->
+                        <div style="background: #030610; border: 1px solid var(--border-subtle); border-radius: 12px; padding: 0.85rem 1rem; position: relative; overflow: hidden; box-shadow: inset 0 2px 10px rgba(0,0,0,0.6);">
+                            <pre id="log-console-output" style="font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.45; color: #cbd5e1; max-height: 560px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin: 0; padding: 0.25rem;">Loading system logs...</pre>
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
@@ -1863,6 +1921,7 @@
                 fetchDisplaySettings();
                 fetchUpdateStatus();
                 fetchModels();
+                fetchLogsList();
             }
         }
 
@@ -1879,6 +1938,10 @@
             const btn = document.getElementById('tab-btn-' + tabId);
             if (pane) pane.classList.add('active');
             if (btn) btn.classList.add('active');
+
+            if (tabId === 'logs') {
+                fetchLogsList();
+            }
         }
 
         // ── Toast Notification ────────────────────────────────────────────────
@@ -2704,6 +2767,175 @@
                 statusDiv.style.color = 'var(--accent-danger)';
                 statusDiv.innerText = data.error || 'Failed to detect a face.';
             }
+        }
+
+        // ── System Logs & Diagnostics ─────────────────────────────────────────
+        let activeLogFilename = 'current';
+        let rawLogLines = [];
+        let logAutoRefreshTimer = null;
+
+        function fetchLogsList() {
+            fetch('/api/logs/list')
+                .then(r => r.json())
+                .then(data => {
+                    const select = document.getElementById('log-file-select');
+                    if (!select) return;
+
+                    const prevSelected = select.value;
+                    const logs = data.logs || [];
+
+                    let html = '';
+                    if (logs.length === 0) {
+                        html = '<option value="current">app_today.log (Active)</option>';
+                    } else {
+                        logs.forEach(l => {
+                            const label = l.is_current ? `${l.filename} (Today - Active) [${l.size_formatted}]` : `${l.filename} [${l.size_formatted}]`;
+                            html += `<option value="${l.filename}">${label}</option>`;
+                        });
+                    }
+                    select.innerHTML = html;
+
+                    if (prevSelected && Array.from(select.options).some(o => o.value === prevSelected)) {
+                        select.value = prevSelected;
+                    } else {
+                        select.value = logs.length > 0 ? logs[0].filename : 'current';
+                    }
+                    activeLogFilename = select.value;
+                    fetchLogContent();
+                })
+                .catch(err => console.error('Error fetching logs list:', err));
+        }
+
+        function onLogFileChange(val) {
+            activeLogFilename = val;
+            const autoToggle = document.getElementById('log-autorefresh-toggle');
+            const isToday = val === 'current' || val.includes(new Date().toISOString().slice(0, 10));
+            if (autoToggle) {
+                if (!isToday) {
+                    autoToggle.checked = false;
+                    toggleLogAutoRefresh(false);
+                } else {
+                    autoToggle.checked = true;
+                    toggleLogAutoRefresh(true);
+                }
+            }
+            fetchLogContent();
+        }
+
+        function fetchLogContent(verbose = false) {
+            const select = document.getElementById('log-file-select');
+            const tailSelect = document.getElementById('log-tail-select');
+            const file = select ? select.value : activeLogFilename;
+            const tail = tailSelect ? tailSelect.value : 1000;
+
+            const url = `/api/logs/view?filename=${encodeURIComponent(file)}&tail=${tail}`;
+            fetch(url)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('log-console-output').innerText = `Error loading log: ${data.error}`;
+                        if (verbose) showToast(data.error, true);
+                        return;
+                    }
+
+                    document.getElementById('log-meta-filename').innerText = data.filename || file;
+                    document.getElementById('log-meta-size').innerText = data.size_formatted || '--';
+                    document.getElementById('log-meta-lines').innerText = `${data.lines_returned} / ${data.total_lines}`;
+
+                    const rawContent = data.content || '';
+                    rawLogLines = rawContent ? rawContent.split('\n') : [];
+
+                    renderLogLines();
+                    if (verbose) showToast(`Loaded ${data.lines_returned} lines`);
+                })
+                .catch(err => {
+                    console.error('Error loading log content:', err);
+                    if (verbose) showToast('Failed to load log', true);
+                });
+        }
+
+        function renderLogLines() {
+            const consoleEl = document.getElementById('log-console-output');
+            if (!consoleEl) return;
+
+            const filterInput = document.getElementById('log-search-filter');
+            const query = filterInput ? filterInput.value.trim().toLowerCase() : '';
+
+            let linesToDisplay = rawLogLines;
+            if (query) {
+                linesToDisplay = rawLogLines.filter(l => l.toLowerCase().includes(query));
+            }
+
+            if (linesToDisplay.length === 0) {
+                consoleEl.innerHTML = query ? `<span style="color:var(--text-dim);">No log lines match filter "${escapeHtml(query)}"</span>` : `<span style="color:var(--text-dim);">(Log file is currently empty)</span>`;
+                return;
+            }
+
+            const formatted = linesToDisplay.map(line => {
+                let escaped = escapeHtml(line);
+                if (line.includes('[FATAL') || line.includes('[ERROR')) {
+                    return `<span style="color: #f87171; font-weight: 600;">${escaped}</span>`;
+                } else if (line.includes('[WARN') || line.includes('[WARNING')) {
+                    return `<span style="color: #fbbf24;">${escaped}</span>`;
+                } else if (line.includes('[STATUS]')) {
+                    return `<span style="color: #38bdf8;">${escaped}</span>`;
+                } else if (line.includes('[METIS') || line.includes('[DIAG]')) {
+                    return `<span style="color: #a78bfa;">${escaped}</span>`;
+                } else if (line.includes('[RUNNING') || line.includes('[STARTING')) {
+                    return `<span style="color: #4ade80; font-weight: 600;">${escaped}</span>`;
+                }
+                return escaped;
+            }).join('\n');
+
+            const wasAtBottom = (consoleEl.scrollHeight - consoleEl.scrollTop) <= (consoleEl.clientHeight + 60);
+            consoleEl.innerHTML = formatted;
+
+            if (wasAtBottom) {
+                consoleEl.scrollTop = consoleEl.scrollHeight;
+            }
+        }
+
+        function filterLogView(keyword) {
+            renderLogLines();
+        }
+
+        function clearLogFilter() {
+            const filterInput = document.getElementById('log-search-filter');
+            if (filterInput) filterInput.value = '';
+            renderLogLines();
+        }
+
+        function scrollLogToBottom() {
+            const consoleEl = document.getElementById('log-console-output');
+            if (consoleEl) consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+
+        function downloadActiveLog() {
+            const select = document.getElementById('log-file-select');
+            const file = select ? select.value : activeLogFilename;
+            window.open(`/api/logs/download?filename=${encodeURIComponent(file)}`, '_blank');
+        }
+
+        function toggleLogAutoRefresh(enabled) {
+            if (logAutoRefreshTimer) {
+                clearInterval(logAutoRefreshTimer);
+                logAutoRefreshTimer = null;
+            }
+            if (enabled) {
+                logAutoRefreshTimer = setInterval(() => {
+                    const pane = document.getElementById('pane-logs');
+                    if (pane && pane.classList.contains('active')) {
+                        fetchLogContent();
+                    }
+                }, 3000);
+            }
+        }
+
+        function escapeHtml(str) {
+            return (str || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
         }
 
         // ── Initialization & Polling Loops ────────────────────────────────────
