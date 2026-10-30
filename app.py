@@ -113,15 +113,9 @@ def main():
     # 1. Disable OpenCL preprocessing on host GPU (ARM Mali G610) to avoid memory queue conflicts
     # 2. Disable double buffering to prevent command list build-up and -1301 wait kernel timeouts
     # 3. Disable zero-copy dmabuf to prevent CMA heap fragmentation with software video decoding
-    # 4. Enforce TCP RTSP transport for lossless frame delivery without dropped reference frames
     os.environ.setdefault("AX_DISABLE_OPENCL", "1")
     os.environ.setdefault("AX_OPENCL_PREFERENCE", "NONE")
-    os.environ.setdefault("AXELERA_USE_CL_DOUBLE_BUFFER", "0")
-    os.environ.setdefault("AXELERA_USE_DOUBLE_BUFFER", "0")
-    os.environ.setdefault("AXELERA_USE_DMABUF", "0")
     os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
-    os.environ.setdefault("ZE_AFFINITY_MASK", "0")
-    os.environ.setdefault("ZE_ENABLE_PCI_ID_DEVICE_ORDER", "1")
 
     if args.headless or not os.environ.get("DISPLAY"):
         # Explicit headless mode: prevent X11 auth warnings and Pyglet display probe errors

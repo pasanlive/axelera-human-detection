@@ -163,12 +163,8 @@ def _patch_voyager_stream_input() -> None:
     # 1. Disable OpenCL to eliminate Mali GPU unified memory queue collisions with Metis Level-Zero.
     # 2. Disable double-buffering so inference executes synchronously per frame (queue depth = 1).
     # 3. Disable zero-copy dmabuf to prevent CMA heap allocation fragmentation on raw CPU frames.
-    # 4. Default to TCP for RTSP to guarantee in-order delivery without dropped packets.
     os.environ["AX_DISABLE_OPENCL"] = "1"
     os.environ["AX_OPENCL_PREFERENCE"] = "NONE"
-    os.environ["AXELERA_USE_CL_DOUBLE_BUFFER"] = "0"
-    os.environ["AXELERA_USE_DOUBLE_BUFFER"] = "0"
-    os.environ["AXELERA_USE_DMABUF"] = "0"
     os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
 
     try:
@@ -204,17 +200,14 @@ def _patch_voyager_stream_input() -> None:
                         pass
 
             elif inst == "queue":
-                # Ensure queues feeding the AIPU never accumulate backlog.
-                # max-size-buffers=2 with leaky=2 (downstream) ensures that when the camera produces
-                # frames faster than the Metis AIPU infers (e.g. 15fps camera vs 10fps AIPU),
-                # excess incoming frames are dropped at the queue, completely preventing
-                # latency accumulation and Level-Zero -1301 wait kernel timeouts, while
-                # allowing the initial preroll frame to pass through.
+                # Standard Axelera golden-gst queue configuration (max-size-buffers=4, no dropping).
+                # Live rate-limiting and drop-on-latency are handled upstream at the network layer by rtspsrc,
+                # ensuring full buffer integrity when feeding axinferencenet.
                 for prop_name, prop_val in [
-                    ("max-size-buffers", 2),
+                    ("max-size-buffers", 4),
                     ("max-size-bytes", 0),
                     ("max-size-time", 0),
-                    ("leaky", 2),
+                    ("leaky", 0),
                 ]:
                     try:
                         elem.set_property(prop_name, prop_val)

@@ -56,8 +56,8 @@ voyager:
   rtsp_latency_ms: 200 # 200ms jitter buffer for smooth LAN streaming
   disable_tracers: true # Disables background axtrace processes to eliminate concurrent /dev/metis* PCIe access
   low_latency: false
-  aipu_clock_mhz: 600 # 600 MHz profile ensures M.2 voltage rail stability under multi-core inference
-  mvm_utilization: 20 # 20% limit prevents RK3588 M.2 slot voltage droop / -1301 hardware timeouts
+  aipu_clock_mhz: null # Keep null (default native 800 MHz); setting dynamic clock triggers hardware PLL timeout and hangs for 600s
+  mvm_utilization: null # Keep null (default 100%); avoids hardware board manager reinit timeout
   specified_frame_rate: 0 # 0 prevents videorate duplicate buffer crash (inplace_addstreamid)
   reconnect_interval_s: 5
   thresholds:
