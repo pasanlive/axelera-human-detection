@@ -8,7 +8,7 @@ cameras:
 - id: cam_01
   name: Front Entrance
   enabled: true
-  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/main/av_stream
+  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
   source_sub: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
   main_resolution:
   - 2304
@@ -57,7 +57,7 @@ voyager:
   disable_tracers: true # Disables background axtrace processes to eliminate concurrent /dev/metis* PCIe access
   low_latency: false
   aipu_clock_mhz: null # Native 800 MHz profile prevents kernel MSI interrupt timeouts
-  mvm_utilization: 20 # Limits MVM utilization to 20% per Axelera M.2 power envelope recommendations
+  mvm_utilization: 30 # Limits MVM utilization to 30% to prevent RK3588 M.2 slot voltage droop / brownouts
   specified_frame_rate: 0 # 0 prevents videorate duplicate buffer crash (inplace_addstreamid)
   reconnect_interval_s: 5
   thresholds:
@@ -73,7 +73,7 @@ voyager:
     min_hits: 3
     iou_threshold: 0.3
 capacity:
-  profile: balanced # 'balanced': sub-stream + yolov8npose (15 FPS), ultra-stable, INT8 on Metis AIPU
+  profile: auto # Selects high tier with upside-yolov8spose
   target_utilization: 0.85
   derating: 0.6
   decode_mpx_per_s: 1000
