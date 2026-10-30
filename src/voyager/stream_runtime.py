@@ -182,16 +182,12 @@ def _patch_voyager_stream_input() -> None:
             inst = element.get("instance", "")
             if inst == "rtspsrc":
                 # Critical RTSP stability parameters for continuous IP camera streaming:
-                # 1. do-rtcp=False: IP camera rarely sends RTCP packets over interleaved TCP;
-                #    disabling RTCP prevents GStreamer rtpsession from hanging on preroll.
-                # 2. do-rtsp-keep-alive=True: Periodically sends GET_PARAMETER/OPTIONS keep-alives to port 554,
-                #    preventing the camera's RTSP server from closing the connection after its 15-30s session timeout.
-                # 3. tcp-timeout=10000000: Sets 10s timeout in microseconds.
-                # 4. drop-on-latency=True: Drops late frames during network bursts instead of building latency.
+                # 1. do-rtsp-keep-alive=True: Periodically sends keep-alives to prevent camera session timeout.
+                # 2. tcp-timeout=60000000: 60s timeout prevents false reconnect loops during camera GOP intervals.
+                # 3. drop-on-latency=True: Drops late frames during network bursts instead of building latency.
                 for prop_name, prop_val in [
-                    ("do-rtcp", False),
                     ("do-rtsp-keep-alive", True),
-                    ("tcp-timeout", 10000000),
+                    ("tcp-timeout", 60000000),
                     ("drop-on-latency", True),
                 ]:
                     try:
@@ -245,8 +241,10 @@ def _patch_voyager_stream_input() -> None:
     if _orig_on_pad_added is not None:
         def patched_on_pad_added(element: Any, newPad: Any, sinkPad: Any, prop: Any, key: Any) -> None:
             if sinkPad.is_linked() and not newPad.is_linked():
-                # Secondary pad arrived while primary sink pad is already linked:
-                # divert to fakesink to avoid 'streaming stopped, reason not-linked (-1)'
+                # Secondary pad (e.g. camera audio track) arrived while primary video sink pad is already linked:
+                # Divert immediately to fakesink with sync=False and async=False.
+                # async=False is MANDATORY: without it, fakesink defaults to async=True and blocks
+                # pipeline preroll indefinitely waiting for non-existent or delayed audio buffers.
                 try:
                     import gi
                     gi.require_version("Gst", "1.0")
@@ -258,6 +256,7 @@ def _patch_voyager_stream_input() -> None:
                         fakesink = Gst.ElementFactory.make("fakesink", None)
                         if fakesink:
                             fakesink.set_property("sync", False)
+                            fakesink.set_property("async", False)
                             pipeline.add(fakesink)
                             fakesink.sync_state_with_parent()
                             fsink_pad = fakesink.get_static_pad("sink")
@@ -278,9 +277,8 @@ def _patch_voyager_stream_input() -> None:
             'user-pw': f"{password}",
             'latency': max(latency, 200),
             'drop-on-latency': True,
-            'do-rtcp': False,
             'do-rtsp-keep-alive': True,
-            'tcp-timeout': 10000000,
+            'tcp-timeout': 60000000,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
         rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "all") or "all").lower()
