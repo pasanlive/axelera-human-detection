@@ -217,7 +217,6 @@ class HardwareWatchdog:
             if self._running:
                 return
             self._running = True
-            self.ensure_device_ready()
             self.disable_pcie_aspm()
             self.optimize_network_buffers()
             self.optimize_kernel_driver()
