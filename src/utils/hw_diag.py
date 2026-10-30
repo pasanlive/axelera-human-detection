@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 
@@ -175,8 +176,8 @@ class HardwareWatchdog:
                     poll_val = p_poll.read_text().strip() if p_poll.exists() else "unknown"
                     print(f"[KERNEL STATUS] Driver '{mod}' active (single_msi={msi_val}, irq_timeout={to_val}s, dma_timeout={dto_val}s, dma_poll={poll_val}).")
                     return
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[KERNEL STATUS] Could not read /sys/module/metis: {e}")
 
     def start(self) -> None:
         """Starts the background diagnostic watchdog thread."""

@@ -57,7 +57,7 @@ voyager:
   disable_tracers: true # Disables background axtrace processes to eliminate concurrent /dev/metis* PCIe access
   low_latency: false
   aipu_clock_mhz: null # Native 800 MHz profile prevents kernel MSI interrupt timeouts
-  mvm_utilization: null # Full MVM capacity prevents megakernel execution timeouts
+  mvm_utilization: 30 # Limits MVM utilization to 30% to prevent RK3588 M.2 slot voltage droop / brownouts
   specified_frame_rate: 0 # 0 prevents videorate duplicate buffer crash (inplace_addstreamid)
   reconnect_interval_s: 5
   thresholds:
