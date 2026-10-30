@@ -177,18 +177,38 @@ class PreviewHub:
             cv2.putText(blank, "Waiting for camera streams...", (gw // 2 - 220, gh // 2),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 180, 255), 2, cv2.LINE_AA)
             return blank
+        # Determine reference aspect ratio from active tiles (defaulting to standard 16:9)
+        aspect_ratio = 16.0 / 9.0
+        for t in tiles:
+            if t is not None and hasattr(t, "shape") and t.shape[0] > 0 and t.shape[1] > 0:
+                aspect_ratio = float(t.shape[1]) / float(t.shape[0])
+                break
+
         n = len(tiles)
         cols = 1 if n == 1 else 2 if n <= 4 else 3 if n <= 9 else 4
         rows = int(np.ceil(n / cols))
-        tw, th = gw // cols, gh // rows
+
+        tw = gw // cols
+        th = max(1, int(round(tw / aspect_ratio)))
         grid = np.zeros((th * rows, tw * cols, 3), dtype=np.uint8)
+
         for i, t in enumerate(tiles):
-            if t is None or not hasattr(t, "shape"):
+            if t is None or not hasattr(t, "shape") or t.shape[0] == 0 or t.shape[1] == 0:
                 continue
             if t.ndim == 2:
                 t = cv2.cvtColor(t, cv2.COLOR_GRAY2BGR)
             elif t.ndim == 3 and t.shape[2] == 1:
                 t = cv2.cvtColor(t, cv2.COLOR_GRAY2BGR)
+
+            ih, iw = t.shape[:2]
+            scale = min(tw / iw, th / ih)
+            nw = max(1, int(round(iw * scale)))
+            nh = max(1, int(round(ih * scale)))
+            resized = cv2.resize(t, (nw, nh), interpolation=cv2.INTER_AREA)
+
             r, c = divmod(i, cols)
-            grid[r * th:(r + 1) * th, c * tw:(c + 1) * tw] = cv2.resize(t, (tw, th), interpolation=cv2.INTER_AREA)
+            ox = c * tw + (tw - nw) // 2
+            oy = r * th + (th - nh) // 2
+            grid[oy:oy + nh, ox:ox + nw] = resized
+
         return grid

@@ -391,6 +391,22 @@ class TestPipelineSimulated(unittest.TestCase):
         self.assertEqual(out.shape, frame.shape)
         self.assertGreater(int(out.sum()), 0)
 
+    def test_compose_grid_aspect_ratio(self):
+        from src.render.preview import PreviewHub
+        hub = PreviewHub(lambda f, p: f, grid_size=(1280, 720))
+        try:
+            # 2 cameras, 16:9 frames (640x360)
+            f1 = np.zeros((360, 640, 3), dtype=np.uint8)
+            f2 = np.zeros((360, 640, 3), dtype=np.uint8)
+            hub._tiles = {"cam1": f1, "cam2": f2}
+            grid = hub.compose_grid()
+            # 2 cameras side by side: each tile is 640x360 -> total size 1280x360 (16:9 each)
+            self.assertEqual(grid.shape[1], 1280)
+            self.assertEqual(grid.shape[0], 360)
+            self.assertAlmostEqual((grid.shape[1] / 2) / grid.shape[0], 16.0 / 9.0, places=2)
+        finally:
+            hub.stop()
+
 
 class TestWebApi(unittest.TestCase):
 
