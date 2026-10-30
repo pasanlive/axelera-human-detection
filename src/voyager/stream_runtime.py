@@ -571,11 +571,14 @@ class VoyagerRuntime(BaseRuntime):
         is_zoo_tracker = (first.network == "yolov5m-v7-coco-tracker" or getattr(first.spec, "pose_model", "") == "yolov5m-v7-coco-tracker")
         try:
             if is_zoo_tracker:
+                log_level = 20
+                if hasattr(sdk, "logging_utils") and sdk.logging_utils is not None:
+                    log_level = getattr(sdk.logging_utils, "INFO", 20)
                 stream = sdk.create_inference_stream(
                     network="yolov5m-v7-coco-tracker",
                     sources=list(first.sources),
                     pipe_type="gst",
-                    log_level=sdk.logging_utils.INFO,
+                    log_level=log_level,
                 )
             else:
                 stream = sdk.create_inference_stream(

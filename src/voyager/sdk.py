@@ -91,6 +91,11 @@ def sdk_modules() -> Any:
     from axelera.app.stream import create_inference_stream
 
     try:
+        from axelera.app import logging_utils
+    except ImportError:
+        logging_utils = None
+
+    try:
         from axelera.app.pipe import FrameEventType
     except ImportError:  # pragma: no cover - older layout
         from axelera.app.pipe.frame_data import FrameEventType
@@ -100,4 +105,5 @@ def sdk_modules() -> Any:
         inf_tracers=inf_tracers,
         create_inference_stream=create_inference_stream,
         FrameEventType=FrameEventType,
+        logging_utils=logging_utils,
     )
