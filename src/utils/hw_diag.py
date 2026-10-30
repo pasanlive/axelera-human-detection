@@ -166,10 +166,14 @@ class HardwareWatchdog:
             for mod in ("metis", "axl"):
                 p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
                 p_to = Path(f"/sys/module/{mod}/parameters/irq_timeout")
+                p_dto = Path(f"/sys/module/{mod}/parameters/dma_timeout")
+                p_poll = Path(f"/sys/module/{mod}/parameters/dma_poll")
                 if p_msi.exists():
                     msi_val = p_msi.read_text().strip()
                     to_val = p_to.read_text().strip() if p_to.exists() else "unknown"
-                    print(f"[KERNEL STATUS] Driver '{mod}' active (single_msi={msi_val}, irq_timeout={to_val}s).")
+                    dto_val = p_dto.read_text().strip() if p_dto.exists() else "unknown"
+                    poll_val = p_poll.read_text().strip() if p_poll.exists() else "unknown"
+                    print(f"[KERNEL STATUS] Driver '{mod}' active (single_msi={msi_val}, irq_timeout={to_val}s, dma_timeout={dto_val}s, dma_poll={poll_val}).")
                     return
         except Exception:
             pass
