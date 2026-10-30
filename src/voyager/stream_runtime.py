@@ -183,17 +183,31 @@ def _patch_voyager_stream_input() -> None:
             if inst == "rtspsrc":
                 # Critical RTSP stability parameters for continuous IP camera streaming:
                 # 1. do-rtsp-keep-alive=True: Periodically sends keep-alives to prevent camera session timeout.
-                # 2. tcp-timeout=60000000: 60s timeout prevents false reconnect loops during camera GOP intervals.
+                # 2. tcp-timeout=30000000: 30s timeout prevents false reconnect loops during camera GOP intervals.
                 # 3. drop-on-latency=True: Drops late frames during network bursts instead of building latency.
                 for prop_name, prop_val in [
                     ("do-rtsp-keep-alive", True),
-                    ("tcp-timeout", 60000000),
+                    ("tcp-timeout", 30000000),
                     ("drop-on-latency", True),
                 ]:
                     try:
                         elem.set_property(prop_name, prop_val)
                     except Exception:
                         pass
+
+                def _on_rtspsrc_select_stream(rtspsrc_elem: Any, stream_num: int, caps: Any) -> bool:
+                    caps_str = caps.to_string() if caps else ""
+                    # Select video streams only; reject audio (AAC/PCM) and metadata tracks.
+                    # Skipping the audio stream prevents rtspsrc from requesting RTSP SETUP for trackID=2,
+                    # eliminating unlinked audio pads and audio preroll deadlock completely.
+                    is_video = "media=(string)video" in caps_str or "video/" in caps_str
+                    print(f"[RTSP SELECT-STREAM] Track {stream_num}: '{caps_str}' -> select={is_video}")
+                    return is_video
+
+                try:
+                    elem.connect("select-stream", _on_rtspsrc_select_stream)
+                except Exception as e:
+                    print(f"[RTSP SELECT-STREAM] Failed to hook select-stream: {e}")
 
             elif inst == "queue":
                 # Standard Axelera golden-gst queue configuration (max-size-buffers=4, no dropping).
@@ -212,26 +226,30 @@ def _patch_voyager_stream_input() -> None:
 
             elif inst == "decodebin":
                 force_sw = str(element.get('force-sw-decoders', False)).lower() == 'true'
-                if force_sw:
-                    def _prefer_software_decoder(bin_elem: Any, pad: Any, caps: Any, factories: Any) -> Any:
-                        if not factories:
-                            return factories
-                        sw_decoders = []
-                        hw_decoders = []
-                        for factory in factories:
-                            fname = factory.get_name()
-                            if fname.startswith("avdec_") or fname.startswith("openh264") or "sw" in fname:
-                                sw_decoders.append(factory)
-                            elif fname.startswith("mpp") or fname.startswith("rga"):
-                                hw_decoders.append(factory)
-                            else:
-                                sw_decoders.append(factory)
-                        return sw_decoders + hw_decoders
 
-                    try:
-                        elem.connect("autoplug-sort", _prefer_software_decoder)
-                    except Exception:
-                        pass
+                def _prefer_software_decoder(bin_elem: Any, pad: Any, caps: Any, factories: Any) -> Any:
+                    if not factories:
+                        return factories
+                    sw_decoders = []
+                    hw_decoders = []
+                    for factory in factories:
+                        fname = factory.get_name()
+                        if fname.startswith("avdec_") or fname.startswith("openh264") or "sw" in fname:
+                            sw_decoders.append(factory)
+                        elif fname.startswith("mpp") or fname.startswith("rga"):
+                            hw_decoders.append(factory)
+                        else:
+                            sw_decoders.append(factory)
+                    caps_str = caps.to_string() if caps else ""
+                    sorted_factories = (sw_decoders + hw_decoders) if force_sw else (hw_decoders + sw_decoders)
+                    order = [f.get_name() for f in sorted_factories]
+                    print(f"[DECODEBIN AUTOPLUG] caps='{caps_str}' force_sw={force_sw} -> candidate decoders: {order}")
+                    return sorted_factories
+
+                try:
+                    elem.connect("autoplug-sort", _prefer_software_decoder)
+                except Exception:
+                    pass
             return elem
 
         gst_helper._create_element = patched_create_element
@@ -240,8 +258,12 @@ def _patch_voyager_stream_input() -> None:
     _orig_on_pad_added = getattr(gst_helper, "_on_pad_added", None)
     if _orig_on_pad_added is not None:
         def patched_on_pad_added(element: Any, newPad: Any, sinkPad: Any, prop: Any, key: Any) -> None:
-            if sinkPad.is_linked() and not newPad.is_linked():
-                # Secondary pad (e.g. camera audio track) arrived while primary video sink pad is already linked:
+            elem_name = element.get_name() if element else ""
+            pad_name = newPad.get_name() if newPad else ""
+            sink_name = sinkPad.get_name() if sinkPad else ""
+            sink_linked = sinkPad.is_linked() if sinkPad else False
+            if sink_linked and not newPad.is_linked():
+                # Secondary pad arrived while primary video sink pad is already linked:
                 # Divert immediately to fakesink with sync=False and async=False.
                 # async=False is MANDATORY: without it, fakesink defaults to async=True and blocks
                 # pipeline preroll indefinitely waiting for non-existent or delayed audio buffers.
@@ -261,11 +283,14 @@ def _patch_voyager_stream_input() -> None:
                             fakesink.sync_state_with_parent()
                             fsink_pad = fakesink.get_static_pad("sink")
                             if fsink_pad and not fsink_pad.is_linked():
-                                newPad.link(fsink_pad)
+                                ret = newPad.link(fsink_pad)
+                                print(f"[GST PAD LINK] Diverted secondary pad {elem_name}.{pad_name} to fakesink (result={ret})")
                                 return
-                except Exception:
-                    pass
-            return _orig_on_pad_added(element, newPad, sinkPad, prop, key)
+                except Exception as e:
+                    print(f"[GST PAD LINK] Failed to divert {elem_name}.{pad_name} to fakesink: {e}")
+            ret = _orig_on_pad_added(element, newPad, sinkPad, prop, key)
+            print(f"[GST PAD LINK] {elem_name}.{pad_name} -> {sink_name} (linked={sinkPad.is_linked() if sinkPad else False})")
+            return ret
 
         gst_helper._on_pad_added = patched_on_pad_added
 
@@ -278,7 +303,7 @@ def _patch_voyager_stream_input() -> None:
             'latency': max(latency, 200),
             'drop-on-latency': True,
             'do-rtsp-keep-alive': True,
-            'tcp-timeout': 60000000,
+            'tcp-timeout': 30000000,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
         rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "all") or "all").lower()
