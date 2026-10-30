@@ -8,8 +8,8 @@ cameras:
 - id: cam_01
   name: Front Entrance
   enabled: true
-  source: rtsp://admin:ODPEDI@192.168.0.102:554/h265/ch1/sub/av_stream
-  source_sub: rtsp://admin:ODPEDI@192.168.0.102:554/h265/ch1/sub/av_stream
+  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
+  source_sub: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
   main_resolution:
   - 2304
   - 1296
@@ -20,8 +20,8 @@ cameras:
 - id: cam_02
   name: Lobby East
   enabled: false
-  source: rtsp://admin:ODPEDI@192.168.0.102:554/h265/ch1/main/av_stream
-  source_sub: rtsp://admin:ODPEDI@192.168.0.102:554/h265/ch1/sub/av_stream
+  source: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/main/av_stream
+  source_sub: rtsp://admin:ODPEDI@192.168.0.102:554/h264/ch1/sub/av_stream
   main_resolution:
   - 1920
   - 1080
@@ -51,13 +51,13 @@ voyager:
   calibration_dir: data/calibration
   num_calibration_images: 400
   aipu_cores: 4
-  hardware_decode: false # software decode (avdec_h265) prevents Rockchip MPP (rkvdec2) driver crashes
+  hardware_decode: false # software decode (avdec_h264) prevents Rockchip MPP (rkvdec2) driver crashes
   rtsp_transport: tcp # 'tcp' ensures lossless RTSP transmission (prevents UDP packet drops / missing POC frames)
   rtsp_latency_ms: 200 # 200ms jitter buffer for smooth LAN streaming
   disable_tracers: true # Disables background axtrace processes to eliminate concurrent /dev/metis* PCIe access
   low_latency: false
-  aipu_clock_mhz: null # Native 800 MHz profile prevents kernel MSI interrupt timeouts
-  mvm_utilization: 30 # Limits MVM utilization to 30% to prevent RK3588 M.2 slot voltage droop / brownouts
+  aipu_clock_mhz: 600 # 600 MHz profile ensures M.2 voltage rail stability under multi-core inference
+  mvm_utilization: 20 # 20% limit prevents RK3588 M.2 slot voltage droop / -1301 hardware timeouts
   specified_frame_rate: 0 # 0 prevents videorate duplicate buffer crash (inplace_addstreamid)
   reconnect_interval_s: 5
   thresholds:
