@@ -127,17 +127,24 @@ class HardwareWatchdog:
         self._initial_dmesg_logged = False
 
     def disable_pcie_aspm(self) -> bool:
-        """Configures Linux kernel ASPM policy and PCIe power control via sysfs without link retraining."""
+        """Configures Linux kernel ASPM policy to performance and disables L0s/L1 ASPM power states."""
         try:
             pol_path = Path("/sys/module/pcie_aspm/parameters/policy")
             if pol_path.exists():
                 curr_pol = pol_path.read_text().strip()
-                if "performance" not in curr_pol:
+                if "[performance]" not in curr_pol:
                     subprocess.run(["sudo", "-n", "sh", "-c", "echo performance > /sys/module/pcie_aspm/parameters/policy"],
                                    capture_output=True, text=True, timeout=2)
-                    print("[PCIe STATUS] Set Linux PCIe ASPM policy to 'performance'.")
+                    curr_pol = pol_path.read_text().strip() if pol_path.exists() else "performance"
+                    print(f"[PCIe STATUS] Linux PCIe ASPM policy updated: '{curr_pol}'.")
                 else:
                     print(f"[PCIe STATUS] Linux PCIe ASPM policy is '{curr_pol}'.")
+
+            # Force Link Control register ASPM bits to 0x0000 (disabled) at startup
+            subprocess.run(["sudo", "-n", "setpci", "-s", "00:00.0", "CAP_EXP+0x10.w=0x0000"],
+                           capture_output=True, text=True, timeout=2)
+            subprocess.run(["sudo", "-n", "setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
+                           capture_output=True, text=True, timeout=2)
 
             # Prevent PCIe root and Metis endpoints from entering D3cold, ASPM L1/L0s, or runtime sleep
             subprocess.run(["sudo", "-n", "sh", "-c",
@@ -190,7 +197,10 @@ class HardwareWatchdog:
         or if single_msi=0 is active on Rockchip RK3588, automatically configures single_msi=1,
         reloads the kernel driver if necessary, and reloads firmware using 'axdevice --reload-firmware'."""
         try:
-            # Kill any orphaned axtrace processes first so device nodes are not held open
+            # 1. Enforce PCIe ASPM performance policy and disable Link L0s/L1 states immediately
+            self.disable_pcie_aspm()
+
+            # 2. Kill any orphaned axtrace processes first so device nodes are not held open
             subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
 
             curr_single_msi = None
@@ -220,30 +230,40 @@ class HardwareWatchdog:
                 reason_str = ", ".join(reasons)
                 print(f"[METIS HW] Hardware/driver re-initialization needed ({reason_str})...")
 
-                # 1. Ensure /etc/modprobe.d/metis.conf has single_msi=1
+                # Ensure /etc/modprobe.d/metis.conf has single_msi=1 via tee
                 try:
-                    subprocess.run(
-                        ["sudo", "-n", "sh", "-c",
-                         "echo -e 'options metis single_msi=1\\noptions axl single_msi=1' > /etc/modprobe.d/metis.conf"],
-                        capture_output=True, text=True, timeout=3
-                    )
+                    conf_content = "options metis single_msi=1\noptions axl single_msi=1\n"
+                    subprocess.run(["sudo", "-n", "tee", "/etc/modprobe.d/metis.conf"],
+                                   input=conf_content, text=True, capture_output=True, timeout=3)
                 except Exception:
                     pass
 
-                # 2. Reload the kernel driver module if single_msi=0 or after an MSI timeout
+                # Print module parameter capabilities from modinfo
+                try:
+                    res_mi = subprocess.run(["modinfo", active_mod], capture_output=True, text=True, timeout=3)
+                    if res_mi.returncode == 0:
+                        parms = [l.strip() for l in res_mi.stdout.splitlines() if "parm:" in l]
+                        if parms:
+                            print(f"[METIS HW] Module '{active_mod}' parameters: {'; '.join(parms[:4])}")
+                except Exception:
+                    pass
+
+                # Reload the kernel driver module if single_msi=0 or after an MSI timeout
                 if needs_single_msi_fix or msi_timeout:
                     print(f"[METIS HW] Reloading kernel module '{active_mod}' with single_msi=1...")
                     subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
                     res_rm = subprocess.run(["sudo", "-n", "modprobe", "-r", "metis", "axl"], capture_output=True, text=True, timeout=5)
                     if res_rm.returncode != 0:
-                        subprocess.run(["sudo", "-n", "rmmod", "metis", "axl"], capture_output=True, text=True, timeout=5)
+                        subprocess.run(["sudo", "-n", "rmmod", "-f", "metis", "axl"], capture_output=True, text=True, timeout=5)
+                    time.sleep(0.5)
+
                     res_load = subprocess.run(["sudo", "-n", "modprobe", active_mod, "single_msi=1"], capture_output=True, text=True, timeout=5)
                     if res_load.returncode != 0:
                         alt_mod = "axl" if active_mod == "metis" else "metis"
                         subprocess.run(["sudo", "-n", "modprobe", alt_mod, "single_msi=1"], capture_output=True, text=True, timeout=5)
-                    time.sleep(1.0)
+                    time.sleep(1.5)
 
-                # 3. Reload AIPU firmware
+                # Reload AIPU firmware
                 axdev = shutil.which("axdevice")
                 if not axdev:
                     sdk_axdev = Path.home() / "voyager-sdk" / "venv" / "bin" / "axdevice"
@@ -251,7 +271,7 @@ class HardwareWatchdog:
                         axdev = str(sdk_axdev)
 
                 if axdev:
-                    res = subprocess.run([axdev, "--reload-firmware"], capture_output=True, text=True, timeout=12)
+                    res = subprocess.run([axdev, "--reload-firmware"], capture_output=True, text=True, timeout=15)
                     if res.returncode == 0:
                         out = res.stdout.strip().replace("\n", " | ")
                         print(f"[METIS HW] Firmware reloaded: {out}")
@@ -262,7 +282,7 @@ class HardwareWatchdog:
                         print(f"[METIS HW] Device refreshed: {out2}")
                         time.sleep(0.5)
 
-                # 4. Report updated driver parameter
+                # Report updated driver parameter
                 for mod in ("metis", "axl"):
                     p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
                     if p_msi.exists():
