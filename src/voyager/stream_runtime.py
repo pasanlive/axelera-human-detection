@@ -178,7 +178,25 @@ def _patch_voyager_stream_input() -> None:
     except ImportError:
         return
 
-    # Patch gst_helper._create_element to intercept rtspsrc and decodebin
+    # Patch gst_builder.Builder.queue so all queues in Voyager pipelines default to max-size-buffers=1, leaky=2
+    try:
+        from axelera.app import gst_builder
+        _orig_builder_queue = getattr(gst_builder.Builder, "queue", None)
+        if _orig_builder_queue is not None:
+            def patched_builder_queue(self: Any, props: Any = None, **kwargs: Any) -> None:
+                p = dict(props or {})
+                p.setdefault("max-size-buffers", 1)
+                p.setdefault("max-size-time", 0)
+                p.setdefault("max-size-bytes", 0)
+                p.setdefault("leaky", 2)
+                return _orig_builder_queue(self, props=p, **kwargs)
+            gst_builder.Builder.queue = patched_builder_queue
+            if hasattr(gst_builder, "_OldBuilder"):
+                gst_builder._OldBuilder.queue = patched_builder_queue
+    except Exception:
+        pass
+
+    # Patch gst_helper._create_element to intercept rtspsrc, decodebin, queue, and appsink
     _orig_create_element = getattr(gst_helper, "_create_element", None)
     if _orig_create_element is not None:
         def patched_create_element(element: dict[str, Any]) -> Any:
@@ -186,16 +204,15 @@ def _patch_voyager_stream_input() -> None:
             inst = element.get("instance", "")
             if inst == "rtspsrc":
                 # Critical RTSP stability parameters for continuous IP camera streaming:
-                # 1. do-rtcp=False: IP cameras rarely send valid RTCP packets over interleaved TCP.
-                #    Disabling RTCP prevents GStreamer's rtpsession from falsely timing out at ~18s.
+                # 1. do-rtcp=True: IP camera requires periodic RTCP feedback to maintain session.
                 # 2. do-rtsp-keep-alive=True: Periodically sends GET_PARAMETER/OPTIONS keep-alives to port 554,
                 #    preventing the camera's RTSP server from closing the connection after its 15-30s session timeout.
-                # 3. tcp-timeout=60000000: Sets 60s timeout in microseconds.
+                # 3. tcp-timeout=10000000: Sets 10s timeout in microseconds.
                 # 4. drop-on-latency=True: Drops late frames during network bursts instead of building latency.
                 for prop_name, prop_val in [
-                    ("do-rtcp", False),
+                    ("do-rtcp", True),
                     ("do-rtsp-keep-alive", True),
-                    ("tcp-timeout", 60000000),
+                    ("tcp-timeout", 10000000),
                     ("drop-on-latency", True),
                 ]:
                     try:
@@ -203,7 +220,32 @@ def _patch_voyager_stream_input() -> None:
                     except Exception:
                         pass
 
+            elif inst == "queue":
+                # Ensure queues feeding the AIPU never accumulate backlog.
+                # max-size-buffers=1 with leaky=2 (downstream) ensures that when the camera produces
+                # frames faster than the Metis AIPU infers (e.g. 15fps camera vs 10fps AIPU),
+                # excess incoming frames are dropped immediately at the queue, completely preventing
+                # latency accumulation and Level-Zero -1301 wait kernel timeouts.
+                for prop_name, prop_val in [
+                    ("max-size-buffers", 1),
+                    ("max-size-bytes", 0),
+                    ("max-size-time", 0),
+                    ("leaky", 2),
+                ]:
+                    try:
+                        elem.set_property(prop_name, prop_val)
+                    except Exception:
+                        pass
 
+            elif inst == "appsink":
+                for prop_name, prop_val in [
+                    ("max-buffers", 1),
+                    ("drop", True),
+                ]:
+                    try:
+                        elem.set_property(prop_name, prop_val)
+                    except Exception:
+                        pass
 
             elif inst == "decodebin":
                 force_sw = str(element.get('force-sw-decoders', False)).lower() == 'true'
@@ -271,7 +313,7 @@ def _patch_voyager_stream_input() -> None:
             'drop-on-latency': True,
             'do-rtcp': True,
             'do-rtsp-keep-alive': True,
-            'tcp-timeout': 60000000,
+            'tcp-timeout': 10000000,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
         rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "all") or "all").lower()

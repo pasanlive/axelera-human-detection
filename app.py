@@ -120,6 +120,8 @@ def main():
     os.environ.setdefault("AXELERA_USE_DOUBLE_BUFFER", "0")
     os.environ.setdefault("AXELERA_USE_DMABUF", "0")
     os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
+    os.environ.setdefault("ZE_AFFINITY_MASK", "0")
+    os.environ.setdefault("ZE_ENABLE_PCI_ID_DEVICE_ORDER", "1")
 
     if args.headless or not os.environ.get("DISPLAY"):
         # Explicit headless mode: prevent X11 auth warnings and Pyglet display probe errors

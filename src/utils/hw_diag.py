@@ -139,11 +139,13 @@ class HardwareWatchdog:
                 else:
                     print(f"[PCIe STATUS] Linux PCIe ASPM policy is '{curr_pol}'.")
 
-            # Prevent PCIe root and Metis endpoints from entering D3cold or runtime sleep
+            # Prevent PCIe root and Metis endpoints from entering D3cold, ASPM L1/L0s, or runtime sleep
             subprocess.run(["sudo", "-n", "sh", "-c",
                             "for d in /sys/bus/pci/devices/*; do "
                             "[ -f $d/d3cold_allowed ] && echo 0 > $d/d3cold_allowed 2>/dev/null; "
                             "[ -f $d/power/control ] && echo on > $d/power/control 2>/dev/null; "
+                            "[ -f $d/link/l1_aspm ] && echo 0 > $d/link/l1_aspm 2>/dev/null; "
+                            "[ -f $d/link/l0s_aspm ] && echo 0 > $d/link/l0s_aspm 2>/dev/null; "
                             "done"],
                            capture_output=True, text=True, timeout=2)
         except Exception:
