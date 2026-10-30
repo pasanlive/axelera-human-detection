@@ -794,6 +794,190 @@ class TestWebApi(unittest.TestCase):
         # Wait for deferred restart thread to execute callback
         self.assertTrue(restarted.wait(timeout=2.5))
 
+    def test_face_history_web_api(self):
+        """Verifies face history, unidentified capture, stats, and enrollment endpoints."""
+        import numpy as np
+        from src.pipeline import MultiCameraPipeline
+        from src.web.server import WebServer
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = os.path.join(tmp_dir, "face_history.db")
+            face_json = os.path.join(tmp_dir, "faces.json")
+            cfg = {
+                "cameras": [],
+                "face_db": {
+                    "path": face_json,
+                    "history_db_path": db_path,
+                },
+            }
+            pipeline = MultiCameraPipeline(cfg, simulate=True)
+            server = WebServer(pipeline)
+
+            try:
+                # 1. Record an identified sighting and an unidentified sighting via pipeline face history db
+                emb_jane = np.random.randn(512).astype(np.float32)
+                is_new1, cnt1, res1 = pipeline.face_history_db.log_sighting(
+                    camera_id="cam_00",
+                    name="Jane Doe",
+                    similarity=0.92,
+                    is_identified=True,
+                    track_id=1,
+                    thumbnail="data:image/jpeg;base64,mock",
+                )
+                self.assertTrue(is_new1)
+                self.assertEqual(cnt1, 1)
+
+                # Record repeat sighting within cooldown -> detection_count becomes 2
+                is_new2, cnt2, res1_repeat = pipeline.face_history_db.log_sighting(
+                    camera_id="cam_00",
+                    name="Jane Doe",
+                    similarity=0.94,
+                    is_identified=True,
+                    track_id=1,
+                )
+                self.assertFalse(is_new2)
+                self.assertEqual(cnt2, 2)
+
+                # Record unidentified face with embedding
+                is_new3, cnt3, res_unid = pipeline.face_history_db.log_sighting(
+                    camera_id="cam_00",
+                    name="Unidentified",
+                    similarity=0.35,
+                    is_identified=False,
+                    track_id=5,
+                    thumbnail="data:image/jpeg;base64,unid",
+                    embedding=emb_jane,
+                )
+                face_id = res_unid["face_id"]
+                self.assertIsNotNone(face_id)
+
+                # 2. Test GET /api/faces/history (ordered by last_seen DESC)
+                status, hist = server.handle_api("GET", "/api/faces/history", {"limit": ["10"]}, {})
+                self.assertEqual(status, 200)
+                self.assertEqual(len(hist["sightings"]), 2)
+                self.assertEqual(hist["sightings"][0]["name"], "Unidentified")
+                self.assertEqual(hist["sightings"][1]["name"], "Jane Doe")
+                self.assertEqual(hist["sightings"][1]["detection_count"], 2)
+
+                # 3. Test GET /api/faces/unidentified
+                status, unid = server.handle_api("GET", "/api/faces/unidentified", {}, {})
+                self.assertEqual(status, 200)
+                self.assertEqual(len(unid["unidentified"]), 1)
+                self.assertEqual(unid["unidentified"][0]["face_id"], face_id)
+
+                # 4. Test GET /api/faces/stats
+                status, stats_res = server.handle_api("GET", "/api/faces/stats", {}, {})
+                self.assertEqual(status, 200)
+                stats = stats_res["stats"]
+                self.assertEqual(stats["total_detections"], 3)
+                self.assertEqual(stats["events_count"], 2)
+                self.assertEqual(stats["unique_identified"], 1)
+                self.assertEqual(stats["pending_unidentified"], 1)
+                self.assertIn("Jane Doe", [top["name"] for top in stats["top_identities"]])
+
+                # 5. Test POST /api/faces/enroll_unidentified
+                status, enroll_res = server.handle_api(
+                    "POST",
+                    "/api/faces/enroll_unidentified",
+                    {},
+                    {"face_id": face_id, "name": "Jane Enrolled"},
+                )
+                self.assertEqual(status, 200)
+                self.assertTrue(enroll_res["success"])
+                self.assertEqual(enroll_res["name"], "Jane Enrolled")
+
+                # Verify identity is now in face DB
+                self.assertIn("Jane Enrolled", pipeline.face_db.list_identities())
+
+                # Verify unidentified list now omits the enrolled face
+                status, unid_after = server.handle_api("GET", "/api/faces/unidentified", {}, {})
+                self.assertEqual(status, 200)
+                self.assertEqual(len(unid_after["unidentified"]), 0)
+
+                # 6. Test DELETE /api/faces/history/<id> and POST /api/faces/history/clear
+                sighting_id = hist["sightings"][0]["id"]
+                status, del_res = server.handle_api("DELETE", f"/api/faces/history/{sighting_id}", {}, {})
+                self.assertEqual(status, 200)
+                self.assertTrue(del_res["success"])
+
+                status, clear_res = server.handle_api("POST", "/api/faces/history/clear", {}, {})
+                self.assertEqual(status, 200)
+                self.assertTrue(clear_res["success"])
+
+                status, hist_empty = server.handle_api("GET", "/api/faces/history", {}, {})
+                self.assertEqual(len(hist_empty["sightings"]), 0)
+            finally:
+                pipeline.stop()
+
+
+class TestFaceHistoryDatabase(unittest.TestCase):
+
+    def test_history_database_lifecycle(self):
+        from src.utils.face_history_db import FaceHistoryDatabase
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = os.path.join(tmp_dir, "test_faces.db")
+            db = FaceHistoryDatabase(db_path=db_path, cooldown_s=10.0)
+
+            # Record sightings
+            is_new, cnt, s1 = db.log_sighting(
+                camera_id="cam_0",
+                name="Alice",
+                similarity=0.91,
+                is_identified=True,
+            )
+            self.assertTrue(is_new)
+            self.assertEqual(cnt, 1)
+
+            # Within cooldown -> increments detection_count
+            is_new_dup, cnt_dup, s1_dup = db.log_sighting(
+                camera_id="cam_0",
+                name="Alice",
+                similarity=0.95,
+                is_identified=True,
+            )
+            self.assertFalse(is_new_dup)
+            self.assertEqual(cnt_dup, 2)
+
+            # Record unidentified sighting
+            emb = np.random.randn(512).astype(np.float32)
+            is_new_u, cnt_u, u1 = db.log_sighting(
+                camera_id="cam_0",
+                name="Unidentified",
+                similarity=0.3,
+                is_identified=False,
+                track_id=1,
+                thumbnail="data:image/jpeg;base64,abc",
+                embedding=emb,
+            )
+            self.assertEqual(u1["is_identified"], False)
+
+            # Query sightings
+            sightings = db.get_history(limit=10)
+            self.assertEqual(len(sightings), 2)
+
+            # Query unidentified
+            unid_list = db.get_unidentified_faces()
+            self.assertEqual(len(unid_list), 1)
+            self.assertEqual(unid_list[0]["face_id"], u1["face_id"])
+
+            # Verify embedding retrieved
+            emb_retrieved = db.get_unidentified_embedding(u1["face_id"])
+            self.assertIsNotNone(emb_retrieved)
+            np.testing.assert_allclose(emb_retrieved, emb.tolist(), atol=1e-5)
+
+            # Mark enrolled
+            self.assertTrue(db.enroll_unidentified_face(u1["face_id"], "Bob"))
+            self.assertEqual(len(db.get_unidentified_faces()), 0)
+
+            # Stats
+            stats = db.get_stats()
+            self.assertEqual(stats["total_detections"], 3)
+            self.assertEqual(stats["events_count"], 2)
+            self.assertEqual(stats["unique_identified"], 2)
+
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

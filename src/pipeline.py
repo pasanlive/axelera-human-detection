@@ -30,6 +30,7 @@ import numpy as np
 from src.analytics.identity import TrackIdentityResolver
 from src.render.preview import GRID, PreviewHub
 from src.utils.face_db import FaceDatabase
+from src.utils.face_history_db import FaceHistoryDatabase
 from src.utils.plate_db import PlateDatabase
 from src.utils.visualization import Visualizer
 from src.voyager.capacity_planner import (
@@ -99,6 +100,9 @@ class MultiCameraPipeline:
         self.face_db = FaceDatabase(
             db_path=config.get("face_db", {}).get("path", "data/face_db.json"),
             quiet=not face_rec_enabled,
+        )
+        self.face_history_db = FaceHistoryDatabase(
+            db_path=config.get("face_db", {}).get("history_db_path", "data/face_history.db")
         )
         self.plate_db = PlateDatabase(db_path=config.get("plate_db", {}).get("path", "data/plate_db.json"))
 
@@ -380,11 +384,42 @@ class MultiCameraPipeline:
         face_det_on = self.is_model_enabled("face_detector", cam_id) or self.is_model_enabled("face_recognizer", cam_id)
         face_rec_on = self.is_model_enabled("face_recognizer", cam_id)
 
+        cached_frame: Optional[np.ndarray] = None
+
+        def _get_frame():
+            nonlocal cached_frame
+            if cached_frame is None:
+                cached_frame = get_image()
+            return cached_frame
+
+        def _crop_face_thumb(b):
+            fr = _get_frame()
+            if fr is None:
+                return None
+            try:
+                import base64
+                import cv2
+                fh, fw = fr.shape[:2]
+                bx = [b[0] * fw, b[1] * fh, b[2] * fw, b[3] * fh] if max(b) <= 1.05 and fw > 0 else b
+                x1, y1, x2, y2 = map(int, bx)
+                pw, ph = int((x2 - x1) * 0.15), int((y2 - y1) * 0.15)
+                cx1, cy1 = max(0, x1 - pw), max(0, y1 - ph)
+                cx2, cy2 = min(fw, x2 + pw), min(fh, y2 + ph)
+                if cx2 > cx1 and cy2 > cy1:
+                    crop = cv2.resize(fr[cy1:cy2, cx1:cx2], (112, 112))
+                    _, buf = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                    return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+            except Exception:
+                pass
+            return None
+
         if fa.faces and face_det_on:
             with_emb = [f for f in fa.faces if f.get("embedding") is not None] if face_rec_on else []
             matches = self.face_db.match_batch(np.stack([f["embedding"] for f in with_emb]),
                                                self.match_threshold) if with_emb else []
             match_map = {id(f): (name, sim) for f, (name, sim) in zip(with_emb, matches)}
+            cam_name = self._cam_name(cam_id)
+
             for f in fa.faces:
                 name, sim = match_map.get(id(f), ("Unknown", 0.0))
                 tid = None
@@ -393,8 +428,73 @@ class MultiCameraPipeline:
                 if tid is not None and face_rec_on:
                     name, sim = self.identity.update(cam_id, tid, name, sim, now)
                     persons[f["person_index"]]["identity"] = name
+
                 faces_out.append({"bbox": f["bbox"], "name": name, "similarity": sim,
                                   "track_id": tid, "embedding": f.get("embedding")})
+
+                # Face logging to SQLite DB & real-time notification with deduplication
+                if face_rec_on:
+                    is_known = bool(name and name != "Unknown" and sim >= self.match_threshold)
+                    thumb = _crop_face_thumb(f["bbox"])
+                    is_new, det_count, sighting = self.face_history_db.log_sighting(
+                        camera_id=cam_id,
+                        name=name if is_known else "Unidentified",
+                        is_identified=is_known,
+                        similarity=sim,
+                        confidence=f.get("confidence", 0.0),
+                        track_id=tid,
+                        bbox=f["bbox"],
+                        thumbnail=thumb,
+                        embedding=f.get("embedding"),
+                        timestamp=now,
+                    )
+
+                    with self._state_lock:
+                        target_ev = None
+                        if is_known:
+                            for ev in reversed(self.events):
+                                if ev.get("type") == "face" and ev.get("camera_id") == cam_id and ev.get("name") == name:
+                                    if now - ev.get("ts", 0) <= 60.0:
+                                        target_ev = ev
+                                        break
+                        else:
+                            fid = sighting.get("face_id")
+                            for ev in reversed(self.events):
+                                if ev.get("type") == "face_unidentified" and ev.get("camera_id") == cam_id:
+                                    if (fid and ev.get("face_id") == fid) or (tid is not None and ev.get("track_id") == tid):
+                                        if now - ev.get("ts", 0) <= 60.0:
+                                            target_ev = ev
+                                            break
+
+                        if target_ev is not None:
+                            target_ev["detection_count"] = det_count
+                            target_ev["ts"] = now
+                            if is_known:
+                                target_ev["similarity"] = max(target_ev.get("similarity", 0.0), sim)
+                                target_ev["message"] = f"Recognized '{name}' ({sim * 100:.0f}%) on {cam_name}"
+                            else:
+                                target_ev["message"] = f"Unidentified face on {cam_name}"
+                            if thumb and not target_ev.get("thumbnail"):
+                                target_ev["thumbnail"] = thumb
+                        else:
+                            import uuid
+                            new_ev = {
+                                "id": "ev_" + uuid.uuid4().hex[:8],
+                                "ts": now,
+                                "camera_id": cam_id,
+                                "type": "face" if is_known else "face_unidentified",
+                                "message": f"Recognized '{name}' ({sim * 100:.0f}%) on {cam_name}" if is_known else f"Unidentified face on {cam_name}",
+                                "name": name if is_known else "Unidentified",
+                                "similarity": sim,
+                                "detection_count": det_count,
+                                "thumbnail": thumb,
+                                "unidentified": not is_known,
+                                "face_id": sighting.get("face_id"),
+                                "track_id": tid,
+                            }
+                            self.events.append(new_ev)
+                            self.events = self.events[-200:]
+
         if face_rec_on:
             self.identity.purge(cam_id, track_ids, now)
 
@@ -427,7 +527,7 @@ class MultiCameraPipeline:
 
         # Preview: only download/draw the frame when somebody is watching
         if self.preview.wants_frame(cam_id, now):
-            frame = get_image()
+            frame = cached_frame if cached_frame is not None else get_image()
             if frame is not None:
                 self.preview.submit(cam_id, frame, self._render_packet(cam_id, persons, faces_out, plates_out,
                                                                        zone_on, fa.frame_size))
@@ -496,6 +596,32 @@ class MultiCameraPipeline:
             emb = best["embedding"]
         self.face_db.add_identity(name, emb)
         return True, f"Successfully enrolled '{name}'."
+
+    def enroll_unidentified_face(self, face_id: str, name: str) -> Tuple[bool, str]:
+        """Enrolls an unidentified face profile from SQLite history by its face_id."""
+        if not name or not name.strip():
+            return False, "Identity name is required"
+        name = name.strip()
+        emb = self.face_history_db.get_unidentified_embedding(face_id)
+        if emb is None:
+            return False, f"No face embedding found for unidentified face '{face_id}'"
+        emb_arr = np.asarray(emb, dtype=np.float32)
+        self.face_db.add_identity(name, emb_arr)
+        self.face_history_db.enroll_unidentified_face(face_id, name)
+        with self._state_lock:
+            for ev in self.events:
+                if ev.get("face_id") == face_id:
+                    ev["type"] = "face"
+                    ev["unidentified"] = False
+                    ev["name"] = name
+                    ev["message"] = f"Enrolled identity '{name}'"
+        return True, f"Successfully enrolled '{name}'."
+
+    def _cam_name(self, cam_id: str) -> str:
+        for c in self.config.get("cameras", []) or []:
+            if c.get("id") == cam_id:
+                return c.get("name", cam_id)
+        return cam_id
 
     # ─────────────────────────────────────────────────────────────────────────
     # Status
@@ -595,4 +721,8 @@ class MultiCameraPipeline:
         try:
             self.runtime.stop()
         finally:
+            try:
+                self.face_history_db.close()
+            except Exception:
+                pass
             self.preview.stop()

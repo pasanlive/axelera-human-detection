@@ -156,18 +156,40 @@ class Visualizer:
                             cv2.circle(out_frame, (ix, iy), 4, COLOR_KEYPOINT, -1, cv2.LINE_AA)
 
         # 4. Face Identity Tags
-        if self.draw_faces:
+        if self.draw_faces and faces:
+            h, w = out_frame.shape[:2]
             for face in faces:
-                x1, y1, x2, y2 = map(int, face["bbox"])
-                name = face["name"]
+                bbox = face["bbox"]
+                if len(bbox) == 4 and max(bbox) <= 1.05 and w > 0 and h > 0:
+                    x1, y1, x2, y2 = int(bbox[0] * w), int(bbox[1] * h), int(bbox[2] * w), int(bbox[3] * h)
+                else:
+                    x1, y1, x2, y2 = map(int, bbox)
+
+                x1, y1 = max(0, min(w - 1, x1)), max(0, min(h - 1, y1))
+                x2, y2 = max(0, min(w - 1, x2)), max(0, min(h - 1, y2))
+                if x2 - x1 < 4 or y2 - y1 < 4:
+                    continue
+
+                name = face.get("name", "Unknown")
                 sim = face.get("similarity", 0.0)
-                color = COLOR_FACE_BOX if name != "Unknown" else COLOR_UNKNOWN_FACE
-                label = f"{name} ({sim * 100:.0f}%)" if name != "Unknown" else "Unknown Face"
+                tid = face.get("track_id")
+                is_known = name and name != "Unknown"
+                color = COLOR_FACE_BOX if is_known else COLOR_UNKNOWN_FACE
+
+                if is_known:
+                    label = f"{name} ({sim * 100:.0f}%)" if sim > 0 else name
+                else:
+                    label = f"Unidentified #{tid}" if tid is not None else "Unidentified Face"
 
                 cv2.rectangle(out_frame, (x1, y1), (x2, y2), color, 2)
                 (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(out_frame, (x1, y2), (x1 + tw + 6, y2 + th + 6), color, -1)
-                cv2.putText(out_frame, label, (x1 + 3, y2 + th + 2),
+
+                badge_y = y1 - th - 6
+                if badge_y < 0:
+                    badge_y = y2 + 2
+
+                cv2.rectangle(out_frame, (x1, badge_y), (x1 + tw + 6, badge_y + th + 6), color, -1)
+                cv2.putText(out_frame, label, (x1 + 3, badge_y + th + 1),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
         # 5. License Plate Annotations

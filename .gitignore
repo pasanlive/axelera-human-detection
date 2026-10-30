@@ -12,4 +12,6 @@ data/*.legacy.json
 data/face_db.json.tmp
 data/logs/
 *.log
+*.db
+data/*.db
 snapshot_*.jpg

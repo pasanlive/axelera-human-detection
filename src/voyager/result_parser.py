@@ -368,6 +368,10 @@ def parse_frame_result(result: Any, timestamp: float, track_iou: float = 0.3) ->
     if faces is not None:
         f_boxes = _arr(getattr(faces, "boxes", None), 4)
         f_scores = _arr(getattr(faces, "scores", None))
+        if len(f_boxes) > 0 and size[0] > 0 and size[1] > 0 and np.all(f_boxes <= 1.05):
+            f_boxes = f_boxes.copy()
+            f_boxes[:, [0, 2]] *= size[0]
+            f_boxes[:, [1, 3]] *= size[1]
         owner = assign_faces_to_persons(f_boxes, p_boxes)
         for i in range(len(f_boxes)):
             emb = None

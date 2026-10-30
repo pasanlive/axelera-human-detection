@@ -581,6 +581,60 @@ class WebServer:
                 return (200 if ok else 400), ({"success": True, "name": name, "message": msg} if ok
                                               else {"error": msg})
 
+            # ── face recognition history & unidentified faces ───────────────
+            if method == "POST" and path == "/api/faces/enroll_unidentified":
+                face_id = body.get("face_id")
+                name = body.get("name")
+                if not face_id or not name:
+                    return 400, {"error": "Both face_id and name are required"}
+                ok, msg = p.enroll_unidentified_face(face_id, name)
+                return (200 if ok else 400), ({"success": True, "name": name, "face_id": face_id, "message": msg}
+                                              if ok else {"error": msg})
+            if method == "GET" and path == "/api/faces/history":
+                def _get_q(k, default=None):
+                    v = query.get(k, default)
+                    return v[0] if isinstance(v, list) and v else v
+                try:
+                    limit = int(_get_q("limit", 50))
+                except (ValueError, TypeError):
+                    limit = 50
+                name = _get_q("name")
+                cam_id = _get_q("camera_id")
+                is_id = _get_q("is_identified")
+                is_identified = bool(str(is_id).lower() == "true") if is_id is not None else None
+                since = _get_q("since_ts")
+                try:
+                    since = float(since) if since else None
+                except (TypeError, ValueError):
+                    since = None
+                hist = p.face_history_db.get_history(limit=limit, name=name, camera_id=cam_id,
+                                                     is_identified=is_identified, since_ts=since)
+                return 200, {"history": hist, "sightings": hist, "count": len(hist)}
+            if method == "GET" and path == "/api/faces/unidentified":
+                def _get_q(k, default=None):
+                    v = query.get(k, default)
+                    return v[0] if isinstance(v, list) and v else v
+                try:
+                    limit = int(_get_q("limit", 50))
+                except (ValueError, TypeError):
+                    limit = 50
+                status = _get_q("status", "pending")
+                unidentified = p.face_history_db.get_unidentified_faces(limit=limit, status=status)
+                return 200, {"unidentified": unidentified, "count": len(unidentified)}
+            if method == "GET" and path == "/api/faces/stats":
+                st = p.face_history_db.get_stats()
+                return 200, {"stats": st, **st}
+            if method == "DELETE" and path.startswith("/api/faces/history/"):
+                try:
+                    s_id = int(path.split("/")[-1])
+                    ok = p.face_history_db.delete_sighting(s_id)
+                    return (200 if ok else 404), {"success": ok}
+                except (ValueError, TypeError):
+                    return 400, {"error": "Invalid sighting ID"}
+            if method == "POST" and path == "/api/faces/history/clear":
+                p.face_history_db.clear_history()
+                return 200, {"success": True}
+
             # ── zones ───────────────────────────────────────────────────────
             if method == "GET" and path == "/api/zones":
                 zc = getattr(p, "_zone_crossing", None)
