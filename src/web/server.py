@@ -154,11 +154,13 @@ def get_system_telemetry(pipeline=None) -> Dict[str, Any]:
 
 
 def ensure_self_signed_cert(cert_path: str = "data/ssl/cert.pem", key_path: str = "data/ssl/key.pem") -> Tuple[Optional[str], Optional[str]]:
-    """Automatically generates self-signed TLS/SSL certificate & private key with SAN IP extensions and valid keyUsage for Chrome/Safari compatibility."""
+    """Preserves existing certificates (e.g. Let's Encrypt / mkcert) or generates a self-signed fallback with SAN IP extensions."""
     cert_path = os.path.abspath(cert_path)
     key_path = os.path.abspath(key_path)
-    local_ip = get_local_ip()
+    if os.path.isfile(cert_path) and os.path.isfile(key_path) and os.path.getsize(cert_path) > 0 and os.path.getsize(key_path) > 0:
+        return cert_path, key_path
 
+    local_ip = get_local_ip()
     os.makedirs(os.path.dirname(cert_path), exist_ok=True)
     cnf_path = os.path.join(os.path.dirname(cert_path), "openssl.cnf")
 
