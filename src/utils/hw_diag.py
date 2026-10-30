@@ -165,7 +165,7 @@ class HardwareWatchdog:
             pass
 
     def optimize_kernel_driver(self) -> None:
-        """Reports active Linux metis kernel driver parameters."""
+        """Reports active Linux metis kernel driver parameters and alerts if multi-MSI is active."""
         try:
             for mod in ("metis", "axl"):
                 p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
@@ -178,41 +178,99 @@ class HardwareWatchdog:
                     dto_val = p_dto.read_text().strip() if p_dto.exists() else "unknown"
                     poll_val = p_poll.read_text().strip() if p_poll.exists() else "unknown"
                     print(f"[KERNEL STATUS] Driver '{mod}' active (single_msi={msi_val}, irq_timeout={to_val}s, dma_timeout={dto_val}s, dma_poll={poll_val}).")
+                    if msi_val == "0":
+                        print("  [ALERT] single_msi=0 (Multi-MSI). On Rockchip RK3588, multi-MSI causes 'Failed to wait for MSI 0' aborts.")
+                        print("  Recommend setting 'options metis single_msi=1' in /etc/modprobe.d/metis.conf.")
                     return
         except Exception as e:
             print(f"[KERNEL STATUS] Could not read /sys/module/metis: {e}")
 
     def ensure_device_ready(self, force: bool = False) -> bool:
         """Checks if the Metis AIPU is ready. If a prior MSI timeout is detected in recent kernel logs,
-        automatically reloads firmware using 'axdevice --reload-firmware' to prevent return code -1402."""
+        or if single_msi=0 is active on Rockchip RK3588, automatically configures single_msi=1,
+        reloads the kernel driver if necessary, and reloads firmware using 'axdevice --reload-firmware'."""
         try:
-            axdev = shutil.which("axdevice")
-            if not axdev:
-                sdk_axdev = Path.home() / "voyager-sdk" / "venv" / "bin" / "axdevice"
-                if sdk_axdev.exists():
-                    axdev = str(sdk_axdev)
-            if not axdev:
-                return True
+            # Kill any orphaned axtrace processes first so device nodes are not held open
+            subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
+
+            curr_single_msi = None
+            active_mod = "metis"
+            for mod in ("metis", "axl"):
+                p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
+                if p_msi.exists():
+                    curr_single_msi = p_msi.read_text().strip()
+                    active_mod = mod
+                    break
 
             recent_k = self.get_dmesg_tail(40)
-            msi_timeout = any("IRQ MSI timeout" in l for l in recent_k)
+            msi_timeout = any(("IRQ MSI timeout" in l or "Failed to wait for MSI" in l) for l in recent_k)
             dev_missing = not os.path.exists("/dev/metis-0:1:0")
+            needs_single_msi_fix = (curr_single_msi == "0")
 
-            if force or msi_timeout or dev_missing:
-                reason = "force requested" if force else ("prior IRQ MSI timeout detected in dmesg" if msi_timeout else "device node missing")
-                print(f"[METIS HW] Reloading AIPU firmware ({reason})...")
-                res = subprocess.run([axdev, "--reload-firmware"], capture_output=True, text=True, timeout=12)
-                if res.returncode == 0:
-                    out = res.stdout.strip().replace("\n", " | ")
-                    print(f"[METIS HW] Firmware reloaded: {out}")
+            if force or msi_timeout or dev_missing or needs_single_msi_fix:
+                reasons = []
+                if force:
+                    reasons.append("force requested")
+                if msi_timeout:
+                    reasons.append("prior IRQ MSI timeout in dmesg")
+                if dev_missing:
+                    reasons.append("device node missing")
+                if needs_single_msi_fix:
+                    reasons.append("enforcing single_msi=1 for RK3588 stability")
+                reason_str = ", ".join(reasons)
+                print(f"[METIS HW] Hardware/driver re-initialization needed ({reason_str})...")
+
+                # 1. Ensure /etc/modprobe.d/metis.conf has single_msi=1
+                try:
+                    subprocess.run(
+                        ["sudo", "-n", "sh", "-c",
+                         "echo -e 'options metis single_msi=1\\noptions axl single_msi=1' > /etc/modprobe.d/metis.conf"],
+                        capture_output=True, text=True, timeout=3
+                    )
+                except Exception:
+                    pass
+
+                # 2. Reload the kernel driver module if single_msi=0 or after an MSI timeout
+                if needs_single_msi_fix or msi_timeout:
+                    print(f"[METIS HW] Reloading kernel module '{active_mod}' with single_msi=1...")
+                    subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
+                    res_rm = subprocess.run(["sudo", "-n", "modprobe", "-r", "metis", "axl"], capture_output=True, text=True, timeout=5)
+                    if res_rm.returncode != 0:
+                        subprocess.run(["sudo", "-n", "rmmod", "metis", "axl"], capture_output=True, text=True, timeout=5)
+                    res_load = subprocess.run(["sudo", "-n", "modprobe", active_mod, "single_msi=1"], capture_output=True, text=True, timeout=5)
+                    if res_load.returncode != 0:
+                        alt_mod = "axl" if active_mod == "metis" else "metis"
+                        subprocess.run(["sudo", "-n", "modprobe", alt_mod, "single_msi=1"], capture_output=True, text=True, timeout=5)
                     time.sleep(1.0)
-                else:
-                    res2 = subprocess.run([axdev, "--refresh"], capture_output=True, text=True, timeout=12)
-                    out2 = (res2.stdout or res2.stderr).strip().replace("\n", " | ")
-                    print(f"[METIS HW] Device refreshed: {out2}")
-                    time.sleep(0.5)
+
+                # 3. Reload AIPU firmware
+                axdev = shutil.which("axdevice")
+                if not axdev:
+                    sdk_axdev = Path.home() / "voyager-sdk" / "venv" / "bin" / "axdevice"
+                    if sdk_axdev.exists():
+                        axdev = str(sdk_axdev)
+
+                if axdev:
+                    res = subprocess.run([axdev, "--reload-firmware"], capture_output=True, text=True, timeout=12)
+                    if res.returncode == 0:
+                        out = res.stdout.strip().replace("\n", " | ")
+                        print(f"[METIS HW] Firmware reloaded: {out}")
+                        time.sleep(1.0)
+                    else:
+                        res2 = subprocess.run([axdev, "--refresh"], capture_output=True, text=True, timeout=12)
+                        out2 = (res2.stdout or res2.stderr).strip().replace("\n", " | ")
+                        print(f"[METIS HW] Device refreshed: {out2}")
+                        time.sleep(0.5)
+
+                # 4. Report updated driver parameter
+                for mod in ("metis", "axl"):
+                    p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
+                    if p_msi.exists():
+                        val = p_msi.read_text().strip()
+                        print(f"[METIS HW] Active kernel module '{mod}' running with single_msi={val}.")
+                        break
         except Exception as e:
-            print(f"[METIS HW] Note: Device check skipped ({e})")
+            print(f"[METIS HW] Note: Device check encountered exception: {e}")
         return True
 
     def start(self) -> None:

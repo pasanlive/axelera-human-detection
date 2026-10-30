@@ -155,6 +155,25 @@ def check_metis_device() -> None:
             rc, out = run_cmd(["ls", "-la", d])
             print(f"  {out}")
 
+    # Check kernel driver module parameters
+    print("\nMetis Kernel Driver Parameters:")
+    for mod in ("metis", "axl"):
+        p_msi = Path(f"/sys/module/{mod}/parameters/single_msi")
+        if p_msi.exists():
+            msi_val = p_msi.read_text().strip()
+            print(f"  Module '{mod}': single_msi={msi_val}")
+            if msi_val == "0":
+                print("  [CRITICAL ALERT FOR RK3588]")
+                print("  single_msi=0 (Multi-MSI) is active. On Rockchip RK3588, multi-MSI causes")
+                print("  'Failed to wait for MSI 0: Connection timed out' after ~200 frames of streaming.")
+                print("  To fix, configure single_msi=1:")
+                print("    sudo sh -c 'echo -e \"options metis single_msi=1\\noptions axl single_msi=1\" > /etc/modprobe.d/metis.conf'")
+                print("    sudo modprobe -r metis axl && sudo modprobe metis single_msi=1")
+                print("    axdevice --reload-firmware")
+            else:
+                print("  [OK] single_msi=1 is active (safe for RK3588 MSI interrupt routing).")
+            break
+
     # Check axdevice CLI
     rc_ax, out_ax = run_cmd(["axdevice", "-v"])
     if rc_ax == 0:
