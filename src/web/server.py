@@ -544,6 +544,27 @@ class WebServer:
                              "models": p.get_models_status()}
 
             # ── cameras ─────────────────────────────────────────────────────
+            if (method == "GET" or method == "POST") and path == "/api/cameras/discover":
+                from src.utils.camera_discovery import discover_network_cameras, get_default_subnet
+                def _get_q(k, default=None):
+                    v = query.get(k, default)
+                    return v[0] if isinstance(v, list) and v else v
+                subnet = body.get("subnet") or _get_q("subnet") or get_default_subnet()
+                existing_cams = p.config.get("cameras", [])
+                res = discover_network_cameras(subnet=subnet, existing_cameras=existing_cams)
+                return 200, res
+
+            if method == "POST" and path == "/api/cameras/test-connection":
+                from src.utils.camera_discovery import test_camera_stream
+                source = body.get("source") or body.get("url") or body.get("rtsp_url") or ""
+                if not source:
+                    return 400, {"success": False, "error": "Camera RTSP source URL is required"}
+                username = body.get("username")
+                password = body.get("password")
+                timeout = float(body.get("timeout", 6.0))
+                res = test_camera_stream(source, username=username, password=password, timeout_s=timeout)
+                return (200 if res.get("success") else 400), res
+
             if method == "GET" and path == "/api/cameras":
                 return 200, {"cameras": p.get_camera_status(), "capacity": p.get_capacity_plan()}
             if method == "POST" and path == "/api/cameras":

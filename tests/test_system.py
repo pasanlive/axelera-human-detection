@@ -653,6 +653,114 @@ class TestWebApi(unittest.TestCase):
             updater.stop()
             pipeline.preview.stop()
 
+    def test_camera_discovery_and_test_connection(self):
+        """Tests ONVIF/RTSP discovery utilities, URL builder, connection testing, and WebServer discovery endpoints."""
+        from unittest.mock import patch, MagicMock
+        from src.utils.camera_discovery import (
+            build_rtsp_url,
+            get_default_subnet,
+            test_camera_stream,
+            discover_network_cameras,
+        )
+
+        # 1. Test build_rtsp_url formatting
+        url1 = build_rtsp_url("192.168.1.50:554/live/ch0", "admin", "pass123")
+        self.assertEqual(url1, "rtsp://admin:pass123@192.168.1.50:554/live/ch0")
+
+        url2 = build_rtsp_url("rtsp://10.0.0.99:8554/stream1", None, None)
+        self.assertEqual(url2, "rtsp://10.0.0.99:8554/stream1")
+
+        # 2. Test get_default_subnet returns valid string
+        sub = get_default_subnet()
+        self.assertIsInstance(sub, str)
+        self.assertTrue("/24" in sub or "/16" in sub)
+
+        # 3. Test test_camera_stream success with mock cv2.VideoCapture
+        mock_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        mock_cap = MagicMock()
+        mock_cap.isOpened.return_value = True
+        mock_cap.read.return_value = (True, mock_frame)
+        mock_cap.get.side_effect = lambda prop: 1280.0 if prop == 3 else (720.0 if prop == 4 else 25.0)
+
+        with patch("cv2.VideoCapture", return_value=mock_cap):
+            res = test_camera_stream("rtsp://192.168.1.50:554/h264Preview_01_main", "admin", "admin", timeout_s=1.0)
+            self.assertTrue(res["success"])
+            self.assertEqual((res["width"], res["height"]), (1280, 720))
+            self.assertEqual(res["fps"], 25.0)
+            self.assertTrue(res["preview_image"].startswith("data:image/jpeg;base64,"))
+            self.assertGreaterEqual(res["latency_ms"], 0)
+
+        # 4. Test test_camera_stream failure
+        mock_cap_fail = MagicMock()
+        mock_cap_fail.isOpened.return_value = False
+        with patch("cv2.VideoCapture", return_value=mock_cap_fail):
+            res_fail = test_camera_stream("rtsp://invalid-camera", timeout_s=0.5)
+            self.assertFalse(res_fail["success"])
+            self.assertIn("error", res_fail)
+
+        # 5. Test WebServer API endpoints
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_cfg_path = os.path.join(tmpdir, "config.yaml")
+            cfg = _sim_config(tmpdir, 1)
+            with open(tmp_cfg_path, "w") as f:
+                yaml.safe_dump(cfg, f)
+            pipeline = MultiCameraPipeline(cfg, simulate=True, config_path=tmp_cfg_path)
+            web_server = WebServer(pipeline, host="127.0.0.1", port=0, use_https=False)
+            try:
+                # GET /api/cameras/discover
+                mock_discovered = {
+                    "success": True,
+                    "subnet": "192.168.1.0/24",
+                    "count": 1,
+                    "cameras": [{
+                        "ip": "192.168.1.100",
+                        "port": 554,
+                        "service": "ONVIF/RTSP",
+                        "manufacturer": "Hikvision",
+                        "model": "DS-2CD",
+                        "suggested_stream": "rtsp://192.168.1.100:554/Streaming/Channels/101",
+                        "already_added": False,
+                    }]
+                }
+                with patch("src.utils.camera_discovery.discover_network_cameras", return_value=mock_discovered):
+                    code, body = web_server.handle_api("GET", "/api/cameras/discover", {}, {})
+                    self.assertEqual(code, 200)
+                    self.assertTrue(body["success"])
+                    self.assertEqual(len(body["cameras"]), 1)
+                    self.assertEqual(body["cameras"][0]["ip"], "192.168.1.100")
+
+                    # POST /api/cameras/discover with specific subnet
+                    code, body = web_server.handle_api("POST", "/api/cameras/discover", {}, {"subnet": "192.168.1.0/24"})
+                    self.assertEqual(code, 200)
+                    self.assertTrue(body["success"])
+
+                # POST /api/cameras/test-connection without rtsp_url
+                code, body = web_server.handle_api("POST", "/api/cameras/test-connection", {}, {})
+                self.assertEqual(code, 400)
+                self.assertIn("required", body["error"])
+
+                # POST /api/cameras/test-connection with mock
+                with patch("src.utils.camera_discovery.test_camera_stream", return_value={"success": True, "width": 1920, "height": 1080, "fps": 30.0, "latency_ms": 42.0}):
+                    code, body = web_server.handle_api("POST", "/api/cameras/test-connection", {}, {"rtsp_url": "rtsp://test/main"})
+                    self.assertEqual(code, 200)
+                    self.assertTrue(body["success"])
+                    self.assertEqual((body["width"], body["height"]), (1920, 1080))
+
+                # Test Flask routes if app is present
+                if web_server.app:
+                    client = web_server.app.test_client()
+                    with patch("src.utils.camera_discovery.discover_network_cameras", return_value=mock_discovered):
+                        resp = client.get("/api/cameras/discover")
+                        self.assertEqual(resp.status_code, 200)
+                        self.assertTrue(resp.get_json()["success"])
+
+                    with patch("src.utils.camera_discovery.test_camera_stream", return_value={"success": True, "width": 1280, "height": 720}):
+                        resp = client.post("/api/cameras/test-connection", json={"rtsp_url": "rtsp://test"})
+                        self.assertEqual(resp.status_code, 200)
+                        self.assertTrue(resp.get_json()["success"])
+            finally:
+                pipeline.stop()
+
     def test_voyager_runtime_pipeline_kwargs(self):
         """Verifies that VoyagerRuntime defaults specified_frame_rate to 0 to prevent videorate duplication."""
         from unittest.mock import patch
