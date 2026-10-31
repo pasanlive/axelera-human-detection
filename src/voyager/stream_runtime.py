@@ -220,11 +220,10 @@ def _patch_voyager_stream_input() -> None:
                     element["num_children"] = 0
 
             elif inst == "queue":
-                # Leaky downstream queue with max-size-buffers=1:
-                # Guarantees that queues before the Metis AIPU never buffer more than 1 frame.
-                # If a catch-up burst or delayed frame arrives from decoder, the older frame is
-                # dropped cleanly without overflowing the Level-Zero hardware command queue (-1402).
-                element["max-size-buffers"] = 1
+                # Leaky downstream queue with max-size-buffers=2:
+                # Allows smooth GStreamer preroll while preventing queue buildup (>2 frames)
+                # before Metis AIPU, eliminating Level-Zero command queue overflow (-1402).
+                element["max-size-buffers"] = 2
                 element["max-size-bytes"] = 0
                 element["max-size-time"] = 0
                 element["leaky"] = 2
@@ -345,11 +344,11 @@ def _patch_voyager_stream_input() -> None:
                     print(f"[RTSP SELECT-STREAM] Failed to hook select-stream: {e}")
 
             elif inst == "queue":
-                # Leaky downstream queue: allows at most 1 buffer between decoder and AIPU.
+                # Leaky downstream queue: allows at most 2 buffers between decoder and AIPU.
                 # If a catch-up burst arrives from the network/decoder, older decoded frames are
                 # dropped gracefully without corrupting H.265 video or overwhelming Metis command queues (-1402).
                 for prop_name, prop_val in [
-                    ("max-size-buffers", 1),
+                    ("max-size-buffers", 2),
                     ("max-size-bytes", 0),
                     ("max-size-time", 0),
                 ]:
@@ -476,6 +475,7 @@ def _patch_voyager_stream_input() -> None:
             rtsp_props['protocols'] = 1
         # When 'all' or '', omit 'protocols' so GStreamer automatically negotiates UDP/TCP with the camera
 
+        gst.rtspsrc(rtsp_props)
         gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
 
     def patched_build_input_gst(self: Any, gst: Any, stream_idx: str):
