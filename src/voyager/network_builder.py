@@ -241,7 +241,7 @@ class BuildOptions:
     person_nms_iou: float = 0.45
     face_conf: float = 0.50
     max_faces_per_frame: int = 6
-    min_face_px: int = 32
+    min_face_px: int = 48
     plate_conf: float = 0.40
     max_plates_per_frame: int = 4
     tracker_max_age: int = 50

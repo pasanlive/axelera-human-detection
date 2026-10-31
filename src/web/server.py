@@ -566,7 +566,22 @@ class WebServer:
             # ── identities ──────────────────────────────────────────────────
             if method == "GET" and path == "/api/identities":
                 ids = p.face_db.list_identities()
-                return 200, {"identities": ids, "count": len(ids)}
+                raw_profiles = p.face_db.get_profiles() if hasattr(p.face_db, "get_profiles") else [{"name": n} for n in ids]
+                profiles = []
+                for prof in raw_profiles:
+                    name = prof["name"]
+                    stats = p.face_history_db.get_person_stats(name) if hasattr(p, "face_history_db") else {}
+                    thumb = prof.get("thumbnail") or stats.get("latest_thumbnail")
+                    profiles.append({
+                        "name": name,
+                        "sample_count": prof.get("sample_count", 1),
+                        "thumbnail": thumb,
+                        "events_count": stats.get("events_count", 0),
+                        "total_detections": stats.get("total_detections", 0),
+                        "last_seen": stats.get("last_seen"),
+                        "last_camera": stats.get("last_camera"),
+                    })
+                return 200, {"identities": ids, "count": len(ids), "profiles": profiles}
             if method == "DELETE" and path.startswith("/api/identity/"):
                 name = urllib.parse.unquote(path.split("/")[-1])
                 return 200, {"success": p.face_db.remove_identity(name), "name": name}
@@ -581,7 +596,7 @@ class WebServer:
                 return (200 if ok else 400), ({"success": True, "name": name, "message": msg} if ok
                                               else {"error": msg})
 
-            # ── face recognition history & unidentified faces ───────────────
+            # ── face recognition history, grouped labels & unidentified faces ───────────────
             if method == "POST" and path == "/api/faces/enroll_unidentified":
                 face_id = body.get("face_id")
                 name = body.get("name")
@@ -590,6 +605,24 @@ class WebServer:
                 ok, msg = p.enroll_unidentified_face(face_id, name)
                 return (200 if ok else 400), ({"success": True, "name": name, "face_id": face_id, "message": msg}
                                               if ok else {"error": msg})
+            if method == "GET" and path == "/api/faces/grouped":
+                def _get_q(k, default=None):
+                    v = query.get(k, default)
+                    return v[0] if isinstance(v, list) and v else v
+                try:
+                    limit_per_label = int(_get_q("limit_per_label", 8))
+                except (ValueError, TypeError):
+                    limit_per_label = 8
+                groups = p.face_history_db.get_history_grouped_by_label(limit_per_label=limit_per_label)
+                for g in groups:
+                    name = g["name"]
+                    if g["is_identified"]:
+                        prof = p.face_db.get_profile(name)
+                        if prof:
+                            g["template_count"] = prof.get("sample_count", 1)
+                            if not g.get("primary_thumbnail") and prof.get("thumbnail"):
+                                g["primary_thumbnail"] = prof["thumbnail"]
+                return 200, {"groups": groups, "count": len(groups)}
             if method == "GET" and path == "/api/faces/history":
                 def _get_q(k, default=None):
                     v = query.get(k, default)

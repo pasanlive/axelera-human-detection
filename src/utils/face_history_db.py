@@ -253,6 +253,89 @@ class FaceHistoryDatabase:
             out.append(d)
         return out
 
+    def get_history_grouped_by_label(self, limit_per_label: int = 8, max_groups: int = 50) -> List[Dict[str, Any]]:
+        """
+        Groups face sightings by identity label (e.g., 'John Doe', 'Jane', 'Unidentified').
+        Returns aggregate metrics (total sightings, detection count, last seen camera/time)
+        and the recent sighting thumbnails for each group.
+        """
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("""
+                SELECT
+                    name,
+                    is_identified,
+                    COUNT(*) as events_count,
+                    COALESCE(SUM(detection_count), 0) as total_detections,
+                    MAX(last_seen) as last_seen,
+                    MIN(timestamp) as first_seen,
+                    MAX(similarity) as max_similarity,
+                    MAX(confidence) as max_confidence
+                FROM face_sightings
+                GROUP BY name, is_identified
+                ORDER BY last_seen DESC
+                LIMIT ?
+            """, (max_groups,))
+            group_rows = cur.fetchall()
+
+            groups: List[Dict[str, Any]] = []
+            for g in group_rows:
+                g_dict = dict(g)
+                cur.execute("""
+                    SELECT id, timestamp, last_seen, camera_id, name, is_identified,
+                           similarity, confidence, thumbnail, detection_count, bbox
+                    FROM face_sightings
+                    WHERE name = ? AND is_identified = ?
+                    ORDER BY last_seen DESC
+                    LIMIT ?
+                """, (g["name"], g["is_identified"], limit_per_label))
+                s_rows = cur.fetchall()
+                sightings = []
+                primary_thumbnail = None
+                last_camera = None
+                for sr in s_rows:
+                    sd = dict(sr)
+                    if sd.get("thumbnail") and not primary_thumbnail:
+                        primary_thumbnail = sd["thumbnail"]
+                    if not last_camera and sd.get("camera_id"):
+                        last_camera = sd["camera_id"]
+                    if sd.get("bbox"):
+                        try:
+                            sd["bbox"] = json.loads(sd["bbox"])
+                        except Exception:
+                            pass
+                    sightings.append(sd)
+
+                g_dict["is_identified"] = bool(g_dict["is_identified"])
+                g_dict["primary_thumbnail"] = primary_thumbnail
+                g_dict["last_camera"] = last_camera
+                g_dict["recent_sightings"] = sightings
+                groups.append(g_dict)
+
+            return groups
+
+    def get_person_stats(self, name: str) -> Dict[str, Any]:
+        """Returns sighting statistics for a specific enrolled identity name."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("""
+                SELECT
+                    COUNT(*) as events_count,
+                    COALESCE(SUM(detection_count), 0) as total_detections,
+                    MAX(last_seen) as last_seen,
+                    MIN(timestamp) as first_seen,
+                    MAX(similarity) as max_similarity,
+                    (SELECT camera_id FROM face_sightings WHERE name = ? ORDER BY last_seen DESC LIMIT 1) as last_camera,
+                    (SELECT thumbnail FROM face_sightings WHERE name = ? AND thumbnail IS NOT NULL ORDER BY last_seen DESC LIMIT 1) as latest_thumbnail
+                FROM face_sightings
+                WHERE name = ? AND is_identified = 1
+            """, (name, name, name))
+            row = cur.fetchone()
+            if row and row["events_count"]:
+                return dict(row)
+            return {"events_count": 0, "total_detections": 0, "last_seen": None, "first_seen": None,
+                    "max_similarity": 0.0, "last_camera": None, "latest_thumbnail": None}
+
     def get_unidentified_faces(self, limit: int = 50, status: str = "pending") -> List[Dict[str, Any]]:
         """Returns unidentified faces that can be labeled and enrolled."""
         with self._lock:
@@ -294,6 +377,22 @@ class FaceHistoryDatabase:
                     return json.loads(row["embedding"])
                 except Exception:
                     return None
+            return None
+
+    def get_unidentified_face(self, face_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves raw record (thumbnail, bbox, camera, etc.) for an unidentified face."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("SELECT * FROM unidentified_faces WHERE face_id = ?", (face_id,))
+            row = cur.fetchone()
+            if row:
+                d = dict(row)
+                if d.get("bbox"):
+                    try:
+                        d["bbox"] = json.loads(d["bbox"])
+                    except Exception:
+                        pass
+                return d
             return None
 
     def enroll_unidentified_face(self, face_id: str, name: str) -> bool:

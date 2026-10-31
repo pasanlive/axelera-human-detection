@@ -347,6 +347,40 @@ class TestFaceDatabase(unittest.TestCase):
             self.assertEqual(db.list_identities(), [])
             self.assertTrue(os.path.exists(os.path.join(tmp, "db.legacy.json")))
 
+    def test_multi_template_gallery_and_profiles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "faces.json")
+            db = FaceDatabase(db_path=db_path)
+
+            v_front = np.zeros(512, dtype=np.float32)
+            v_front[0] = 1.0
+            v_profile = np.zeros(512, dtype=np.float32)
+            v_profile[1] = 1.0
+
+            db.add_identity("Alice", v_front, thumbnail="data:image/jpeg;base64,alice1")
+            db.add_identity("Alice", v_profile)
+
+            prof = db.get_profile("Alice")
+            self.assertIsNotNone(prof)
+            self.assertEqual(prof["sample_count"], 2)
+            self.assertEqual(prof["thumbnail"], "data:image/jpeg;base64,alice1")
+
+            # Match matches both frontal and side profile
+            m_p, s_p = db.match(v_profile, threshold=0.8)
+            self.assertEqual(m_p, "Alice")
+            self.assertGreaterEqual(s_p, 0.99)
+
+            m_f, s_f = db.match(v_front, threshold=0.8)
+            self.assertEqual(m_f, "Alice")
+            self.assertGreaterEqual(s_f, 0.99)
+
+            # Persists across reload
+            db2 = FaceDatabase(db_path=db_path)
+            prof2 = db2.get_profile("Alice")
+            self.assertEqual(prof2["sample_count"], 2)
+            self.assertEqual(prof2["thumbnail"], "data:image/jpeg;base64,alice1")
+            self.assertEqual(len(db2.get_profiles()), 1)
+
 
 class TestIdentityResolver(unittest.TestCase):
 
@@ -875,6 +909,27 @@ class TestWebApi(unittest.TestCase):
                 self.assertEqual(stats["pending_unidentified"], 1)
                 self.assertIn("Jane Doe", [top["name"] for top in stats["top_identities"]])
 
+                # 4b. Test GET /api/faces/grouped
+                status, grouped_res = server.handle_api("GET", "/api/faces/grouped", {}, {})
+                self.assertEqual(status, 200)
+                self.assertIn("groups", grouped_res)
+                g_names = [g["name"] for g in grouped_res["groups"]]
+                self.assertIn("Jane Doe", g_names)
+                self.assertIn("Unidentified", g_names)
+                jane_group = next(g for g in grouped_res["groups"] if g["name"] == "Jane Doe")
+                self.assertEqual(jane_group["total_detections"], 2)
+                self.assertGreaterEqual(len(jane_group["recent_sightings"]), 1)
+
+                # 4c. Test GET /api/identities rich profiles
+                pipeline.face_db.add_identity("Jane Doe", emb_jane, thumbnail="data:image/jpeg;base64,jane_thumb")
+                status, id_res = server.handle_api("GET", "/api/identities", {}, {})
+                self.assertEqual(status, 200)
+                self.assertIn("profiles", id_res)
+                jane_prof = next(p for p in id_res["profiles"] if p["name"] == "Jane Doe")
+                self.assertEqual(jane_prof["total_detections"], 2)
+                self.assertEqual(jane_prof["sample_count"], 1)
+                self.assertEqual(jane_prof["thumbnail"], "data:image/jpeg;base64,jane_thumb")
+
                 # 5. Test POST /api/faces/enroll_unidentified
                 status, enroll_res = server.handle_api(
                     "POST",
@@ -975,6 +1030,20 @@ class TestFaceHistoryDatabase(unittest.TestCase):
             self.assertEqual(stats["total_detections"], 3)
             self.assertEqual(stats["events_count"], 2)
             self.assertEqual(stats["unique_identified"], 2)
+
+            # Grouped by label query
+            groups = db.get_history_grouped_by_label()
+            self.assertGreaterEqual(len(groups), 1)
+            g_names = [g["name"] for g in groups]
+            self.assertIn("Alice", g_names)
+            alice_group = next(g for g in groups if g["name"] == "Alice")
+            self.assertEqual(alice_group["total_detections"], 2)
+            self.assertEqual(len(alice_group["recent_sightings"]), 1)
+
+            # Person stats
+            p_stats = db.get_person_stats("Alice")
+            self.assertEqual(p_stats["total_detections"], 2)
+            self.assertEqual(p_stats["events_count"], 1)
 
             db.close()
 
