@@ -216,12 +216,13 @@ def _patch_voyager_stream_input() -> None:
                 # Critical RTSP stability parameters for continuous IP camera streaming:
                 # 1. do-rtsp-keep-alive=True: Periodically sends keep-alives to prevent camera session timeout.
                 # 2. tcp-timeout=30000000: 30s timeout prevents false reconnect loops during camera GOP intervals.
-                # 3. drop-on-latency=True: Drops late frames during network bursts instead of building latency.
+                # 3. drop-on-latency=False: Over TCP, never discard RTP packets; dropping packets corrupts H.265 GOP reference frames (POC errors).
                 # 4. protocols=4 (GST_RTSP_LOWER_TRANS_TCP): Force interleaved TCP to eliminate UDP packet loss/firewalls.
                 for prop_name, prop_val in [
                     ("do-rtsp-keep-alive", True),
                     ("tcp-timeout", 30000000),
-                    ("drop-on-latency", True),
+                    ("drop-on-latency", False),
+                    ("latency", 500),
                 ]:
                     try:
                         elem.set_property(prop_name, prop_val)
@@ -251,14 +252,25 @@ def _patch_voyager_stream_input() -> None:
                     print(f"[RTSP SELECT-STREAM] Failed to hook select-stream: {e}")
 
             elif inst == "queue":
-                # Standard Axelera golden-gst queue configuration (max-size-buffers=4, no dropping).
-                # Live rate-limiting and drop-on-latency are handled upstream at the network layer by rtspsrc,
-                # ensuring full buffer integrity when feeding axinferencenet.
+                # Leaky downstream queue: allows at most 2 buffers between decoder and AIPU.
+                # If a catch-up burst arrives from the network/decoder, older decoded frames are
+                # dropped gracefully without corrupting H.265 video or overwhelming Metis command queues (-1301).
                 for prop_name, prop_val in [
-                    ("max-size-buffers", 4),
+                    ("max-size-buffers", 2),
                     ("max-size-bytes", 0),
                     ("max-size-time", 0),
-                    ("leaky", 0),
+                    ("leaky", 2),  # GST_QUEUE_LEAK_DOWNSTREAM (drop oldest buffer)
+                ]:
+                    try:
+                        elem.set_property(prop_name, prop_val)
+                    except Exception:
+                        pass
+
+            elif inst.startswith("avdec_"):
+                # Multi-threaded software decoding across Cortex-A76 performance cores:
+                # Accelerates 2.5K (2304x1296) H.265 decoding so the CPU never falls behind camera rate.
+                for prop_name, prop_val in [
+                    ("max-threads", 4),
                 ]:
                     try:
                         elem.set_property(prop_name, prop_val)
@@ -341,8 +353,8 @@ def _patch_voyager_stream_input() -> None:
             'location': f"{loc}",
             'user-id': f"{username}",
             'user-pw': f"{password}",
-            'latency': max(latency, 200),
-            'drop-on-latency': True,
+            'latency': max(latency, 500),
+            'drop-on-latency': False,
             'do-rtsp-keep-alive': True,
             'tcp-timeout': 30000000,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
