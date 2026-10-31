@@ -174,8 +174,31 @@ def _patch_voyager_stream_input() -> None:
         from axelera.app.pipe import io
         from axelera.app import config as ax_config
         from axelera.app.pipe import gst_helper
+        from axelera.app import gst_builder
     except ImportError:
         return
+
+    # Patch gst_builder._OldBuilder.queue so any queue defaults to max-size-buffers=1, leaky=downstream
+    try:
+        _orig_builder_queue = getattr(gst_builder._OldBuilder, "queue", None)
+        if _orig_builder_queue is not None:
+            def patched_builder_queue(self: Any, props: Any = None, **kwargs: Any) -> None:
+                p = dict(props or {})
+                p.setdefault("max-size-buffers", 1)
+                p.setdefault("max-size-time", 0)
+                p.setdefault("max-size-bytes", 0)
+                p.setdefault("leaky", 2)
+                kwargs.setdefault("max-size-buffers", 1)
+                kwargs.setdefault("max-size-time", 0)
+                kwargs.setdefault("max-size-bytes", 0)
+                kwargs.setdefault("leaky", 2)
+                return _orig_builder_queue(self, props=p, **kwargs)
+
+            gst_builder._OldBuilder.queue = patched_builder_queue
+            if hasattr(gst_builder, "Builder"):
+                gst_builder.Builder.queue = patched_builder_queue
+    except Exception as e:
+        print(f"[VOYAGER HW] Could not patch gst_builder.queue: {e}")
 
     # Patch gst_helper._create_element to intercept rtspsrc, decodebin, queue, and axinferencenet
     _orig_create_element = getattr(gst_helper, "_create_element", None)
@@ -196,6 +219,24 @@ def _patch_voyager_stream_input() -> None:
                 if element.get("num_children", 0) > 0:
                     element["num_children"] = 0
 
+            elif inst == "queue":
+                # Leaky downstream queue with max-size-buffers=1:
+                # Guarantees that queues before the Metis AIPU never buffer more than 1 frame.
+                # If a catch-up burst or delayed frame arrives from decoder, the older frame is
+                # dropped cleanly without overflowing the Level-Zero hardware command queue (-1402).
+                element["max-size-buffers"] = 1
+                element["max-size-bytes"] = 0
+                element["max-size-time"] = 0
+                element["leaky"] = 2
+
+            elif inst == "rtspsrc":
+                element.setdefault("buffer-mode", 2)
+                element.setdefault("ntp-sync", False)
+                element.setdefault("drop-on-latency", False)
+                element.setdefault("do-rtsp-keep-alive", True)
+                element.setdefault("tcp-timeout", 30000000)
+                element.setdefault("latency", 500)
+
             elem = _orig_create_element(element)
 
             if inst == "axinferencenet":
@@ -214,11 +255,16 @@ def _patch_voyager_stream_input() -> None:
 
             elif inst == "rtspsrc":
                 # Critical RTSP stability parameters for continuous IP camera streaming:
-                # 1. do-rtsp-keep-alive=True: Periodically sends keep-alives to prevent camera session timeout.
-                # 2. tcp-timeout=30000000: 30s timeout prevents false reconnect loops during camera GOP intervals.
-                # 3. drop-on-latency=False: Over TCP, never discard RTP packets; dropping packets corrupts H.265 GOP reference frames (POC errors).
-                # 4. protocols=4 (GST_RTSP_LOWER_TRANS_TCP): Force interleaved TCP to eliminate UDP packet loss/firewalls.
+                # 1. buffer-mode=2 ("buffer"): Prevents rtpjitterbuffer from calculating/resetting clock skew
+                #    on long streaming sessions, eliminating -1402 wait kernel aborts.
+                # 2. ntp-sync=False: Prevents RTP timestamp warping against wall clock.
+                # 3. do-rtsp-keep-alive=True: Periodically sends keep-alives to prevent camera session timeout.
+                # 4. tcp-timeout=30000000: 30s timeout prevents false reconnect loops during camera GOP intervals.
+                # 5. drop-on-latency=False: Over TCP, never discard RTP packets; dropping packets corrupts H.265 GOP reference frames (POC errors).
+                # 6. protocols=4 (GST_RTSP_LOWER_TRANS_TCP): Force interleaved TCP to eliminate UDP packet loss/firewalls.
                 for prop_name, prop_val in [
+                    ("buffer-mode", 2),
+                    ("ntp-sync", False),
                     ("do-rtsp-keep-alive", True),
                     ("tcp-timeout", 30000000),
                     ("drop-on-latency", False),
@@ -237,6 +283,53 @@ def _patch_voyager_stream_input() -> None:
                     except Exception:
                         pass
 
+                def _on_rtspsrc_new_manager(rtspsrc_elem: Any, manager: Any) -> None:
+                    def _on_element_added(bin_elem: Any, child: Any) -> None:
+                        c_factory = child.get_factory() if hasattr(child, "get_factory") else None
+                        c_name = c_factory.get_name() if c_factory else (child.get_name() if hasattr(child, "get_name") else "")
+                        elem_name = child.get_name() if hasattr(child, "get_name") else ""
+                        if "jitterbuffer" in c_name or "rtpjitterbuffer" in elem_name:
+                            # Mode 2 (GST_RTP_JITTER_BUFFER_MODE_BUFFER) disables calculate_skew/reset_skew completely!
+                            for p_name, p_val in [
+                                ("mode", 2),
+                                ("do-lost", False),
+                                ("drop-on-latency", False),
+                                ("max-dropout-time", 0),
+                                ("max-misorder-time", 0),
+                                ("rfc7273-sync", False),
+                            ]:
+                                try:
+                                    child.set_property(p_name, p_val)
+                                except Exception:
+                                    pass
+                            try:
+                                print(f"[VOYAGER HW] rtpjitterbuffer configured: mode={child.get_property('mode')} "
+                                      f"drop-on-latency={child.get_property('drop-on-latency')}")
+                            except Exception:
+                                pass
+
+                    try:
+                        manager.connect("element-added", _on_element_added)
+                        if hasattr(manager, "iterate_elements"):
+                            try:
+                                import gi
+                                from gi.repository import Gst
+                                it = manager.iterate_elements()
+                                while True:
+                                    ok, child = it.next()
+                                    if ok != Gst.IteratorResult.OK:
+                                        break
+                                    _on_element_added(manager, child)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        print(f"[VOYAGER HW] Failed to hook rtpmanager: {e}")
+
+                try:
+                    elem.connect("new-manager", _on_rtspsrc_new_manager)
+                except Exception as e:
+                    print(f"[VOYAGER HW] Failed to hook rtspsrc new-manager: {e}")
+
                 def _on_rtspsrc_select_stream(rtspsrc_elem: Any, stream_num: int, caps: Any) -> bool:
                     caps_str = caps.to_string() if caps else ""
                     # Select video streams only; reject audio (AAC/PCM) and metadata tracks.
@@ -252,19 +345,34 @@ def _patch_voyager_stream_input() -> None:
                     print(f"[RTSP SELECT-STREAM] Failed to hook select-stream: {e}")
 
             elif inst == "queue":
-                # Leaky downstream queue: allows at most 2 buffers between decoder and AIPU.
+                # Leaky downstream queue: allows at most 1 buffer between decoder and AIPU.
                 # If a catch-up burst arrives from the network/decoder, older decoded frames are
-                # dropped gracefully without corrupting H.265 video or overwhelming Metis command queues (-1301).
+                # dropped gracefully without corrupting H.265 video or overwhelming Metis command queues (-1402).
                 for prop_name, prop_val in [
-                    ("max-size-buffers", 2),
+                    ("max-size-buffers", 1),
                     ("max-size-bytes", 0),
                     ("max-size-time", 0),
-                    ("leaky", 2),  # GST_QUEUE_LEAK_DOWNSTREAM (drop oldest buffer)
                 ]:
                     try:
                         elem.set_property(prop_name, prop_val)
                     except Exception:
                         pass
+                try:
+                    import gi
+                    from gi.repository import Gst
+                    elem.set_property("leaky", Gst.QueueLeaky.DOWNSTREAM)
+                except Exception:
+                    for l_val in (2, "downstream"):
+                        try:
+                            elem.set_property("leaky", l_val)
+                            break
+                        except Exception:
+                            pass
+                try:
+                    print(f"[VOYAGER HW] queue '{elem.get_name()}' configured: "
+                          f"max-size-buffers={elem.get_property('max-size-buffers')} leaky={elem.get_property('leaky')}")
+                except Exception:
+                    pass
 
             elif inst.startswith("avdec_"):
                 # Multi-threaded software decoding across Cortex-A76 performance cores:
@@ -357,6 +465,8 @@ def _patch_voyager_stream_input() -> None:
             'drop-on-latency': False,
             'do-rtsp-keep-alive': True,
             'tcp-timeout': 30000000,
+            'buffer-mode': 2,
+            'ntp-sync': False,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
         rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "all") or "all").lower()
@@ -366,7 +476,6 @@ def _patch_voyager_stream_input() -> None:
             rtsp_props['protocols'] = 1
         # When 'all' or '', omit 'protocols' so GStreamer automatically negotiates UDP/TCP with the camera
 
-        gst.rtspsrc(rtsp_props)
         gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
 
     def patched_build_input_gst(self: Any, gst: Any, stream_idx: str):
