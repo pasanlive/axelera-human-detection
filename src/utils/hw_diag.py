@@ -298,8 +298,12 @@ class HardwareWatchdog:
                         subprocess.run(["sudo", "-n", "sh", "-c", "echo 1 > /sys/bus/pci/rescan 2>/dev/null"], capture_output=True, timeout=10)
                         time.sleep(1.0)
 
-            # 6. Reload firmware if explicitly requested (force=True)
-            if force:
+            # 6. Reload firmware if explicitly requested (force=True) or prior MSI timeout / Link fail detected in dmesg
+            recent_dmesg = self.get_dmesg_tail(40)
+            has_msi_err = any("msi timeout" in l.lower() or "pcie link fail" in l.lower() or "dma transfer failed" in l.lower() for l in recent_dmesg)
+            if force or has_msi_err:
+                if has_msi_err and not force:
+                    print("[METIS HW] Prior PCIe MSI timeout / link failure detected in dmesg; initiating firmware reload & device recovery...")
                 axdev = shutil.which("axdevice")
                 if not axdev:
                     sdk_axdev = Path.home() / "voyager-sdk" / "venv" / "bin" / "axdevice"

@@ -46,10 +46,22 @@ class FaceDatabase:
             return
 
         try:
+            if os.path.exists(self.db_path) and os.path.getsize(self.db_path) == 0:
+                self.save()
+                return
             with open(self.db_path, "r") as f:
-                data = json.load(f)
+                content = f.read().strip()
+                if not content:
+                    self.save()
+                    return
+                data = json.loads(content)
         except Exception as e:
-            print(f"[FACE DB ERROR] Failed to load face database: {e}")
+            print(f"[FACE DB WARNING] Could not parse face database ({e}); reinitializing fresh gallery.")
+            try:
+                shutil.copyfile(self.db_path, f"{self.db_path}.corrupt.bak")
+            except Exception:
+                pass
+            self.save()
             return
 
         if isinstance(data, dict) and "identities" in data and "_meta" in data:
