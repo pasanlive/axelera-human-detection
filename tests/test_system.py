@@ -381,6 +381,31 @@ class TestFaceDatabase(unittest.TestCase):
             self.assertEqual(prof2["thumbnail"], "data:image/jpeg;base64,alice1")
             self.assertEqual(len(db2.get_profiles()), 1)
 
+    def test_ambiguity_margin_prevents_false_acceptance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = FaceDatabase(db_path=os.path.join(tmp, "db.json"))
+            v_alice = np.zeros(512, dtype=np.float32)
+            v_alice[0] = 1.0
+            v_bob = np.zeros(512, dtype=np.float32)
+            v_bob[1] = 1.0
+
+            db.add_identity("Alice", v_alice)
+            db.add_identity("Bob", v_bob)
+
+            # Query vector that is nearly equally similar to Alice and Bob
+            q = np.zeros(512, dtype=np.float32)
+            q[0] = 0.71
+            q[1] = 0.70
+            q = q / np.linalg.norm(q)
+
+            # Without margin (ambiguity_margin=0.0): Alice would barely win
+            res_no_margin = db.match(q, threshold=0.5, ambiguity_margin=0.0)
+            self.assertEqual(res_no_margin[0], "Alice")
+
+            # With margin (ambiguity_margin=0.03): candidate gap is < 0.03 -> safely rejected as Unknown
+            res_with_margin = db.match(q, threshold=0.5, ambiguity_margin=0.03)
+            self.assertEqual(res_with_margin[0], "Unknown")
+
 
 class TestIdentityResolver(unittest.TestCase):
 
@@ -588,6 +613,24 @@ class TestWebApi(unittest.TestCase):
                 status, disp_post = srv.handle_api("POST", "/api/display", {}, {"draw_boxes": False})
                 self.assertEqual(status, 200)
                 self.assertFalse(disp_post["config"]["draw_boxes"])
+
+                # face config tuning endpoints
+                status, face_cfg = srv.handle_api("GET", "/api/models/face_config", {}, {})
+                self.assertEqual(status, 200)
+                self.assertIn("match_threshold", face_cfg)
+                self.assertIn("ambiguity_margin", face_cfg)
+
+                status, face_cfg_post = srv.handle_api("POST", "/api/models/face_config", {}, {
+                    "match_threshold": 0.58,
+                    "ambiguity_margin": 0.05,
+                    "face_conf": 0.70,
+                    "min_face_px": 64,
+                    "require_person_body": True,
+                })
+                self.assertEqual(status, 200)
+                self.assertEqual(face_cfg_post["config"]["match_threshold"], 0.58)
+                self.assertEqual(face_cfg_post["config"]["ambiguity_margin"], 0.05)
+                self.assertEqual(p.match_threshold, 0.58)
 
                 status, sys_info = srv.handle_api("GET", "/api/system_info", {}, {})
                 self.assertEqual(status, 200)

@@ -204,17 +204,21 @@ class FaceDatabase:
         return True
 
     # ── matching ─────────────────────────────────────────────────────────────
-    def match(self, embedding: np.ndarray, threshold: float = 0.52) -> Tuple[str, float]:
+    def match(self, embedding: np.ndarray, threshold: float = 0.52,
+              ambiguity_margin: float = 0.03) -> Tuple[str, float]:
         """
         Finds closest enrolled face match using multi-template cosine similarity.
         :param embedding: Query face embedding vector
         :param threshold: Minimum cosine similarity score required for positive match
+        :param ambiguity_margin: Minimum margin between top identity and runner-up of another identity
         :return: Tuple of (Name, similarity_score) or ("Unknown", score)
         """
-        return self.match_batch(np.asarray(embedding, dtype=np.float32).reshape(1, -1), threshold)[0]
+        return self.match_batch(np.asarray(embedding, dtype=np.float32).reshape(1, -1),
+                                threshold, ambiguity_margin=ambiguity_margin)[0]
 
-    def match_batch(self, embeddings: np.ndarray, threshold: float = 0.52) -> List[Tuple[str, float]]:
-        """Vectorised top-1 cosine match across all gallery templates."""
+    def match_batch(self, embeddings: np.ndarray, threshold: float = 0.52,
+                    ambiguity_margin: float = 0.03) -> List[Tuple[str, float]]:
+        """Vectorised top-1 cosine match across gallery templates with ambiguity margin check."""
         q = np.asarray(embeddings, dtype=np.float32)
         if q.ndim == 1:
             q = q.reshape(1, -1)
@@ -227,10 +231,38 @@ class FaceDatabase:
 
         q = q / np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-9)
         sims = q @ gallery.T  # (N, Total_Templates)
-        best = np.argmax(sims, axis=1)
-        scores = sims[np.arange(q.shape[0]), best]
-        return [(names[b] if s >= threshold else "Unknown", float(max(s, 0.0)))
-                for b, s in zip(best, scores)]
+
+        results: List[Tuple[str, float]] = []
+        for i in range(q.shape[0]):
+            row = sims[i]
+            # Aggregate highest similarity for each distinct person identity
+            person_scores: Dict[str, float] = {}
+            for name, score in zip(names, row):
+                s_val = float(score)
+                if name not in person_scores or s_val > person_scores[name]:
+                    person_scores[name] = s_val
+
+            sorted_candidates = sorted(person_scores.items(), key=lambda kv: kv[1], reverse=True)
+            if not sorted_candidates:
+                results.append(("Unknown", 0.0))
+                continue
+
+            top_name, top_score = sorted_candidates[0]
+            if top_score < threshold:
+                results.append(("Unknown", float(max(top_score, 0.0))))
+                continue
+
+            # Check ambiguity margin between top identity and runner-up from a DIFFERENT identity
+            if len(sorted_candidates) > 1 and ambiguity_margin > 0.0:
+                _, runner_up_score = sorted_candidates[1]
+                if (top_score - runner_up_score) < ambiguity_margin:
+                    # Ambiguous match between two identities - classify as Unknown to avoid false acceptance
+                    results.append(("Unknown", float(top_score)))
+                    continue
+
+            results.append((top_name, float(top_score)))
+
+        return results
 
     def list_identities(self) -> List[str]:
         """Returns list of enrolled identity names."""

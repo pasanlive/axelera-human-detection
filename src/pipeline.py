@@ -93,7 +93,12 @@ class MultiCameraPipeline:
             if ov:
                 self.camera_model_overrides[cam["id"]] = {k: bool(v) for k, v in ov.items() if k in MODEL_IDS}
 
-        self.match_threshold = float(models_cfg.get("face_recognizer", {}).get("match_threshold", 0.55))
+        self.match_threshold = float(models_cfg.get("face_recognizer", {}).get("match_threshold", 0.52))
+        self.ambiguity_margin = float(models_cfg.get("face_recognizer", {}).get("ambiguity_margin", 0.03))
+        v_thresh = config.get("voyager", {}).get("thresholds", {}) or {}
+        self.face_conf = float(v_thresh.get("face_conf", 0.65))
+        self.min_face_px = int(v_thresh.get("min_face_px", 48))
+        self.require_person_body = bool(v_thresh.get("require_person_body", True))
         self.plate_log_interval_s = float(models_cfg.get("license_plate_recognizer", {}).get("log_interval_s", 10.0))
 
         # ── Databases ────────────────────────────────────────────────────────
@@ -223,6 +228,37 @@ class MultiCameraPipeline:
             self.identity.clear(None if not cam_id or cam_id == "all" else cam_id)
         if model_name in NETWORK_FEATURES or model_name == "pose_estimator":
             self.request_replan()
+
+    def get_face_config(self) -> Dict[str, Any]:
+        """Returns active face detection and recognition precision thresholds."""
+        return {
+            "match_threshold": self.match_threshold,
+            "ambiguity_margin": self.ambiguity_margin,
+            "face_conf": self.face_conf,
+            "min_face_px": self.min_face_px,
+            "require_person_body": self.require_person_body,
+        }
+
+    def configure_face_recognizer(self, match_threshold: Optional[float] = None,
+                                  face_conf: Optional[float] = None,
+                                  min_face_px: Optional[int] = None,
+                                  ambiguity_margin: Optional[float] = None,
+                                  require_person_body: Optional[bool] = None) -> Dict[str, Any]:
+        """Dynamically tunes face detector and recognition matching precision."""
+        if match_threshold is not None:
+            self.match_threshold = max(0.20, min(0.95, float(match_threshold)))
+        if ambiguity_margin is not None:
+            self.ambiguity_margin = max(0.0, min(0.30, float(ambiguity_margin)))
+        if face_conf is not None:
+            self.face_conf = max(0.10, min(0.99, float(face_conf)))
+        if min_face_px is not None:
+            self.min_face_px = max(24, min(300, int(min_face_px)))
+        if require_person_body is not None:
+            self.require_person_body = bool(require_person_body)
+        print(f"[FACE TUNING] Updated config: match_thresh={self.match_threshold:.2f}, "
+              f"ambiguity_margin={self.ambiguity_margin:.2f}, face_conf={self.face_conf:.2f}, "
+              f"min_face_px={self.min_face_px}, require_body={self.require_person_body}")
+        return self.get_face_config()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Capacity planning
@@ -414,12 +450,40 @@ class MultiCameraPipeline:
             return None
 
         if fa.faces and face_det_on:
-            min_face_px = int(self.config.get("voyager", {}).get("thresholds", {}).get("min_face_px", 48))
+            min_face_px = self.min_face_px
+            face_conf_thresh = self.face_conf
+
+            # Filter faces to eliminate false positives:
+            # 1. Confidence threshold
+            # 2. Aspect ratio (human-like bounding box, 0.48 <= w/h <= 1.42)
+            # 3. Minimum pixel dimensions
+            # 4. Body association: if require_person_body is True, face must belong to a detected person
+            #    or have high detection confidence (>= 0.82) to avoid background texture false positives
+            valid_faces = []
+            for f in fa.faces:
+                conf = float(f.get("confidence", 0.0))
+                if conf < face_conf_thresh:
+                    continue
+                w_f = f["bbox"][2] - f["bbox"][0]
+                h_f = f["bbox"][3] - f["bbox"][1]
+                if w_f <= 0 or h_f <= 0:
+                    continue
+                aspect = float(w_f / h_f)
+                if aspect < 0.48 or aspect > 1.42:
+                    continue
+                if self.require_person_body and f.get("person_index") is None and conf < 0.82:
+                    continue
+                valid_faces.append(f)
+            fa.faces = valid_faces
+
             with_emb = [f for f in fa.faces if f.get("embedding") is not None
                         and (f["bbox"][2] - f["bbox"][0]) >= min_face_px
                         and (f["bbox"][3] - f["bbox"][1]) >= min_face_px] if face_rec_on else []
-            matches = self.face_db.match_batch(np.stack([f["embedding"] for f in with_emb]),
-                                               self.match_threshold) if with_emb else []
+            matches = self.face_db.match_batch(
+                np.stack([f["embedding"] for f in with_emb]),
+                threshold=self.match_threshold,
+                ambiguity_margin=self.ambiguity_margin
+            ) if with_emb else []
             match_map = {id(f): (name, sim) for f, (name, sim) in zip(with_emb, matches)}
             cam_name = self._cam_name(cam_id)
 
@@ -438,8 +502,8 @@ class MultiCameraPipeline:
 
                 thumb = _crop_face_thumb(f["bbox"]) if (face_rec_on and is_large_enough) else None
                 faces_out.append({"bbox": f["bbox"], "name": name, "similarity": sim,
-                                  "track_id": tid, "embedding": f.get("embedding"),
-                                  "thumbnail": thumb})
+                                  "track_id": tid, "confidence": f.get("confidence", 0.0),
+                                  "embedding": f.get("embedding"), "thumbnail": thumb})
 
                 # Face logging to SQLite DB & real-time notification with deduplication
                 if face_rec_on and is_large_enough:

@@ -374,13 +374,23 @@ def parse_frame_result(result: Any, timestamp: float, track_iou: float = 0.3) ->
             f_boxes[:, [1, 3]] *= size[1]
         owner = assign_faces_to_persons(f_boxes, p_boxes)
         for i in range(len(f_boxes)):
+            box = f_boxes[i]
+            w_b = box[2] - box[0]
+            h_b = box[3] - box[1]
+            if w_b <= 0 or h_b <= 0:
+                continue
+            aspect = float(w_b / h_b)
+            # Filter out non-face aspect ratios (extremely thin or excessively flat rectangles)
+            if aspect < 0.40 or aspect > 1.50:
+                continue
+
             emb = None
             em = _secondary(faces, i, TASK_FACE_EMB)
             vecs = getattr(em, "embedding", None) if em is not None else None
             if vecs is not None and len(vecs):
                 emb = np.asarray(vecs[0], dtype=np.float32).ravel()
             fa.faces.append({
-                "bbox": f_boxes[i].tolist(),
+                "bbox": box.tolist(),
                 "confidence": float(f_scores[i]) if i < len(f_scores) else 0.0,
                 "embedding": emb,
                 "person_index": int(owner[i]) if owner[i] >= 0 else None,

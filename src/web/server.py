@@ -542,6 +542,32 @@ class WebServer:
                 plan = p.set_performance_profile(body.get("profile", "auto"))
                 return 200, {"success": True, "profile": p.performance_profile, "capacity": plan,
                              "models": p.get_models_status()}
+            if method == "GET" and path == "/api/models/face_config":
+                return 200, p.get_face_config()
+            if method == "POST" and path == "/api/models/face_config":
+                cfg = p.configure_face_recognizer(
+                    match_threshold=body.get("match_threshold"),
+                    face_conf=body.get("face_conf"),
+                    min_face_px=body.get("min_face_px"),
+                    ambiguity_margin=body.get("ambiguity_margin"),
+                    require_person_body=body.get("require_person_body"),
+                )
+                self._persist({
+                    "models": {
+                        "face_recognizer": {
+                            "match_threshold": cfg["match_threshold"],
+                            "ambiguity_margin": cfg["ambiguity_margin"],
+                        }
+                    },
+                    "voyager": {
+                        "thresholds": {
+                            "face_conf": cfg["face_conf"],
+                            "min_face_px": cfg["min_face_px"],
+                            "require_person_body": cfg["require_person_body"],
+                        }
+                    }
+                })
+                return 200, {"success": True, "config": cfg}
 
             # ── cameras ─────────────────────────────────────────────────────
             if (method == "GET" or method == "POST") and path == "/api/cameras/discover":
@@ -823,11 +849,15 @@ class WebServer:
             if os.path.exists(cfg_path):
                 with open(cfg_path, "r") as f:
                     disk_cfg = yaml.safe_load(f) or {}
-                for k, v in patch.items():
-                    if isinstance(v, dict):
-                        disk_cfg.setdefault(k, {}).update(v)
-                    else:
-                        disk_cfg[k] = v
+
+                def _deep_merge(target: Dict[str, Any], source: Dict[str, Any]):
+                    for k, v in source.items():
+                        if isinstance(v, dict) and isinstance(target.get(k), dict):
+                            _deep_merge(target[k], v)
+                        else:
+                            target[k] = v
+
+                _deep_merge(disk_cfg, patch)
                 with open(cfg_path, "w") as f:
                     yaml.safe_dump(disk_cfg, f, default_flow_style=False, sort_keys=False)
         except Exception as e:

@@ -1473,6 +1473,79 @@
                             </div>
                         </div>
 
+                        <!-- ── Face Precision & False Positive Filtering Controls ── -->
+                        <div style="background: rgba(0, 0, 0, 0.22); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.5rem;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; flex-wrap: wrap; gap: 0.5rem;">
+                                <div style="font-size: 0.92rem; font-weight: 700; color: #a855f7; display: flex; align-items: center; gap: 0.5rem;">
+                                    <span>🎯</span> Face Detection &amp; Recognition Precision Tuning
+                                </div>
+                                <button class="btn-quick primary" id="btn-save-face-cfg" onclick="saveFaceConfig()" style="font-size: 0.78rem; padding: 0.35rem 0.8rem;">
+                                    💾 Save Face Tuning
+                                </button>
+                            </div>
+                            <div style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 1rem;">
+                                Fine-tune detection sensitivity and recognition thresholds to eliminate false positive background boxes and avoid identity confusion.
+                            </div>
+
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem;">
+                                <!-- Match Threshold (Cosine Sim) -->
+                                <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 0.85rem;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                                        <label style="font-size: 0.82rem; font-weight: 600; color: var(--text-main);">Recognition Threshold</label>
+                                        <span id="face-cfg-thresh-val" style="font-family: var(--font-mono); font-size: 0.85rem; font-weight: 700; color: var(--accent-primary);">0.52</span>
+                                    </div>
+                                    <input type="range" id="face-cfg-thresh" min="0.30" max="0.85" step="0.01" value="0.52" style="width: 100%; accent-color: var(--accent-primary);" oninput="document.getElementById('face-cfg-thresh-val').innerText = parseFloat(this.value).toFixed(2)">
+                                    <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.3rem;">
+                                        Minimum cosine similarity to match an enrolled profile. Recommended: <b>0.52</b> (tight: 0.58).
+                                    </div>
+                                </div>
+
+                                <!-- Ambiguity Margin (Top-1 vs Runner-Up) -->
+                                <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 0.85rem;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                                        <label style="font-size: 0.82rem; font-weight: 600; color: var(--text-main);">Ambiguity Margin (NNDR)</label>
+                                        <span id="face-cfg-margin-val" style="font-family: var(--font-mono); font-size: 0.85rem; font-weight: 700; color: #c084fc;">0.03</span>
+                                    </div>
+                                    <input type="range" id="face-cfg-margin" min="0.00" max="0.12" step="0.01" value="0.03" style="width: 100%; accent-color: #a855f7;" oninput="document.getElementById('face-cfg-margin-val').innerText = parseFloat(this.value).toFixed(2)">
+                                    <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.3rem;">
+                                        Rejects match as "Unknown" if runner-up identity score is within this margin. Prevents false positive identity matches.
+                                    </div>
+                                </div>
+
+                                <!-- Face Detection Confidence -->
+                                <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 0.85rem;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                                        <label style="font-size: 0.82rem; font-weight: 600; color: var(--text-main);">Detection Confidence</label>
+                                        <span id="face-cfg-conf-val" style="font-family: var(--font-mono); font-size: 0.85rem; font-weight: 700; color: var(--accent-success);">0.65</span>
+                                    </div>
+                                    <input type="range" id="face-cfg-conf" min="0.30" max="0.95" step="0.05" value="0.65" style="width: 100%; accent-color: var(--accent-success);" oninput="document.getElementById('face-cfg-conf-val').innerText = parseFloat(this.value).toFixed(2)">
+                                    <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.3rem;">
+                                        RetinaFace box confidence. <b>0.65+</b> eliminates false positive boxes on walls, clothing, and textures.
+                                    </div>
+                                </div>
+
+                                <!-- Minimum Face Size (px) -->
+                                <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 0.85rem;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                                        <label style="font-size: 0.82rem; font-weight: 600; color: var(--text-main);">Minimum Face Size</label>
+                                        <span id="face-cfg-minpx-val" style="font-family: var(--font-mono); font-size: 0.85rem; font-weight: 700; color: var(--accent-warning);">56 px</span>
+                                    </div>
+                                    <input type="range" id="face-cfg-minpx" min="32" max="128" step="4" value="56" style="width: 100%; accent-color: var(--accent-warning);" oninput="document.getElementById('face-cfg-minpx-val').innerText = this.value + ' px'">
+                                    <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.3rem;">
+                                        Ignores distant or blurry faces smaller than this pixel box dimension.
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Body Association Checkbox -->
+                            <div style="margin-top: 0.85rem; display: flex; align-items: center; gap: 0.6rem; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 0.65rem 0.85rem;">
+                                <input type="checkbox" id="face-cfg-require-body" checked style="width: 16px; height: 16px; accent-color: var(--accent-primary); cursor: pointer;">
+                                <label for="face-cfg-require-body" style="font-size: 0.82rem; color: var(--text-main); cursor: pointer; user-select: none;">
+                                    <b>Require Person Body Association:</b> Discards floating face boxes unless associated with a detected person body or detector confidence is &gt;82%.
+                                </label>
+                            </div>
+                        </div>
+
                         <!-- Detailed Model Cards List -->
                         <div id="settings-models-list" style="display: flex; flex-direction: column; gap: 1rem;">
                             <!-- Dynamically populated from /api/models -->
@@ -1974,6 +2047,13 @@
             <div class="form-group">
                 <label class="form-label">Person Identity Full Name</label>
                 <input type="text" id="label-modal-name" class="form-input" placeholder="e.g. Jane Doe">
+            </div>
+
+            <div class="form-group" style="margin-top: 0.5rem;">
+                <label class="form-label" style="font-size: 0.76rem; color: var(--text-dim);">Or assign as new angle for existing profile:</label>
+                <select id="label-modal-existing-select" class="form-select" onchange="onSelectExistingProfile(this.value)" style="width: 100%; font-size: 0.82rem;">
+                    <option value="">-- Or choose existing profile to add angle --</option>
+                </select>
             </div>
 
             <input type="hidden" id="label-modal-face-id" value="">
@@ -2520,6 +2600,7 @@
                     }
                 })
                 .catch(() => {});
+            loadFaceConfig();
         }
 
         function renderSettingsModels(models) {
@@ -2703,6 +2784,74 @@
             .catch(e => {
                 if (btn) btn.innerText = '⚡ Apply Profile';
                 showToast('Failed to apply profile: ' + e, true);
+            });
+        }
+
+        // ── Face Tuning Handlers ──────────────────────────────────────────────
+        function loadFaceConfig() {
+            fetch('/api/models/face_config')
+                .then(r => r.json())
+                .then(cfg => {
+                    if (!cfg) return;
+                    if (cfg.match_threshold !== undefined) {
+                        const el = document.getElementById('face-cfg-thresh');
+                        const v = document.getElementById('face-cfg-thresh-val');
+                        if (el) el.value = cfg.match_threshold;
+                        if (v) v.innerText = parseFloat(cfg.match_threshold).toFixed(2);
+                    }
+                    if (cfg.ambiguity_margin !== undefined) {
+                        const el = document.getElementById('face-cfg-margin');
+                        const v = document.getElementById('face-cfg-margin-val');
+                        if (el) el.value = cfg.ambiguity_margin;
+                        if (v) v.innerText = parseFloat(cfg.ambiguity_margin).toFixed(2);
+                    }
+                    if (cfg.face_conf !== undefined) {
+                        const el = document.getElementById('face-cfg-conf');
+                        const v = document.getElementById('face-cfg-conf-val');
+                        if (el) el.value = cfg.face_conf;
+                        if (v) v.innerText = parseFloat(cfg.face_conf).toFixed(2);
+                    }
+                    if (cfg.min_face_px !== undefined) {
+                        const el = document.getElementById('face-cfg-minpx');
+                        const v = document.getElementById('face-cfg-minpx-val');
+                        if (el) el.value = cfg.min_face_px;
+                        if (v) v.innerText = cfg.min_face_px + ' px';
+                    }
+                    if (cfg.require_person_body !== undefined) {
+                        const el = document.getElementById('face-cfg-require-body');
+                        if (el) el.checked = Boolean(cfg.require_person_body);
+                    }
+                })
+                .catch(() => {});
+        }
+
+        function saveFaceConfig() {
+            const btn = document.getElementById('btn-save-face-cfg');
+            if (btn) btn.innerText = 'Saving...';
+            const payload = {
+                match_threshold: parseFloat(document.getElementById('face-cfg-thresh').value),
+                ambiguity_margin: parseFloat(document.getElementById('face-cfg-margin').value),
+                face_conf: parseFloat(document.getElementById('face-cfg-conf').value),
+                min_face_px: parseInt(document.getElementById('face-cfg-minpx').value),
+                require_person_body: Boolean(document.getElementById('face-cfg-require-body').checked),
+            };
+            fetch('/api/models/face_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (btn) btn.innerText = '💾 Save Face Tuning';
+                if (data.success) {
+                    showToast('✓ Face recognition precision tuned & saved!');
+                } else {
+                    showToast('Failed to save face tuning', true);
+                }
+            })
+            .catch(e => {
+                if (btn) btn.innerText = '💾 Save Face Tuning';
+                showToast('Error saving face config: ' + e, true);
             });
         }
 
@@ -3966,11 +4115,31 @@
                 .catch(e => showToast('Failed to delete: ' + e, true));
         }
 
+        function onSelectExistingProfile(val) {
+            if (val) {
+                document.getElementById('label-modal-name').value = val;
+            }
+        }
+
         function openLabelModal(faceId, thumb, camId, count) {
             document.getElementById('label-modal-face-id').value = faceId;
             document.getElementById('label-modal-name').value = '';
             const statusDiv = document.getElementById('label-modal-status');
             statusDiv.style.display = 'none';
+
+            // Populate existing identities dropdown
+            const sel = document.getElementById('label-modal-existing-select');
+            if (sel) {
+                sel.innerHTML = '<option value="">-- Or choose existing profile to add angle --</option>';
+                fetch('/api/identities')
+                    .then(r => r.json())
+                    .then(data => {
+                        const ids = data.identities || [];
+                        sel.innerHTML = '<option value="">-- Or choose existing profile to add angle --</option>' +
+                            ids.map(n => `<option value="${n}">${n}</option>`).join('');
+                    })
+                    .catch(() => {});
+            }
 
             const img = document.getElementById('label-modal-thumb');
             const ph = document.getElementById('label-modal-thumb-placeholder');
