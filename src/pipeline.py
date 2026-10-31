@@ -99,6 +99,7 @@ class MultiCameraPipeline:
         self.face_conf = float(v_thresh.get("face_conf", 0.65))
         self.min_face_px = int(v_thresh.get("min_face_px", 48))
         self.require_person_body = bool(v_thresh.get("require_person_body", True))
+        self.keypoint_guided = bool(models_cfg.get("face_recognizer", {}).get("keypoint_guided", True))
         self.plate_log_interval_s = float(models_cfg.get("license_plate_recognizer", {}).get("log_interval_s", 10.0))
 
         # ── Databases ────────────────────────────────────────────────────────
@@ -237,13 +238,15 @@ class MultiCameraPipeline:
             "face_conf": self.face_conf,
             "min_face_px": self.min_face_px,
             "require_person_body": self.require_person_body,
+            "keypoint_guided": self.keypoint_guided,
         }
 
     def configure_face_recognizer(self, match_threshold: Optional[float] = None,
                                   face_conf: Optional[float] = None,
                                   min_face_px: Optional[int] = None,
                                   ambiguity_margin: Optional[float] = None,
-                                  require_person_body: Optional[bool] = None) -> Dict[str, Any]:
+                                  require_person_body: Optional[bool] = None,
+                                  keypoint_guided: Optional[bool] = None) -> Dict[str, Any]:
         """Dynamically tunes face detector and recognition matching precision."""
         if match_threshold is not None:
             self.match_threshold = max(0.20, min(0.95, float(match_threshold)))
@@ -255,9 +258,12 @@ class MultiCameraPipeline:
             self.min_face_px = max(24, min(300, int(min_face_px)))
         if require_person_body is not None:
             self.require_person_body = bool(require_person_body)
+        if keypoint_guided is not None:
+            self.keypoint_guided = bool(keypoint_guided)
         print(f"[FACE TUNING] Updated config: match_thresh={self.match_threshold:.2f}, "
               f"ambiguity_margin={self.ambiguity_margin:.2f}, face_conf={self.face_conf:.2f}, "
-              f"min_face_px={self.min_face_px}, require_body={self.require_person_body}")
+              f"min_face_px={self.min_face_px}, require_body={self.require_person_body}, "
+              f"keypoint_guided={self.keypoint_guided}")
         return self.get_face_config()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -499,6 +505,7 @@ class MultiCameraPipeline:
                 if tid is not None and face_rec_on and is_large_enough:
                     name, sim = self.identity.update(cam_id, tid, name, sim, now)
                     persons[f["person_index"]]["identity"] = name
+                    persons[f["person_index"]]["similarity"] = sim
 
                 thumb = _crop_face_thumb(f["bbox"]) if (face_rec_on and is_large_enough) else None
                 faces_out.append({"bbox": f["bbox"], "name": name, "similarity": sim,
@@ -568,6 +575,41 @@ class MultiCameraPipeline:
                             self.events = self.events[-200:]
 
         if face_rec_on:
+            # Keypoint-Guided Head Slicing & Track Continuity (Option 1)
+            # When a tracked person doesn't have an explicit RetinaFace detection this frame
+            # (e.g. turned head, glanced away, momentary blur), preserve track identity
+            # and synthesize a keypoint-guided head ROI box.
+            if self.keypoint_guided:
+                assigned_p_indices = {f["person_index"] for f in fa.faces if f.get("person_index") is not None}
+                fw, fh = fa.frame_size if (fa.frame_size and fa.frame_size[0] > 0) else (1920, 1080)
+
+                for p_idx, person in enumerate(persons):
+                    tid = person.get("track_id")
+                    id_state = self.identity.get(cam_id, tid) if tid is not None else None
+                    known_name, known_sim = id_state if id_state is not None else ("Unknown", 0.0)
+
+                    if known_name != "Unknown":
+                        person["identity"] = known_name
+                        person["similarity"] = known_sim
+
+                    # If this person did not receive a RetinaFace detection this frame but has a known identity:
+                    if p_idx not in assigned_p_indices and known_name != "Unknown":
+                        head_box = self._derive_head_bbox(person, fw, fh)
+                        if head_box is not None:
+                            w_h = head_box[2] - head_box[0]
+                            h_h = head_box[3] - head_box[1]
+                            if w_h >= 24 and h_h >= 24:
+                                thumb = _crop_face_thumb(head_box)
+                                faces_out.append({
+                                    "bbox": head_box,
+                                    "name": known_name,
+                                    "similarity": known_sim,
+                                    "track_id": tid,
+                                    "confidence": float(person.get("confidence", 0.85)),
+                                    "keypoint_guided": True,
+                                    "thumbnail": thumb,
+                                })
+
             self.identity.purge(cam_id, track_ids, now)
 
         # Plates → throttled logging
@@ -708,6 +750,53 @@ class MultiCameraPipeline:
             if c.get("id") == cam_id:
                 return c.get("name", cam_id)
         return cam_id
+
+    @staticmethod
+    def _derive_head_bbox(person: Dict[str, Any], frame_w: int, frame_h: int) -> Optional[List[float]]:
+        """
+        Derives an accurate head/face bounding box using human pose keypoints
+        (nose, eyes, ears) or upper-body anatomical prior.
+        """
+        pb = person.get("bbox")
+        if not pb or len(pb) != 4:
+            return None
+        px1, py1, px2, py2 = pb
+        pw, ph = px2 - px1, py2 - py1
+        if pw <= 0 or ph <= 0:
+            return None
+
+        kpts = person.get("keypoints")
+        # COCO-17 keypoints: 0=nose, 1=left_eye, 2=right_eye, 3=left_ear, 4=right_ear
+        if kpts is not None and isinstance(kpts, np.ndarray) and kpts.shape[0] >= 5:
+            head_k = kpts[:5]
+            valid = head_k[head_k[:, 2] > 0.25]
+            if len(valid) >= 2:
+                # Keypoint-derived head box around facial landmarks
+                vx_min = float(np.min(valid[:, 0]))
+                vx_max = float(np.max(valid[:, 0]))
+                vy_min = float(np.min(valid[:, 1]))
+                vy_max = float(np.max(valid[:, 1]))
+                cx = (vx_min + vx_max) / 2.0
+                cy = (vy_min + vy_max) / 2.0
+                span_w = max(vx_max - vx_min, pw * 0.18)
+                span_h = max(vy_max - vy_min, ph * 0.12)
+                hw = max(span_w * 1.6, 28.0)
+                hh = max(span_h * 1.8, hw * 1.15)
+                x1 = max(float(px1), cx - hw / 2.0)
+                x2 = min(float(px2), cx + hw / 2.0)
+                y1 = max(float(py1), cy - hh * 0.45)
+                y2 = min(float(py2), cy + hh * 0.55)
+                return [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)]
+
+        # Fallback: Anatomical upper body head prior (top ~22% of human box)
+        hw = pw * 0.45
+        hh = ph * 0.22
+        cx = (px1 + px2) / 2.0
+        x1 = max(0.0, cx - hw / 2.0)
+        x2 = min(float(frame_w), cx + hw / 2.0)
+        y1 = max(0.0, float(py1))
+        y2 = min(float(frame_h), float(py1) + hh)
+        return [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)]
 
     # ─────────────────────────────────────────────────────────────────────────
     # Status

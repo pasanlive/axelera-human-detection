@@ -42,6 +42,7 @@ models:
     enabled: false
     match_threshold: 0.52
     ambiguity_margin: 0.03
+    keypoint_guided: true
   license_plate_recognizer:
     enabled: false
     log_interval_s: 10

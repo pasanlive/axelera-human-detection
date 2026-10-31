@@ -81,6 +81,7 @@ def greedy_match(scores: np.ndarray, threshold: float) -> List[Tuple[int, int]]:
 
 
 def assign_faces_to_persons(face_boxes: np.ndarray, person_boxes: np.ndarray,
+                            person_keypoints: Optional[List[Any]] = None,
                             head_fraction: float = 0.45) -> np.ndarray:
     """For each face, index of the smallest person whose upper body contains the face centre (-1 if none)."""
     f = np.asarray(face_boxes, dtype=np.float32).reshape(-1, 4)
@@ -97,6 +98,22 @@ def assign_faces_to_persons(face_boxes: np.ndarray, person_boxes: np.ndarray,
     )
     area = (p[:, 2] - p[:, 0]) * (p[:, 3] - p[:, 1])
     cost = np.where(inside, area[None, :], np.inf)
+
+    # Keypoint-guided affinity: if a person's facial keypoints fall inside the face box,
+    # prioritize that assignment over generic bounding box containment
+    if person_keypoints is not None and len(person_keypoints) == p.shape[0]:
+        for p_idx, kpts in enumerate(person_keypoints):
+            if kpts is not None and isinstance(kpts, np.ndarray) and kpts.shape[0] >= 5:
+                head_k = kpts[:5]
+                valid = head_k[head_k[:, 2] > 0.25]
+                if len(valid) > 0:
+                    k_cx = float(np.mean(valid[:, 0]))
+                    k_cy = float(np.mean(valid[:, 1]))
+                    for f_idx in range(f.shape[0]):
+                        if inside[f_idx, p_idx]:
+                            dist = float(np.sqrt((cx[f_idx] - k_cx) ** 2 + (cy[f_idx] - k_cy) ** 2))
+                            cost[f_idx, p_idx] = dist
+
     best = np.argmin(cost, axis=1)
     has = np.isfinite(cost[np.arange(f.shape[0]), best])
     out[has] = best[has]
@@ -372,7 +389,7 @@ def parse_frame_result(result: Any, timestamp: float, track_iou: float = 0.3) ->
             f_boxes = f_boxes.copy()
             f_boxes[:, [0, 2]] *= size[0]
             f_boxes[:, [1, 3]] *= size[1]
-        owner = assign_faces_to_persons(f_boxes, p_boxes)
+        owner = assign_faces_to_persons(f_boxes, p_boxes, [p.get("keypoints") for p in fa.persons])
         for i in range(len(f_boxes)):
             box = f_boxes[i]
             w_b = box[2] - box[0]

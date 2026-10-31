@@ -551,12 +551,14 @@ class WebServer:
                     min_face_px=body.get("min_face_px"),
                     ambiguity_margin=body.get("ambiguity_margin"),
                     require_person_body=body.get("require_person_body"),
+                    keypoint_guided=body.get("keypoint_guided"),
                 )
                 self._persist({
                     "models": {
                         "face_recognizer": {
                             "match_threshold": cfg["match_threshold"],
                             "ambiguity_margin": cfg["ambiguity_margin"],
+                            "keypoint_guided": cfg["keypoint_guided"],
                         }
                     },
                     "voyager": {

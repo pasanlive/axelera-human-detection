@@ -121,11 +121,21 @@ class Visualizer:
                 x1, y1, x2, y2 = map(int, bbox)
                 conf = det.get("confidence", 0.0)
                 track_id = det.get("track_id", None)
-                label = f"Person #{track_id} ({conf:.2f})" if track_id else f"Person ({conf:.2f})"
+                identity = det.get("identity")
+                sim = det.get("similarity", 0.0)
+                is_known = bool(identity and identity != "Unknown")
 
-                cv2.rectangle(out_frame, (x1, y1), (x2, y2), COLOR_HUMAN_BOX, 2)
+                if is_known:
+                    sim_str = f" ({sim * 100:.0f}%)" if sim > 0 else ""
+                    label = f"{identity} #{track_id}{sim_str}" if track_id else f"{identity}{sim_str}"
+                    color = COLOR_FACE_BOX
+                else:
+                    label = f"Person #{track_id} ({conf:.2f})" if track_id else f"Person ({conf:.2f})"
+                    color = COLOR_HUMAN_BOX
+
+                cv2.rectangle(out_frame, (x1, y1), (x2, y2), color, 2)
                 (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(out_frame, (x1, y1 - th - 6), (x1 + tw + 6, y1), COLOR_HUMAN_BOX, -1)
+                cv2.rectangle(out_frame, (x1, y1 - th - 6), (x1 + tw + 6, y1), color, -1)
                 cv2.putText(out_frame, label, (x1 + 3, y1 - 4),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
@@ -177,7 +187,10 @@ class Visualizer:
                 color = COLOR_FACE_BOX if is_known else COLOR_UNKNOWN_FACE
 
                 if is_known:
-                    label = f"{name} ({sim * 100:.0f}%)" if sim > 0 else name
+                    if face.get("keypoint_guided"):
+                        label = f"{name} ({sim * 100:.0f}%) [tracked]" if sim > 0 else f"{name} [tracked]"
+                    else:
+                        label = f"{name} ({sim * 100:.0f}%)" if sim > 0 else name
                 else:
                     label = f"Unidentified #{tid}" if tid is not None else "Unidentified Face"
 

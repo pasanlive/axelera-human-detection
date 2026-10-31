@@ -212,6 +212,13 @@ class TestResultParser(unittest.TestCase):
         faces = np.array([[40, 10, 60, 40], [240, 200, 260, 230], [500, 0, 510, 10]], dtype=np.float32)
         self.assertEqual(assign_faces_to_persons(faces, persons).tolist(), [0, -1, -1])
 
+        # Test keypoint-guided face weighting: face closer to facial keypoint (nose) associates strongly
+        kpts = [
+            np.array([[50, 25, 0.9], [45, 20, 0.9], [55, 20, 0.9], [40, 22, 0.9], [60, 22, 0.9]], dtype=np.float32),
+            None
+        ]
+        self.assertEqual(assign_faces_to_persons(faces[:1], persons, person_keypoints=kpts).tolist(), [0])
+
     def test_parse_full_frame(self):
         emb = np.random.randn(512).astype(np.float32)
         meta = {
@@ -537,6 +544,37 @@ class TestPipelineSimulated(unittest.TestCase):
         finally:
             hub.stop()
 
+    def test_derive_head_bbox(self):
+        # Invalid bounding boxes return None
+        self.assertIsNone(MultiCameraPipeline._derive_head_bbox({}, 1920, 1080))
+        self.assertIsNone(MultiCameraPipeline._derive_head_bbox({"bbox": [0, 0, 0, 0]}, 1920, 1080))
+        self.assertIsNone(MultiCameraPipeline._derive_head_bbox({"bbox": [100, 100, 50, 50]}, 1920, 1080))
+
+        # Anatomical prior fallback when keypoints are missing
+        person = {"bbox": [100, 100, 300, 500]}
+        box = MultiCameraPipeline._derive_head_bbox(person, 1920, 1080)
+        self.assertIsNotNone(box)
+        self.assertEqual(len(box), 4)
+        self.assertGreaterEqual(box[0], 0)
+        self.assertLessEqual(box[2], 1920)
+        self.assertAlmostEqual(box[1], 100.0) # starts near top of person
+
+        # Keypoint-derived head box around facial landmarks (COCO 0..4)
+        kpts = np.zeros((17, 3), dtype=np.float32)
+        kpts[0] = [200, 150, 0.9] # nose
+        kpts[1] = [190, 140, 0.9] # left eye
+        kpts[2] = [210, 140, 0.9] # right eye
+        kpts[3] = [180, 145, 0.9] # left ear
+        kpts[4] = [220, 145, 0.9] # right ear
+        person_with_kpts = {"bbox": [100, 100, 300, 500], "keypoints": kpts}
+        head_box = MultiCameraPipeline._derive_head_bbox(person_with_kpts, 1920, 1080)
+        self.assertIsNotNone(head_box)
+        # Face bounding box contains the nose and eyes
+        self.assertLessEqual(head_box[0], 190)
+        self.assertGreaterEqual(head_box[2], 210)
+        self.assertLessEqual(head_box[1], 140)
+        self.assertGreaterEqual(head_box[3], 150)
+
 
 class TestWebApi(unittest.TestCase):
 
@@ -619,6 +657,7 @@ class TestWebApi(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertIn("match_threshold", face_cfg)
                 self.assertIn("ambiguity_margin", face_cfg)
+                self.assertIn("keypoint_guided", face_cfg)
 
                 status, face_cfg_post = srv.handle_api("POST", "/api/models/face_config", {}, {
                     "match_threshold": 0.58,
@@ -626,10 +665,20 @@ class TestWebApi(unittest.TestCase):
                     "face_conf": 0.70,
                     "min_face_px": 64,
                     "require_person_body": True,
+                    "keypoint_guided": False,
                 })
                 self.assertEqual(status, 200)
                 self.assertEqual(face_cfg_post["config"]["match_threshold"], 0.58)
                 self.assertEqual(face_cfg_post["config"]["ambiguity_margin"], 0.05)
+                self.assertFalse(face_cfg_post["config"]["keypoint_guided"])
+                self.assertFalse(p.keypoint_guided)
+
+                # Re-enable keypoint_guided
+                status, face_cfg_post2 = srv.handle_api("POST", "/api/models/face_config", {}, {
+                    "keypoint_guided": True,
+                })
+                self.assertEqual(status, 200)
+                self.assertTrue(p.keypoint_guided)
                 self.assertEqual(p.match_threshold, 0.58)
 
                 status, sys_info = srv.handle_api("GET", "/api/system_info", {}, {})

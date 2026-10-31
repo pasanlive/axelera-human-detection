@@ -1537,12 +1537,21 @@
                                 </div>
                             </div>
 
-                            <!-- Body Association Checkbox -->
-                            <div style="margin-top: 0.85rem; display: flex; align-items: center; gap: 0.6rem; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 0.65rem 0.85rem;">
-                                <input type="checkbox" id="face-cfg-require-body" checked style="width: 16px; height: 16px; accent-color: var(--accent-primary); cursor: pointer;">
-                                <label for="face-cfg-require-body" style="font-size: 0.82rem; color: var(--text-main); cursor: pointer; user-select: none;">
-                                    <b>Require Person Body Association:</b> Discards floating face boxes unless associated with a detected person body or detector confidence is &gt;82%.
-                                </label>
+                            <div style="margin-top: 0.85rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                                <!-- Body Association Checkbox -->
+                                <div style="display: flex; align-items: center; gap: 0.6rem; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 0.65rem 0.85rem;">
+                                    <input type="checkbox" id="face-cfg-require-body" checked style="width: 16px; height: 16px; accent-color: var(--accent-primary); cursor: pointer;">
+                                    <label for="face-cfg-require-body" style="font-size: 0.82rem; color: var(--text-main); cursor: pointer; user-select: none;">
+                                        <b>Require Person Body Association:</b> Discards floating face boxes unless associated with a detected person body or detector confidence is &gt;82%.
+                                    </label>
+                                </div>
+                                <!-- Keypoint-Guided Cascaded Tracking Checkbox -->
+                                <div style="display: flex; align-items: center; gap: 0.6rem; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 0.65rem 0.85rem;">
+                                    <input type="checkbox" id="face-cfg-keypoint-guided" checked style="width: 16px; height: 16px; accent-color: #a855f7; cursor: pointer;">
+                                    <label for="face-cfg-keypoint-guided" style="font-size: 0.82rem; color: var(--text-main); cursor: pointer; user-select: none;">
+                                        <b>Keypoint-Guided Multi-Model Cascading:</b> Derives head bounds from facial pose keypoints (eyes/nose/ears) and maintains track continuity without flickering when glancing away.
+                                    </label>
+                                </div>
                             </div>
                         </div>
 
@@ -2821,6 +2830,10 @@
                         const el = document.getElementById('face-cfg-require-body');
                         if (el) el.checked = Boolean(cfg.require_person_body);
                     }
+                    if (cfg.keypoint_guided !== undefined) {
+                        const el = document.getElementById('face-cfg-keypoint-guided');
+                        if (el) el.checked = Boolean(cfg.keypoint_guided);
+                    }
                 })
                 .catch(() => {});
         }
@@ -2834,6 +2847,7 @@
                 face_conf: parseFloat(document.getElementById('face-cfg-conf').value),
                 min_face_px: parseInt(document.getElementById('face-cfg-minpx').value),
                 require_person_body: Boolean(document.getElementById('face-cfg-require-body').checked),
+                keypoint_guided: Boolean(document.getElementById('face-cfg-keypoint-guided').checked),
             };
             fetch('/api/models/face_config', {
                 method: 'POST',
