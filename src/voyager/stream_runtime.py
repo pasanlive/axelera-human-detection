@@ -165,6 +165,9 @@ def _patch_voyager_stream_input() -> None:
     # 3. Disable zero-copy dmabuf to prevent CMA heap allocation fragmentation on raw CPU frames.
     os.environ["AX_DISABLE_OPENCL"] = "1"
     os.environ["AX_OPENCL_PREFERENCE"] = "NONE"
+    os.environ["AXELERA_USE_DOUBLE_BUFFER"] = "0"
+    os.environ["AXELERA_USE_DMABUF"] = "0"
+    os.environ["AXELERA_USE_CL_DOUBLE_BUFFER"] = "0"
     os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
 
     try:
@@ -174,13 +177,43 @@ def _patch_voyager_stream_input() -> None:
     except ImportError:
         return
 
-    # Patch gst_helper._create_element to intercept rtspsrc, decodebin, and queue
+    # Patch gst_helper._create_element to intercept rtspsrc, decodebin, queue, and axinferencenet
     _orig_create_element = getattr(gst_helper, "_create_element", None)
     if _orig_create_element is not None:
         def patched_create_element(element: dict[str, Any]) -> Any:
-            elem = _orig_create_element(element)
             inst = element.get("instance", "")
-            if inst == "rtspsrc":
+            if inst == "axinferencenet":
+                # Crucial for multi-model / composite pipelines on Rockchip RK3588:
+                # In composite pipelines (e.g. YOLOv8-pose + RetinaFace + FaceNet),
+                # Voyager SDK calculates num_children = num_cores // model_cores (4 // 1 = 4).
+                # This instantiates 10 concurrent hardware queues across a 4-core card,
+                # over-subscribing the Level-Zero command queue and causing wait kernel -1402 abort.
+                # Forcing num_children=0 (which AxInference treats as 1 single instance per model)
+                # and disabling double buffering + dmabuf prevents this fatal error.
+                element["double_buffer"] = False
+                element["dmabuf_inputs"] = False
+                element["dmabuf_outputs"] = False
+                if element.get("num_children", 0) > 0:
+                    element["num_children"] = 0
+
+            elem = _orig_create_element(element)
+
+            if inst == "axinferencenet":
+                for prop_name, prop_val in [
+                    ("double_buffer", False),
+                    ("dmabuf_inputs", False),
+                    ("dmabuf_outputs", False),
+                    ("num_children", 0),
+                ]:
+                    try:
+                        elem.set_property(prop_name, prop_val)
+                    except Exception:
+                        pass
+                nc = elem.get_property("num_children") if hasattr(elem, "get_property") else 0
+                print(f"[VOYAGER HW] axinferencenet '{element.get('name', '')}' configured: "
+                      f"double_buffer=False dmabuf=False num_children={nc}")
+
+            elif inst == "rtspsrc":
                 # Critical RTSP stability parameters for continuous IP camera streaming:
                 # 1. do-rtsp-keep-alive=True: Periodically sends keep-alives to prevent camera session timeout.
                 # 2. tcp-timeout=30000000: 30s timeout prevents false reconnect loops during camera GOP intervals.
@@ -394,7 +427,7 @@ class VoyagerRuntime(BaseRuntime):
         from src.voyager.sdk import sdk_modules
 
         self.sdk = sdk_modules()
-        if vcfg.get("patch_voyager_input", False):
+        if vcfg.get("patch_voyager_input", True):
             _patch_voyager_stream_input()
         self.vcfg = vcfg
         from src.voyager.sdk import resolve_networks_dir

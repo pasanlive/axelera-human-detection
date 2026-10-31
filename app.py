@@ -22,6 +22,18 @@ import sys
 import threading
 import time
 
+# Hardware stability defaults for Axelera Metis on Rockchip RK3588:
+# 1. Disable double-buffering: prevents Level-Zero command queue oversubscription (-1402) on composite pipelines.
+# 2. Disable dmabuf: prevents CMA memory allocation fragmentation when CPU software decoding (avdec_h264) is active.
+# 3. Disable OpenCL: prevents Mali GPU memory/queue collisions with Metis AIPU.
+# 4. Enforce TCP RTSP transport: eliminates packet loss and missing POC frames over LAN/Wi-Fi.
+os.environ.setdefault("AXELERA_USE_DOUBLE_BUFFER", "0")
+os.environ.setdefault("AXELERA_USE_DMABUF", "0")
+os.environ.setdefault("AXELERA_USE_CL_DOUBLE_BUFFER", "0")
+os.environ.setdefault("AX_DISABLE_OPENCL", "1")
+os.environ.setdefault("AX_OPENCL_PREFERENCE", "NONE")
+os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
+
 import yaml
 
 from src.pipeline import MultiCameraPipeline
