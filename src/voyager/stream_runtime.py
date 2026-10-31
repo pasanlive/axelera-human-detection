@@ -162,11 +162,11 @@ def _patch_voyager_stream_input() -> None:
     # Optimize Voyager runtime for embedded Rockchip RK3588 + Metis PCIe:
     # 1. Disable OpenCL to eliminate Mali GPU unified memory queue collisions with Metis Level-Zero.
     # 2. Disable double-buffering so inference executes synchronously per frame (queue depth = 1).
-    # 3. Disable zero-copy dmabuf to prevent CMA heap allocation fragmentation on raw CPU frames.
+    # 3. Enable Linux DMA buffers (3 = inputs + outputs) so GStreamer decoder memory maps directly without OpenCL fallback.
     os.environ["AX_DISABLE_OPENCL"] = "1"
     os.environ["AX_OPENCL_PREFERENCE"] = "NONE"
     os.environ["AXELERA_USE_DOUBLE_BUFFER"] = "0"
-    os.environ["AXELERA_USE_DMABUF"] = "0"
+    os.environ["AXELERA_USE_DMABUF"] = "3"
     os.environ["AXELERA_USE_CL_DOUBLE_BUFFER"] = "0"
     os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
 
@@ -189,10 +189,10 @@ def _patch_voyager_stream_input() -> None:
                 # This instantiates 10 concurrent hardware queues across a 4-core card,
                 # over-subscribing the Level-Zero command queue and causing wait kernel -1402 abort.
                 # Forcing num_children=0 (which AxInference treats as 1 single instance per model)
-                # and disabling double buffering + dmabuf prevents this fatal error.
+                # and disabling double buffering prevents this fatal error.
+                # Note: dmabuf_inputs and dmabuf_outputs must remain enabled (default) so
+                # create_dma_buf_allocator() is used instead of create_opencl_allocator().
                 element["double_buffer"] = False
-                element["dmabuf_inputs"] = False
-                element["dmabuf_outputs"] = False
                 if element.get("num_children", 0) > 0:
                     element["num_children"] = 0
 
@@ -201,8 +201,6 @@ def _patch_voyager_stream_input() -> None:
             if inst == "axinferencenet":
                 for prop_name, prop_val in [
                     ("double_buffer", False),
-                    ("dmabuf_inputs", False),
-                    ("dmabuf_outputs", False),
                     ("num_children", 0),
                 ]:
                     try:
@@ -210,8 +208,9 @@ def _patch_voyager_stream_input() -> None:
                     except Exception:
                         pass
                 nc = elem.get_property("num_children") if hasattr(elem, "get_property") else 0
+                dmabuf_in = elem.get_property("dmabuf_inputs") if hasattr(elem, "get_property") else None
                 print(f"[VOYAGER HW] axinferencenet '{element.get('name', '')}' configured: "
-                      f"double_buffer=False dmabuf=False num_children={nc}")
+                      f"double_buffer=False dmabuf_inputs={dmabuf_in} num_children={nc}")
 
             elif inst == "rtspsrc":
                 # Critical RTSP stability parameters for continuous IP camera streaming:
@@ -753,6 +752,13 @@ class VoyagerRuntime(BaseRuntime):
                                                 arr = _img.asarray()
                                             except Exception:
                                                 pass
+                                if arr is None and hasattr(_img, "aspil"):
+                                    try:
+                                        pil_img = _img.aspil()
+                                        if pil_img is not None:
+                                            arr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+                                    except Exception:
+                                        pass
                                 if arr is None and hasattr(_img, "to_numpy"):
                                     arr = _img.to_numpy()
                                 if arr is None and isinstance(_img, np.ndarray):
@@ -760,10 +766,30 @@ class VoyagerRuntime(BaseRuntime):
                                 if arr is not None:
                                     if hasattr(arr, "copy"):
                                         arr = arr.copy()
+                                    # Ensure uint8 depth
+                                    if arr.dtype != np.uint8:
+                                        if np.issubdtype(arr.dtype, np.floating) and arr.max() <= 1.05:
+                                            arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
+                                        else:
+                                            arr = np.clip(arr, 0, 255).astype(np.uint8)
+                                    # Channel handling
                                     if arr.ndim == 2:
                                         arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
-                                    elif arr.ndim == 3 and arr.shape[2] == 1:
-                                        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+                                    elif arr.ndim == 3:
+                                        if arr.shape[2] == 1:
+                                            arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+                                        elif arr.shape[2] == 4:
+                                            cf = getattr(_img, "color_format", None)
+                                            cf_name = str(getattr(cf, "name", cf)).upper()
+                                            if "RGBA" in cf_name:
+                                                arr = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+                                            else:
+                                                arr = cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+                                    if not getattr(self, "_first_frame_preview_logged", False):
+                                        self._first_frame_preview_logged = True
+                                        print(f"[VOYAGER PREVIEW] First frame: shape={arr.shape}, dtype={arr.dtype}, "
+                                              f"min={int(arr.min())}, max={int(arr.max())}, mean={float(arr.mean()):.1f}, "
+                                              f"color_fmt={getattr(_img, 'color_format', 'unknown')}")
                                     return arr
                             except Exception as e:
                                 print(f"[PREVIEW ERROR] Failed to extract image from frame: {e}")
