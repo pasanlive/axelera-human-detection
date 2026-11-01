@@ -379,10 +379,14 @@ class NativeHTTPHandler(BaseHTTPRequestHandler):
 
         if method == "GET" and (path == "/api/logs/download" or path.startswith("/api/logs/download/")):
             from src.utils.logger import get_logger
+            from src.utils.system_logger import get_system_logger
             fname = query.get("filename")
             if not fname and path.startswith("/api/logs/download/"):
                 fname = path[len("/api/logs/download/"):].split("/")[0]
-            filepath, safe_name = get_logger().get_log_filepath(fname)
+            if fname and fname.startswith("system_"):
+                filepath, safe_name = get_system_logger().get_log_filepath(fname)
+            else:
+                filepath, safe_name = get_logger().get_log_filepath(fname)
             if not filepath or not os.path.isfile(filepath):
                 self._send_json(404, {"error": "Log file not found"})
                 return
@@ -785,20 +789,40 @@ class WebServer:
             if method == "GET" and path == "/api/logs/list":
                 import datetime
                 from src.utils.logger import get_logger
+                from src.utils.system_logger import get_system_logger
                 logger = get_logger()
-                logs = logger.list_logs()
+                sys_logger = get_system_logger()
+                app_logs = logger.list_logs()
+                sys_logs = sys_logger.list_logs()
                 today = datetime.date.today().isoformat()
+                combined_logs = list(app_logs)
+                for sl in sys_logs:
+                    combined_logs.append({
+                        "filename": sl["filename"],
+                        "date": sl["date"],
+                        "size_bytes": sl["size_bytes"],
+                        "mtime": sl["mtime"],
+                        "type": "system",
+                    })
+                combined_logs.sort(key=lambda x: x.get("mtime", 0), reverse=True)
                 return 200, {
-                    "logs": logs,
+                    "logs": combined_logs,
+                    "app_logs": app_logs,
+                    "system_logs": sys_logs,
                     "current": f"app_{today}.log",
+                    "current_system": f"system_{today}.log",
                     "retention_days": logger.max_retention_days,
                 }
             if method == "GET" and path == "/api/logs/view":
                 from src.utils.logger import get_logger
+                from src.utils.system_logger import get_system_logger
                 fname = query.get("filename")
                 tail = int(query.get("tail", 1000)) if query.get("tail") else 1000
-                res = get_logger().read_log(filename=fname, tail=tail)
-                return (200 if "error" not in res else 404), res
+                if fname and fname.startswith("system_"):
+                    res = get_system_logger().read_log(filename=fname, tail=tail)
+                else:
+                    res = get_logger().read_log(filename=fname, tail=tail)
+                return (200 if "error" not in res and res.get("exists", True) else 404), res
 
             # ── auto-update ─────────────────────────────────────────────────
             au = self.auto_updater
@@ -893,8 +917,12 @@ class WebServer:
         @self.app.route('/api/logs/download/<path:filename>')
         def api_log_download(filename=None):
             from src.utils.logger import get_logger
+            from src.utils.system_logger import get_system_logger
             fname = filename or request.args.get("filename")
-            filepath, safe_name = get_logger().get_log_filepath(fname)
+            if fname and fname.startswith("system_"):
+                filepath, safe_name = get_system_logger().get_log_filepath(fname)
+            else:
+                filepath, safe_name = get_logger().get_log_filepath(fname)
             if not filepath or not os.path.isfile(filepath):
                 return jsonify({"error": "Log file not found"}), 404
             with open(filepath, "rb") as f:

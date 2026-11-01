@@ -105,7 +105,16 @@ def main():
     parser.add_argument("--cert", type=str, default=None, help="SSL certificate filepath")
     parser.add_argument("--key", type=str, default=None, help="SSL private key filepath")
     parser.add_argument("--reload-firmware", action="store_true", help="Force reload Metis AIPU firmware before startup")
+    parser.add_argument("--no-supervisor", action="store_true", help="Disable fail-safe recovery supervisor and run worker directly")
+    parser.add_argument("--max-restarts", type=int, default=None, help="Maximum supervisor auto-restarts before giving up")
     args = parser.parse_args()
+
+    # Automatically run under fail-safe auto-recovery supervisor unless disabled or one-shot action
+    is_one_shot = bool(args.enroll or args.list_faces or args.print_plan)
+    under_supervisor = os.environ.get("_UPSIDE_SUPERVISED") == "1"
+    if not under_supervisor and not args.no_supervisor and not is_one_shot:
+        from src.utils.supervisor import run_supervisor
+        sys.exit(run_supervisor(sys.argv[1:], max_restarts=args.max_restarts))
 
     # Initialize daily rolling logger with 30-day automatic retention in ~/.upside-ai/logs
     from src.utils.config_manager import resolve_active_config_path, UPSIDE_LOGS_DIR
@@ -193,6 +202,12 @@ def main():
         print(json.dumps(pipeline.get_capacity_plan(), indent=2))
         pipeline.preview.stop()
         return
+
+    # Record system start event in dedicated daily rolling system log
+    from src.utils.system_logger import record_system_start, record_system_stop
+    cams = [c.get("id", f"cam_{i}") for i, c in enumerate(config.get("cameras", []))]
+    backend = "simulated" if args.simulate else "metis_aipu"
+    record_system_start(pid=os.getpid(), active_config=active_config, camera_ids=cams, backend=backend)
 
     shutdown = threading.Event()
 
@@ -310,6 +325,11 @@ def main():
         try:
             import subprocess
             subprocess.run(["pkill", "-9", "axtrace"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        try:
+            from src.utils.system_logger import record_system_stop
+            record_system_stop("Axelera Metis pipeline stopped cleanly")
         except Exception:
             pass
         print("[SHUTDOWN] Axelera Metis system stopped cleanly.")

@@ -220,10 +220,12 @@ def _patch_voyager_stream_input() -> None:
                     element["num_children"] = 0
 
             elif inst == "queue":
-                # Leaky downstream queue with max-size-buffers=2:
-                # Allows smooth GStreamer preroll while preventing queue buildup (>2 frames)
-                # before Metis AIPU, eliminating Level-Zero command queue overflow (-1402).
-                element["max-size-buffers"] = 2
+                # Leaky downstream queue with max-size-buffers=1:
+                # Allows smooth GStreamer preroll while strictly preventing queue buildup (>1 frame)
+                # before Metis AIPU. If latency temporarily spikes during complex multi-object frames,
+                # older incoming frames are dropped upstream, preventing Level-Zero command list
+                # backlog and eliminating wait kernel timeout (-1301) and command list overflow (-1402).
+                element["max-size-buffers"] = 1
                 element["max-size-bytes"] = 0
                 element["max-size-time"] = 0
                 element["leaky"] = 2
@@ -344,11 +346,12 @@ def _patch_voyager_stream_input() -> None:
                     print(f"[RTSP SELECT-STREAM] Failed to hook select-stream: {e}")
 
             elif inst == "queue":
-                # Leaky downstream queue: allows at most 2 buffers between decoder and AIPU.
-                # If a catch-up burst arrives from the network/decoder, older decoded frames are
-                # dropped gracefully without corrupting H.265 video or overwhelming Metis command queues (-1402).
+                # Leaky downstream queue: allows at most 1 buffer between decoder and AIPU.
+                # If a catch-up burst arrives from the network/decoder or latency temporarily spikes,
+                # older decoded frames are dropped gracefully upstream without corrupting video or
+                # overwhelming Metis command queues (-1402) or triggering wait kernel timeouts (-1301).
                 for prop_name, prop_val in [
-                    ("max-size-buffers", 2),
+                    ("max-size-buffers", 1),
                     ("max-size-bytes", 0),
                     ("max-size-time", 0),
                 ]:

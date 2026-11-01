@@ -93,6 +93,18 @@ def enable_crash_handler(on_crash_callback: Optional[Callable[[], None]] = None)
             except Exception:
                 pass
 
+        try:
+            from src.utils.system_logger import record_system_crash
+            record_system_crash(
+                pid=os.getpid(),
+                exit_code=128 + sig_num,
+                signal_name=sig_name,
+                reason=f"Worker received signal {sig_name}; frames={metrics.get('frames_processed', 0)}, lat={metrics.get('last_latency_ms', 0):.1f}ms",
+                uptime_s=time.time() - (wd.last_frame_time if wd.last_frame_time > 0 else time.time()),
+            )
+        except Exception:
+            pass
+
         print(f"{'='*70}\nTerminating process via default handler...\n{'='*70}\n", file=sys.stderr)
         # Restore default handler and re-raise to produce core dump / standard exit code
         signal.signal(sig_num, signal.SIG_DFL)

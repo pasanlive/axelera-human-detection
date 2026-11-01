@@ -5,7 +5,10 @@ Runs without Metis hardware or the Voyager SDK: the pipeline uses SimulatedRunti
 and the result parser is exercised with lightweight fakes of the SDK meta classes.
 """
 
+import datetime
 import os
+import shutil
+import sys
 import tempfile
 import time
 import unittest
@@ -1267,6 +1270,133 @@ class TestFaceHistoryDatabase(unittest.TestCase):
             self.assertEqual(p_stats["events_count"], 1)
 
             db.close()
+
+
+class TestSystemRecoveryAndLogger(unittest.TestCase):
+    """Tests for dedicated daily rolling system logger and fail-safe process supervisor."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="upside_syslog_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_system_logger_lifecycle(self):
+        from src.utils.system_logger import SystemLogger
+        logger = SystemLogger(log_dir=self.tmp_dir, max_retention_days=14)
+
+        # Log all lifecycle events
+        logger.log("START", "System test started", pid=1234, backend="test")
+        logger.log("STATUS_CHANGE", "cam_01 state: connecting -> live")
+        logger.log("CRASH", "Worker crashed", pid=1234, exit_code=134, signal="SIGABRT", reason="wait kernel -1301", uptime="120s")
+        logger.log("RECOVERY", "Hardware recovery action [SUCCESS]: cleared locks")
+        logger.log("RESTART", "Auto-restarting system (attempt 1) in 1.0s: wait kernel -1301")
+        logger.log("STOP", "Clean shutdown")
+
+        # Verify daily file exists
+        today = datetime.date.today().isoformat()
+        expected_file = os.path.join(self.tmp_dir, f"system_{today}.log")
+        self.assertTrue(os.path.isfile(expected_file))
+
+        # Test read_log
+        res = logger.read_log(date_str=today, tail=50)
+        self.assertTrue(res["exists"])
+        self.assertGreaterEqual(res["total_lines"], 6)
+        content = res["content"]
+        self.assertIn("[START]", content)
+        self.assertIn("[STATUS_CHANGE]", content)
+        self.assertIn("[CRASH]", content)
+        self.assertIn("wait kernel -1301", content)
+        self.assertIn("[RECOVERY]", content)
+        self.assertIn("[RESTART]", content)
+        self.assertIn("[STOP]", content)
+
+        # Test list_logs
+        logs = logger.list_logs()
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["filename"], f"system_{today}.log")
+        self.assertEqual(logs[0]["type"], "system")
+
+        # Test safe get_log_filepath
+        path, fname = logger.get_log_filepath(f"system_{today}.log")
+        self.assertEqual(path, expected_file)
+        self.assertEqual(fname, f"system_{today}.log")
+
+        # Test old log pruning
+        old_file = os.path.join(self.tmp_dir, "system_2020-01-01.log")
+        with open(old_file, "w") as f:
+            f.write("[2020-01-01 00:00:00.000] [START] Ancient log\n")
+        deleted = logger.cleanup_old_logs()
+        self.assertIn("system_2020-01-01.log", deleted)
+        self.assertFalse(os.path.exists(old_file))
+
+    def test_supervisor_clean_exit(self):
+        from src.utils.supervisor import ProcessSupervisor
+        cmd = [sys.executable, "-c", "import sys; sys.exit(0)"]
+        supervisor = ProcessSupervisor(cmd, max_restarts=2, initial_backoff_s=0.1)
+        exit_code = supervisor.run()
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(supervisor.restart_count, 0)
+
+    def test_supervisor_crash_detection_and_recovery(self):
+        from src.utils.supervisor import ProcessSupervisor
+        # Child script simulates Axelera L0::Exception -1301 abort
+        script = (
+            "import sys\n"
+            "sys.stderr.write('[STATUS] frames=2576\\n')\n"
+            "sys.stderr.write('[ERROR][waitForQueueBinaryCompletion]: Wait kernel failed with return code -1301.\\n')\n"
+            "sys.stderr.write('terminate called after throwing an instance of \\'L0::Exception\\'\\n')\n"
+            "sys.stderr.write('Aborted\\n')\n"
+            "sys.exit(134)\n"
+        )
+        cmd = [sys.executable, "-c", script]
+        # max_restarts=1 so it crashes, diagnoses, attempts recovery, and exits after 1 restart
+        supervisor = ProcessSupervisor(cmd, max_restarts=1, initial_backoff_s=0.1)
+        exit_code = supervisor.run()
+        self.assertEqual(exit_code, 134)
+        self.assertEqual(supervisor.restart_count, 1)
+
+        # Verify failure reason extracted
+        reason = supervisor._extract_crash_reason()
+        self.assertIn("1301", reason)
+        self.assertIn("Level-Zero", reason)
+
+    def test_web_api_system_logs(self):
+        from src.pipeline import MultiCameraPipeline
+        from src.web.server import WebServer
+        from src.utils.system_logger import SystemLogger, _SYSTEM_LOGGER_INSTANCE
+
+        # Setup temporary system logger
+        import src.utils.system_logger as sl_module
+        orig_sys_logger = sl_module._SYSTEM_LOGGER_INSTANCE
+        test_sys_logger = SystemLogger(log_dir=self.tmp_dir)
+        sl_module._SYSTEM_LOGGER_INSTANCE = test_sys_logger
+
+        try:
+            test_sys_logger.log("START", "Web API test start", pid=9999)
+            cfg = {
+                "system": {"target_fps": 10},
+                "cameras": [],
+                "pipeline": {"models": {}},
+                "web": {"enabled": False},
+            }
+            pipe = MultiCameraPipeline(cfg, simulate=True)
+            srv = WebServer(pipe, host="127.0.0.1", port=0, use_https=False)
+
+            # Test /api/logs/list
+            status, payload = srv.handle_api("GET", "/api/logs/list", {}, {})
+            self.assertEqual(status, 200)
+            self.assertIn("system_logs", payload)
+            self.assertGreaterEqual(len(payload["system_logs"]), 1)
+
+            # Test /api/logs/view with system log
+            today = datetime.date.today().isoformat()
+            status, view_payload = srv.handle_api("GET", "/api/logs/view", {"filename": f"system_{today}.log", "tail": "10"}, {})
+            self.assertEqual(status, 200)
+            self.assertTrue(view_payload.get("exists"))
+            self.assertIn("Web API test start", view_payload.get("content", ""))
+        finally:
+            sl_module._SYSTEM_LOGGER_INSTANCE = orig_sys_logger
 
 
 if __name__ == "__main__":
