@@ -16,6 +16,7 @@ import ipaddress
 import os
 import re
 import socket
+import sys
 import time
 import urllib.parse
 import uuid
@@ -444,3 +445,9 @@ def test_camera_stream(source: str, username: Optional[str] = None,
         "url": safe_url,
         "error": last_error or f"Failed to connect to RTSP camera stream within {timeout_s:.1f}s. Check IP, credentials, and stream path.",
     }
+
+
+if __name__ == "__main__":
+    from tools.discover_cameras import main as cli_main
+    sys.exit(cli_main())
+

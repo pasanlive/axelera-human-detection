@@ -874,6 +874,13 @@ class TestWebApi(unittest.TestCase):
                         resp = client.post("/api/cameras/test-connection", json={"rtsp_url": "rtsp://test"})
                         self.assertEqual(resp.status_code, 200)
                         self.assertTrue(resp.get_json()["success"])
+
+                # 6. Test tools/discover_cameras.py CLI main
+                from tools.discover_cameras import main as discover_cli_main
+                with patch("sys.argv", ["discover_cameras.py", "--subnet", "127.0.0.0/30", "--json"]):
+                    with patch("src.utils.camera_discovery.discover_network_cameras", return_value={"success": True, "count": 1, "cameras": [{"ip": "127.0.0.1", "port": 554, "vendor": "TestCam"}]}):
+                        exit_code = discover_cli_main()
+                        self.assertEqual(exit_code, 0)
             finally:
                 pipeline.stop()
 
