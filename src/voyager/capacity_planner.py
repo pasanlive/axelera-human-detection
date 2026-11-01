@@ -76,6 +76,7 @@ class CameraSpec:
     sub_resolution: Tuple[int, int] = (640, 360)
     native_fps: float = 25.0
     features: FrozenSet[str] = frozenset()
+    transport: str = "auto"
 
     def stream_for(self, tier: Tier) -> Tuple[str, Tuple[int, int], str]:
         """(url, resolution, actual_stream) for the tier - falls back to main if no sub stream."""

@@ -32,7 +32,7 @@ os.environ.setdefault("AXELERA_USE_DMABUF", "3")
 os.environ.setdefault("AXELERA_USE_CL_DOUBLE_BUFFER", "0")
 os.environ.setdefault("AX_DISABLE_OPENCL", "1")
 os.environ.setdefault("AX_OPENCL_PREFERENCE", "NONE")
-os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
+os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "auto")
 
 import yaml
 
@@ -141,7 +141,7 @@ def main():
     # 3. Disable zero-copy dmabuf to prevent CMA heap fragmentation with software video decoding
     os.environ.setdefault("AX_DISABLE_OPENCL", "1")
     os.environ.setdefault("AX_OPENCL_PREFERENCE", "NONE")
-    os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
+    os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "auto")
 
     if args.headless or not os.environ.get("DISPLAY"):
         # Explicit headless mode: prevent X11 auth warnings and Pyglet display probe errors

@@ -594,7 +594,8 @@ class WebServer:
                 username = body.get("username")
                 password = body.get("password")
                 timeout = float(body.get("timeout", 6.0))
-                res = test_camera_stream(source, username=username, password=password, timeout_s=timeout)
+                transport = body.get("transport")
+                res = test_camera_stream(source, username=username, password=password, timeout_s=timeout, transport=transport)
                 return (200 if res.get("success") else 400), res
 
             if method == "GET" and path == "/api/cameras":

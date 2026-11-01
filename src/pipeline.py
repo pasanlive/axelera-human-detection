@@ -194,6 +194,7 @@ class MultiCameraPipeline:
                 sub_resolution=_res(c.get("sub_resolution"), (640, 360)),
                 native_fps=float(c.get("native_fps", 25)),
                 features=self._camera_features(c["id"]),
+                transport=c.get("transport", "auto"),
             ))
         return specs
 
@@ -340,7 +341,7 @@ class MultiCameraPipeline:
             raise ValueError(f"Camera id '{cam_id}' already exists")
         entry = {"id": cam_id, "name": cam_cfg.get("name", cam_id), "enabled": cam_cfg.get("enabled", True),
                  "source": cam_cfg["source"]}
-        for k in ("source_sub", "main_resolution", "sub_resolution", "native_fps", "features"):
+        for k in ("source_sub", "main_resolution", "sub_resolution", "native_fps", "features", "transport"):
             if cam_cfg.get(k) is not None:
                 entry[k] = cam_cfg[k]
         cams.append(entry)

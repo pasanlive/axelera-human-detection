@@ -129,6 +129,27 @@ class BaseRuntime:
 
 
 _VOYAGER_INPUT_PATCHED = False
+_CAMERA_TRANSPORTS: dict[str, str] = {}
+
+
+def register_camera_transport(url: str, transport: str) -> None:
+    """Registers camera-specific RTSP transport preference (auto, tcp, udp)."""
+    if url and transport:
+        _CAMERA_TRANSPORTS[url] = transport.lower()
+        import re
+        clean = re.sub(r"://[^@]+@", "://", url)
+        _CAMERA_TRANSPORTS[clean] = transport.lower()
+
+
+def get_camera_transport(url: str) -> str:
+    """Returns preferred transport for a given camera stream URL (auto, tcp, udp)."""
+    if not url:
+        return "auto"
+    if url in _CAMERA_TRANSPORTS:
+        return _CAMERA_TRANSPORTS[url]
+    import re
+    clean = re.sub(r"://[^@]+@", "://", url)
+    return _CAMERA_TRANSPORTS.get(clean, "auto")
 
 
 def _patch_voyager_stream_input() -> None:
@@ -276,10 +297,33 @@ def _patch_voyager_stream_input() -> None:
                     except Exception:
                         pass
 
-                for p_val in (4, "tcp"):
+                # Configure protocols on rtspsrc:
+                # 4 = TCP only, 1 = UDP only, 5 = TCP with UDP fallback (GST_RTSP_LOWER_TRANS_TCP | GST_RTSP_LOWER_TRANS_UDP)
+                # Defaulting to 5 allows cameras that reject TCP with '461 Unsupported Transport'
+                # to gracefully fall back to UDP unicast without connection aborts.
+                desired_proto = element.get("protocols")
+                if desired_proto is None:
+                    loc = element.get("location", "")
+                    cam_transport = get_camera_transport(loc)
+                    if cam_transport == "udp":
+                        desired_proto = 1
+                    elif cam_transport == "tcp":
+                        desired_proto = 4
+                    else:
+                        desired_proto = 5
+
+                proto_options = [desired_proto]
+                if desired_proto == 5:
+                    proto_options.extend(["tcp+udp", 7, "all"])
+                elif desired_proto == 1:
+                    proto_options.append("udp")
+                elif desired_proto == 4:
+                    proto_options.append("tcp")
+
+                for p_val in proto_options:
                     try:
                         elem.set_property("protocols", p_val)
-                        print(f"[RTSP PROTOCOL] rtspsrc configured transport: {elem.get_property('protocols')}")
+                        print(f"[RTSP PROTOCOL] rtspsrc '{elem.get_name()}' configured transport: {elem.get_property('protocols')}")
                         break
                     except Exception:
                         pass
@@ -471,12 +515,19 @@ def _patch_voyager_stream_input() -> None:
             'ntp-sync': False,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
-        rtsp_protocol = (os.environ.get("AXELERA_RTSP_PROTOCOL") or getattr(ax_config.env, "rtsp_protocol", "all") or "all").lower()
-        if rtsp_protocol == 'tcp':
-            rtsp_props['protocols'] = 4
-        elif rtsp_protocol == 'udp':
+        cam_transport = get_camera_transport(location)
+        if cam_transport == "udp":
             rtsp_props['protocols'] = 1
-        # When 'all' or '', omit 'protocols' so GStreamer automatically negotiates UDP/TCP with the camera
+        elif cam_transport == "tcp":
+            rtsp_props['protocols'] = 4
+        else:
+            env_proto = (os.environ.get("AXELERA_RTSP_PROTOCOL") or "auto").lower()
+            if env_proto == "udp":
+                rtsp_props['protocols'] = 1
+            elif env_proto == "tcp":
+                rtsp_props['protocols'] = 5  # prefer TCP, fallback to UDP on 461
+            else:
+                rtsp_props['protocols'] = 5  # default: TCP with UDP fallback
 
         gst.rtspsrc(rtsp_props)
         gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
@@ -656,6 +707,11 @@ class VoyagerRuntime(BaseRuntime):
 
     def apply_plan(self, plan: CapacityPlan, cameras: Dict[str, CameraSpec]) -> None:
         with self._lock:
+            for cid, spec in cameras.items():
+                if hasattr(spec, "source"):
+                    register_camera_transport(spec.source, getattr(spec, "transport", "auto"))
+                if getattr(spec, "source_sub", None):
+                    register_camera_transport(spec.source_sub, getattr(spec, "transport", "auto"))
             if self._tiling_disabled:
                 self._strip_tiling(plan)
             old = self.plan

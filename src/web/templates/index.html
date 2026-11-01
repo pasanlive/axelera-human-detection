@@ -2139,9 +2139,10 @@
                 </div>
                 <div class="form-group">
                     <label class="form-label">Transport Protocol</label>
-                    <select id="link-cam-transport" class="form-input">
-                        <option value="tcp" selected>TCP (Lossless, Recommended)</option>
-                        <option value="udp">UDP</option>
+                    <select id="link-cam-transport" class="form-input" onchange="onLinkConfigChange()">
+                        <option value="auto" selected>Auto (TCP with UDP Fallback)</option>
+                        <option value="tcp">TCP (Lossless Interleaved)</option>
+                        <option value="udp">UDP (For Cameras Rejecting TCP)</option>
                     </select>
                 </div>
             </div>
@@ -3237,7 +3238,8 @@
             if (loading) loading.style.display = 'flex';
             if (testMsg) testMsg.style.display = 'none';
 
-            const rawSource = `rtsp://${ip}:${port}${path}`;
+            const transportEl = document.getElementById('link-cam-transport');
+            const transport = transportEl ? transportEl.value : 'auto';
 
             fetch('/api/cameras/test-connection', {
                 method: 'POST',
@@ -3246,6 +3248,7 @@
                     source: rawSource,
                     username: user || undefined,
                     password: pass || undefined,
+                    transport: transport,
                     timeout: 6.0
                 })
             })
@@ -3254,6 +3257,10 @@
                 if (data.success) {
                     _connectionVerified = true;
                     _verifiedRawUrl = data.raw_url;
+
+                    if (data.transport && transportEl) {
+                        transportEl.value = data.transport;
+                    }
 
                     if (snapImg) {
                         snapImg.src = data.preview_image;
@@ -3267,7 +3274,8 @@
                         testMsg.style.background = 'rgba(16, 185, 129, 0.12)';
                         testMsg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
                         testMsg.style.color = 'var(--accent-success)';
-                        testMsg.innerHTML = `✓ <b>Stream Verified Online!</b> ${data.width}x${data.height} @ ${data.fps} FPS · ${data.latency_ms}ms latency`;
+                        const transLabel = data.transport === 'udp' ? ' · <span style="color:var(--accent-warning);font-weight:700;">[UDP Mode]</span>' : ' · <span>[TCP Mode]</span>';
+                        testMsg.innerHTML = `✓ <b>Stream Verified Online!</b> ${data.width}x${data.height} @ ${data.fps} FPS · ${data.latency_ms}ms${transLabel}`;
                     }
 
                     // Enable Link Camera button
@@ -3338,12 +3346,16 @@
                 sourceSub = `rtsp://${creds}${ip}:${port}${subpath}`;
             }
 
+            const transportEl = document.getElementById('link-cam-transport');
+            const transport = transportEl ? transportEl.value : 'auto';
+
             const payload = {
                 id: id || undefined,
                 name: name,
                 source: _verifiedRawUrl,
                 source_sub: sourceSub,
                 native_fps: fps,
+                transport: transport,
                 enabled: true
             };
 

@@ -365,77 +365,82 @@ def build_rtsp_url(source: str, username: Optional[str] = None,
 
 def test_camera_stream(source: str, username: Optional[str] = None,
                        password: Optional[str] = None,
-                       timeout_s: float = 6.0) -> Dict[str, Any]:
-    """Tests opening an RTSP camera stream and capturing a preview frame."""
+                       timeout_s: float = 6.0,
+                       transport: Optional[str] = None) -> Dict[str, Any]:
+    """Tests opening an RTSP camera stream and capturing a preview frame.
+
+    Supports 'auto', 'tcp', and 'udp' transport modes. If 'auto' is selected,
+    tries lossless TCP first; if the camera rejects TCP (e.g. 461 Unsupported Transport),
+    automatically falls back to UDP and returns the working transport.
+    """
     url = build_rtsp_url(source, username=username, password=password)
     # Mask password for safe logging
     safe_url = re.sub(r":([^@]+)@", ":***@", url)
 
-    # Force TCP transport in OpenCV FFMPEG backend for reliability
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+    chosen_transport = (transport or "auto").lower()
+    transports_to_try = [chosen_transport] if chosen_transport in ("tcp", "udp") else ["tcp", "udp"]
 
-    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-    cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(timeout_s * 1000))
-
-    t0 = time.time()
-    try:
-        if not cap.isOpened():
-            return {
-                "success": False,
-                "url": safe_url,
-                "error": f"Failed to connect to RTSP camera stream within {timeout_s:.1f}s. Check IP, credentials, and stream path.",
-            }
-
-        ret, frame = cap.read()
-        latency_ms = round((time.time() - t0) * 1000.0, 1)
-
-        if not ret or frame is None or frame.size == 0:
-            return {
-                "success": False,
-                "url": safe_url,
-                "error": "Connected to camera RTSP port, but received an empty or corrupted video frame.",
-            }
-
-        h, w = frame.shape[:2]
-        fps = round(float(cap.get(cv2.CAP_PROP_FPS) or 15.0), 1)
-
-        # Scale down preview to max 640px width for fast responsive JSON payload
-        preview_frame = frame
-        if w > 640:
-            new_w = 640
-            new_h = int(h * (640 / w))
-            preview_frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-        ret_enc, buf = cv2.imencode(".jpg", preview_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        if not ret_enc:
-            return {
-                "success": False,
-                "url": safe_url,
-                "error": "Failed to encode snapshot preview image.",
-            }
-
-        b64 = base64.b64encode(buf.tobytes()).decode("ascii")
-        preview_uri = f"data:image/jpeg;base64,{b64}"
-
-        return {
-            "success": True,
-            "url": safe_url,
-            "raw_url": url,
-            "width": w,
-            "height": h,
-            "fps": fps,
-            "latency_ms": latency_ms,
-            "preview_image": preview_uri,
-            "message": f"Stream verified: {w}x{h} @ {fps} FPS ({latency_ms}ms connect latency)",
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "url": safe_url,
-            "error": f"Connection exception: {str(e)}",
-        }
-    finally:
+    last_error = ""
+    for trans in transports_to_try:
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = f"rtsp_transport;{trans}"
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(timeout_s * 1000))
+        t0 = time.time()
         try:
-            cap.release()
-        except Exception:
-            pass
+            if not cap.isOpened():
+                last_error = f"Failed to connect to RTSP camera stream via {trans.upper()} within {timeout_s:.1f}s."
+                continue
+
+            ret, frame = cap.read()
+            latency_ms = round((time.time() - t0) * 1000.0, 1)
+
+            if not ret or frame is None or frame.size == 0:
+                last_error = f"Connected via {trans.upper()}, but received an empty or corrupted video frame."
+                continue
+
+            h, w = frame.shape[:2]
+            fps = round(float(cap.get(cv2.CAP_PROP_FPS) or 15.0), 1)
+
+            # Scale down preview to max 640px width for fast responsive JSON payload
+            preview_frame = frame
+            if w > 640:
+                new_w = 640
+                new_h = int(h * (640 / w))
+                preview_frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+            ret_enc, buf = cv2.imencode(".jpg", preview_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if not ret_enc:
+                return {
+                    "success": False,
+                    "url": safe_url,
+                    "error": "Failed to encode snapshot preview image.",
+                }
+
+            b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+            preview_uri = f"data:image/jpeg;base64,{b64}"
+
+            return {
+                "success": True,
+                "url": safe_url,
+                "raw_url": url,
+                "width": w,
+                "height": h,
+                "fps": fps,
+                "latency_ms": latency_ms,
+                "transport": trans,
+                "preview_image": preview_uri,
+                "message": f"Stream verified: {w}x{h} @ {fps} FPS via {trans.upper()} ({latency_ms}ms connect latency)",
+            }
+        except Exception as e:
+            last_error = f"Connection exception via {trans.upper()}: {str(e)}"
+        finally:
+            try:
+                cap.release()
+            except Exception:
+                pass
+
+    return {
+        "success": False,
+        "url": safe_url,
+        "error": last_error or f"Failed to connect to RTSP camera stream within {timeout_s:.1f}s. Check IP, credentials, and stream path.",
+    }
