@@ -89,7 +89,8 @@ class ProcessSupervisor:
             lines = list(self.output_buffer)
 
         full_text = "\n".join(lines)
-        # Priority root causes across entire diagnostic window
+        if "axl_dmabuf_xfer failed" in full_text or "DMA transfer failed" in full_text or "DMA Poll error" in full_text:
+            return "Axelera DMA transfer failure (DMA-BUF / WR CH0 poll error on RK3588)"
         if "Wait kernel failed with return code -1402" in full_text or "-1402" in full_text:
             return "Level-Zero wait kernel failure (-1402): Metis command queue / binary completion timeout"
         if "Wait kernel failed with return code -1301" in full_text or "-1301" in full_text:

@@ -236,11 +236,14 @@ def _patch_voyager_stream_input() -> None:
                 # over-subscribing the Level-Zero command queue and causing wait kernel -1402 abort.
                 # Forcing num_children=0 (which AxInference treats as 1 single instance per model)
                 # and disabling double buffering prevents this fatal error.
-                # Note: dmabuf_inputs and dmabuf_outputs must remain enabled (default) so
-                # create_dma_buf_allocator() is used instead of create_opencl_allocator().
                 element["double_buffer"] = False
                 if element.get("num_children", 0) > 0:
                     element["num_children"] = 0
+                # On Rockchip RK3588 with software decoding (avdec_h264/avdec_h265),
+                # buffers reside in ordinary system RAM. Disabling dmabuf_inputs and
+                # dmabuf_outputs forces the standard heap allocator and avoids axl_dmabuf_xfer EIO failures.
+                element["dmabuf_inputs"] = False
+                element["dmabuf_outputs"] = False
 
             elif inst == "videorate":
                 element.pop("props", None)
@@ -279,6 +282,8 @@ def _patch_voyager_stream_input() -> None:
                 for prop_name, prop_val in [
                     ("double_buffer", False),
                     ("num_children", 0),
+                    ("dmabuf_inputs", False),
+                    ("dmabuf_outputs", False),
                 ]:
                     try:
                         elem.set_property(prop_name, prop_val)

@@ -196,9 +196,9 @@ class HardwareWatchdog:
             except Exception:
                 pass
 
-            # 2. Try applying dma_poll=1, irq_timeout=30, dma_timeout=10 dynamically via sysfs if writable
+            # 2. Configure driver parameters dynamically via sysfs if writable (dma_poll=0 avoids WR CH0 poll error)
             for mod in ("metis", "axl"):
-                for param, val in [("dma_poll", "1"), ("irq_timeout", "30"), ("dma_timeout", "10"), ("single_msi", "1")]:
+                for param, val in [("dma_poll", "0"), ("irq_timeout", "30"), ("dma_timeout", "10")]:
                     p = Path(f"/sys/module/{mod}/parameters/{param}")
                     if p.exists():
                         try:
@@ -219,10 +219,10 @@ class HardwareWatchdog:
                     dto_val = p_dto.read_text().strip() if p_dto.exists() else "unknown"
                     poll_val = p_poll.read_text().strip() if p_poll.exists() else "unknown"
                     print(f"[KERNEL STATUS] Driver '{mod}' active (single_msi={msi_val}, irq_timeout={to_val}s, dma_timeout={dto_val}s, dma_poll={poll_val}).")
-                    if poll_val == "1":
-                        print(f"  [OK] {mod} dma_poll=1 active (protects against RK3588 dropped MSI interrupts).")
-                    elif msi_val == "0":
-                        print(f"  [ALERT] {mod} single_msi=0. Run with single_msi=1 to protect against RK3588 dropped MSI interrupts.")
+                    if poll_val == "0":
+                        print(f"  [OK] {mod} dma_poll=0 active (standard interrupt DMA mode).")
+                    elif poll_val == "1":
+                        print(f"  [NOTE] {mod} dma_poll=1 active.")
                     # Inspect actual hardware MSI vector count
                     bound_pci = list(Path(f"/sys/bus/pci/drivers/{mod}").glob("0000:*"))
                     if bound_pci:
@@ -248,9 +248,9 @@ class HardwareWatchdog:
             # 2. Kill any orphaned axtrace processes so device nodes are not held open
             subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
 
-            # 3. Apply single_msi=1, dma_poll=1, irq_timeout=30, dma_timeout=10 to sysfs directly
+            # 3. Apply dma_poll=0, irq_timeout=30, dma_timeout=10 to sysfs directly
             for mod in ("metis", "axl"):
-                for param, val in [("dma_poll", "1"), ("irq_timeout", "30"), ("dma_timeout", "10"), ("single_msi", "1")]:
+                for param, val in [("dma_poll", "0"), ("irq_timeout", "30"), ("dma_timeout", "10")]:
                     p = Path(f"/sys/module/{mod}/parameters/{param}")
                     if p.exists():
                         try:
