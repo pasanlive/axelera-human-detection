@@ -14,4 +14,8 @@ data/logs/
 *.log
 *.db
 data/*.db
+data/weights/
+weights/
+*.pt
+*.onnx
 snapshot_*.jpg

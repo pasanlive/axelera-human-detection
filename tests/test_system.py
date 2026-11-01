@@ -413,6 +413,27 @@ class TestFaceDatabase(unittest.TestCase):
             res_with_margin = db.match(q, threshold=0.5, ambiguity_margin=0.03)
             self.assertEqual(res_with_margin[0], "Unknown")
 
+    def test_cpu_face_embedder(self):
+        from src.utils.face_embedder_cpu import InceptionResnetV1, get_cpu_face_embedder
+        import torch
+
+        # Test forward pass with synthetic tensor
+        m = InceptionResnetV1()
+        m.eval()
+        t = torch.randn(1, 3, 160, 160)
+        with torch.no_grad():
+            out = m(t)
+        self.assertEqual(out.shape, (1, 512))
+
+        # Test embedding method with synthetic image
+        embedder = get_cpu_face_embedder()
+        self.assertIsNotNone(embedder)
+        img = np.random.randint(0, 255, (200, 200, 3), dtype=np.uint8)
+        emb = embedder.embed(img)
+        if emb is not None:
+            self.assertEqual(emb.shape, (512,))
+            self.assertAlmostEqual(float(np.linalg.norm(emb)), 1.0, places=4)
+
 
 class TestIdentityResolver(unittest.TestCase):
 
