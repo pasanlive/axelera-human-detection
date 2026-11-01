@@ -1361,6 +1361,14 @@ class TestSystemRecoveryAndLogger(unittest.TestCase):
         self.assertIn("1301", reason)
         self.assertIn("Level-Zero", reason)
 
+        # Also verify -1402 diagnostic mapping
+        supervisor.output_buffer.clear()
+        supervisor.output_buffer.append("[ERROR][waitForQueueBinaryCompletion]: Wait kernel failed with return code -1402.")
+        supervisor.output_buffer.append("terminate called after throwing an instance of 'L0::Exception'")
+        reason_1402 = supervisor._extract_crash_reason()
+        self.assertIn("1402", reason_1402)
+        self.assertIn("Level-Zero", reason_1402)
+
     def test_web_api_system_logs(self):
         from src.pipeline import MultiCameraPipeline
         from src.web.server import WebServer

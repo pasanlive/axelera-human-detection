@@ -251,6 +251,13 @@ def _patch_voyager_stream_input() -> None:
                 element["max-size-time"] = 0
                 element["leaky"] = 2
 
+            elif inst == "appsink":
+                # Ensure appsink never accumulates backpressure or buffers multiple frames
+                # before Python ingestion, which could delay Level-Zero completions.
+                element["max-buffers"] = 1
+                element["drop"] = True
+                element["sync"] = False
+
             elif inst == "rtspsrc":
                 element.setdefault("buffer-mode", 2)
                 element.setdefault("ntp-sync", False)
@@ -274,6 +281,17 @@ def _patch_voyager_stream_input() -> None:
                 dmabuf_in = elem.get_property("dmabuf_inputs") if hasattr(elem, "get_property") else None
                 print(f"[VOYAGER HW] axinferencenet '{element.get('name', '')}' configured: "
                       f"double_buffer=False dmabuf_inputs={dmabuf_in} num_children={nc}")
+
+            elif inst == "appsink":
+                for prop_name, prop_val in [
+                    ("max-buffers", 1),
+                    ("drop", True),
+                    ("sync", False),
+                ]:
+                    try:
+                        elem.set_property(prop_name, prop_val)
+                    except Exception:
+                        pass
 
             elif inst == "rtspsrc":
                 # Critical RTSP stability parameters for continuous IP camera streaming:
@@ -574,6 +592,20 @@ def _patch_voyager_stream_input() -> None:
         decodebin_link = ''
         if requires_decodebin:
             decodebin_link = io.build_decodebin(gst, self._allow_hardware_codec, stream_idx)
+
+        # Enforce target camera FPS and drop burst frames from RTSP / network jitter.
+        # Prevents high-framerate streams (e.g. VLC / RTSP test sources with 1000000/1 fps
+        # or network burst buffers) from overwhelming the Metis AIPU command queues (-1402).
+        # drop-only=True guarantees frames are dropped when arrival rate > target_fps,
+        # and NEVER duplicated on jitter (avoiding inplace_addstreamid meta_key collisions).
+        if target_fps > 0 and self._src.type == ax_config.SourceType.RTSP:
+            rate_props = {"drop-only": True, "skip-to-first": True}
+            if decodebin_link:
+                gst.videorate(props=rate_props, name=decodebin_link)
+            else:
+                gst.videorate(props=rate_props)
+            gst.capsfilter(caps=f'video/x-raw,framerate={target_fps}/1')
+            decodebin_link = ''
 
         gst.axinplace(
             name=decodebin_link,

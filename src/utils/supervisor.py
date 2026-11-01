@@ -90,6 +90,8 @@ class ProcessSupervisor:
 
         full_text = "\n".join(lines)
         # Priority root causes across entire diagnostic window
+        if "Wait kernel failed with return code -1402" in full_text or "-1402" in full_text:
+            return "Level-Zero wait kernel failure (-1402): Metis command queue / binary completion timeout"
         if "Wait kernel failed with return code -1301" in full_text or "-1301" in full_text:
             return "Level-Zero wait kernel timeout (-1301): AIPU command queue exceeded wait window"
         if "terminate called after throwing an instance of 'L0::Exception'" in full_text:
