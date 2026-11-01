@@ -38,19 +38,15 @@ echo "[3/6] Rescanning PCIe bus..."
 echo 1 | sudo tee /sys/bus/pci/rescan >/dev/null
 sleep 1
 
-# 4. Configure modprobe persistence and reload kernel driver module
-echo "[4/6] Configuring /etc/modprobe.d/ and reloading driver with single_msi=1 and dma_poll=1..."
-echo "options axl single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10" | sudo tee /etc/modprobe.d/axl.conf >/dev/null
-echo "options metis single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10" | sudo tee /etc/modprobe.d/metis.conf >/dev/null
+# 4. Clean up any invalid modprobe.d files and reload kernel driver module
+echo "[4/6] Reloading driver module..."
+sudo rm -f /etc/modprobe.d/axl.conf /etc/modprobe.d/metis.conf 2>/dev/null || true
 
-sudo rmmod axl 2>/dev/null || sudo rmmod metis 2>/dev/null || true
+sudo rmmod axl 2>/dev/null || sudo rmmod axl_aipu 2>/dev/null || sudo rmmod metis 2>/dev/null || true
 sleep 1
 
-if modinfo axl >/dev/null 2>&1; then
-    sudo modprobe axl single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10
-elif modinfo metis >/dev/null 2>&1; then
-    sudo modprobe metis single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10
-fi
+sudo modprobe axl 2>/dev/null || sudo modprobe axl_aipu 2>/dev/null || sudo modprobe metis 2>/dev/null || true
+sleep 1
 
 # 5. Verify MSI vector configuration
 echo "[5/6] Verifying device status and MSI allocation..."
