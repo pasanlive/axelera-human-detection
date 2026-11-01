@@ -154,7 +154,8 @@ class ProcessSupervisor:
         # 3. Use HardwareWatchdog to verify device nodes, PCIe ASPM, single_msi, and driver binding
         try:
             wd = get_watchdog()
-            wd_ok = wd.ensure_device_ready(force=True)
+            has_device = any(os.path.exists(p) for p in ("/dev/metis-0:1:0", "/dev/metis-0:0:0", "/dev/axl-0"))
+            wd_ok = wd.ensure_device_ready(force=not has_device)
             if wd_ok:
                 actions_taken.append("verified PCIe ASPM policy, single_msi=1, and device nodes")
             else:

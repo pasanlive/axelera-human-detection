@@ -183,11 +183,11 @@ def _patch_voyager_stream_input() -> None:
     # Optimize Voyager runtime for embedded Rockchip RK3588 + Metis PCIe:
     # 1. Disable OpenCL to eliminate Mali GPU unified memory queue collisions with Metis Level-Zero.
     # 2. Disable double-buffering so inference executes synchronously per frame (queue depth = 1).
-    # 3. Enable Linux DMA buffers (3 = inputs + outputs) so GStreamer decoder memory maps directly without OpenCL fallback.
+    # 3. Disable Linux DMA buffers (0 = host heap memory) so software-decoded frames use standard heap memory transfers.
     os.environ["AX_DISABLE_OPENCL"] = "1"
     os.environ["AX_OPENCL_PREFERENCE"] = "NONE"
     os.environ["AXELERA_USE_DOUBLE_BUFFER"] = "0"
-    os.environ["AXELERA_USE_DMABUF"] = "3"
+    os.environ["AXELERA_USE_DMABUF"] = "0"
     os.environ["AXELERA_USE_CL_DOUBLE_BUFFER"] = "0"
     os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
 

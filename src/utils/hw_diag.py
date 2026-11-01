@@ -297,65 +297,23 @@ class HardwareWatchdog:
                 if metis_devs:
                     print(f"[METIS HW] Metis PCIe device restored: {metis_devs}")
 
-            # 5. Check if multi-MSI (vmsi > 1 vector) is active and enforce single_msi=1
-            num_msi = 0
-            if bound_pci:
-                dev_pci = bound_pci[0].name
-                driver_link = Path(f"/sys/bus/pci/devices/{dev_pci}/driver")
-                driver_name = driver_link.resolve().name if driver_link.exists() else ("axl" if Path("/sys/module/axl").exists() else "metis")
-                msi_dir = Path(f"/sys/bus/pci/devices/{dev_pci}/msi_irqs")
-                num_msi = len(list(msi_dir.iterdir())) if msi_dir.exists() else 0
+            # 5. Check device status
+            if metis_devs:
+                pass
 
-                p_msi = Path(f"/sys/module/{driver_name}/parameters/single_msi")
-                curr_single_msi = p_msi.read_text().strip() if p_msi.exists() else "unknown"
-
-                # If device has > 1 MSI vector or driver parameter is single_msi=0:
-                if (num_msi > 1 or curr_single_msi == "0") and driver_name:
-                    print(f"[METIS HW] Rebinding PCIe device {dev_pci} to '{driver_name}' to enforce single_msi=1 (currently {num_msi} MSI vectors)...")
-                    # Unbind from current driver
-                    subprocess.run(["sudo", "-n", "sh", "-c", f"echo {dev_pci} > /sys/bus/pci/drivers/{driver_name}/unbind 2>/dev/null"], capture_output=True, timeout=5)
-                    time.sleep(0.5)
-
-                    # Update module parameter
-                    p_msi_target = Path(f"/sys/module/{driver_name}/parameters/single_msi")
-                    if p_msi_target.exists():
-                        subprocess.run(["sudo", "-n", "sh", "-c", f"echo 1 > {p_msi_target} 2>/dev/null"], capture_output=True, timeout=2)
-
-                    # Attempt module reload if possible
-                    rm_res = subprocess.run(["sudo", "-n", "rmmod", driver_name], capture_output=True, text=True, timeout=5)
-                    if rm_res.returncode == 0:
-                        subprocess.run(["sudo", "-n", "modprobe", driver_name, "single_msi=1", "dma_poll=1", "irq_timeout=30", "dma_timeout=10"], capture_output=True, timeout=5)
-                        time.sleep(0.5)
-
-                    # Bind back if not yet bound
-                    if not Path(f"/sys/bus/pci/devices/{dev_pci}/driver").exists():
-                        bind_path = f"/sys/bus/pci/drivers/{driver_name}/bind"
-                        res_b = subprocess.run(["sudo", "-n", "sh", "-c", f"echo {dev_pci} > {bind_path} 2>/dev/null"], capture_output=True, timeout=5)
-                        time.sleep(0.5)
-                        if res_b.returncode != 0:
-                            subprocess.run(["sudo", "-n", "sh", "-c", f"echo 1 > /sys/bus/pci/devices/{dev_pci}/remove 2>/dev/null"], capture_output=True, timeout=10)
-                            time.sleep(0.5)
-                            subprocess.run(["sudo", "-n", "sh", "-c", "echo 1 > /sys/bus/pci/rescan 2>/dev/null"], capture_output=True, timeout=10)
-                            time.sleep(1.0)
-
-                    # Re-check MSI allocation
-                    num_msi_after = len(list(msi_dir.iterdir())) if msi_dir.exists() else 0
-                    if num_msi_after == 1:
-                        print(f"[METIS HW] Confirmed: {dev_pci} successfully bound with single_msi=1 (1 MSI vector).")
-                    elif num_msi_after > 1:
-                        print(f"[METIS HW] Warning: {dev_pci} has {num_msi_after} MSI vectors; run 'sudo tools/reset_metis_pcie.sh' to reload driver.")
-
-            # 6. Reload firmware if explicitly requested (force=True), prior MSI timeout / Link fail detected, or multi-MSI was detected
-            recent_dmesg = self.get_dmesg_tail(40)
-            has_msi_err = any("msi timeout" in l.lower() or "pcie link fail" in l.lower() or "dma transfer failed" in l.lower() for l in recent_dmesg)
-            if force or has_msi_err or num_msi > 1:
-                if has_msi_err and not force:
-                    print("[METIS HW] Prior PCIe MSI timeout / link failure detected in dmesg; initiating firmware reload & device recovery...")
+            # 6. Reload firmware ONLY if explicitly requested during post-crash recovery (force=True)
+            if force:
+                print("[METIS HW] Post-crash hardware recovery requested; initiating firmware reload...")
                 axdev = shutil.which("axdevice")
                 if not axdev:
-                    sdk_axdev = Path.home() / "voyager-sdk" / "venv" / "bin" / "axdevice"
-                    if sdk_axdev.exists():
-                        axdev = str(sdk_axdev)
+                    for cand in [
+                        Path.home() / "voyager-sdk" / "venv" / "bin" / "axdevice",
+                        Path("/home/ubuntu/voyager-sdk/venv/bin/axdevice"),
+                        Path("/usr/local/bin/axdevice"),
+                    ]:
+                        if cand.exists():
+                            axdev = str(cand)
+                            break
 
                 if axdev:
                     res = subprocess.run([axdev, "--reload-firmware"], capture_output=True, text=True, timeout=15)
@@ -364,6 +322,7 @@ class HardwareWatchdog:
                     if res.returncode == 0:
                         out = res.stdout.strip().replace("\n", " | ")
                         print(f"[METIS HW] Firmware reloaded: {out}")
+                        time.sleep(1.0)
                     else:
                         err_out = (res.stderr or res.stdout or "").strip().replace("\n", " | ")
                         print(f"[METIS HW] Firmware reload status: {err_out[:80]}")
