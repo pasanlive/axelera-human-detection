@@ -225,6 +225,8 @@ def _patch_voyager_stream_input() -> None:
     _orig_create_element = getattr(gst_helper, "_create_element", None)
     if _orig_create_element is not None:
         def patched_create_element(element: dict[str, Any]) -> Any:
+            # Strip any accidental "props" key so GStreamer element construction never fails
+            element.pop("props", None)
             inst = element.get("instance", "")
             if inst == "axinferencenet":
                 # Crucial for multi-model / composite pipelines on Rockchip RK3588:
@@ -239,6 +241,11 @@ def _patch_voyager_stream_input() -> None:
                 element["double_buffer"] = False
                 if element.get("num_children", 0) > 0:
                     element["num_children"] = 0
+
+            elif inst == "videorate":
+                element.pop("props", None)
+                element.setdefault("drop-only", True)
+                element.setdefault("skip-to-first", True)
 
             elif inst == "queue":
                 # Leaky downstream queue with max-size-buffers=1:
@@ -601,9 +608,9 @@ def _patch_voyager_stream_input() -> None:
         if target_fps > 0 and self._src.type == ax_config.SourceType.RTSP:
             rate_props = {"drop-only": True, "skip-to-first": True}
             if decodebin_link:
-                gst.videorate(props=rate_props, name=decodebin_link)
+                gst.videorate(name=decodebin_link, **rate_props)
             else:
-                gst.videorate(props=rate_props)
+                gst.videorate(**rate_props)
             gst.capsfilter(caps=f'video/x-raw,framerate={target_fps}/1')
             decodebin_link = ''
 
