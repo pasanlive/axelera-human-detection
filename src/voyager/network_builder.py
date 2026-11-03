@@ -258,18 +258,23 @@ def _allocate_cores(model_keys: List[str]) -> Dict[str, int]:
 
     The person/pose model dominates the load (it runs on every frame), so it gets
     the lion's share. The secondary models get at least one core each.
+    Total allocated cores will never exceed 4 (hardware limit of Metis M.2 AIPU).
     """
+    if not model_keys:
+        return {}
     if len(model_keys) == 1:
         return {model_keys[0]: 4}
     secondary = [k for k in model_keys if not k.endswith("pose")]
-    pose = [k for k in model_keys if k.endswith("pose")][0]
-    if len(secondary) >= 4:
-        # 5 models on 4 cores: the SDK time-multiplexes; give each secondary model 1 core.
-        alloc = {k: 1 for k in secondary}
-        alloc[pose] = 1
-        return alloc
-    alloc = {k: 1 for k in secondary}
-    alloc[pose] = 4 - len(secondary)
+    pose_candidates = [k for k in model_keys if k.endswith("pose")]
+    pose = pose_candidates[0] if pose_candidates else model_keys[0]
+
+    # Metis M.2 has strictly 4 physical cores (0..3). Never allocate more than 4 cores.
+    # Secondary models get 1 core each up to 3 models; remaining cores (>=1) go to pose.
+    num_secondary = min(len(secondary), 3)
+    alloc = {k: 1 for k in secondary[:num_secondary]}
+    for k in secondary[num_secondary:]:
+        alloc[k] = 0
+    alloc[pose] = max(1, 4 - num_secondary)
     return alloc
 
 
@@ -277,9 +282,20 @@ def build_network(spec: NetworkSpec, opts: Optional[BuildOptions] = None) -> Dic
     """Returns the network YAML as a dict for the given composition."""
     opts = opts or BuildOptions()
     model_keys = [spec.pose_model]
-    if spec.face:
+    has_face_and_lpr = spec.face and spec.lpr
+    if has_face_and_lpr:
+        # Metis AIPU has strictly 4 physical cores (0..3). When both Face and LPR
+        # are active, we run 4 models on the AIPU:
+        # 1. Pose (full frame) -> Core 0
+        # 2. RetinaFace (full frame) -> Core 1
+        # 3. Plate Detector (full frame) -> Core 2
+        # 4. LPRNet (plate text OCR) -> Core 3
+        # FaceNet (face embedding) is offloaded to the host CPU (PyTorch) via
+        # FaceEmbedderCPU, avoiding hardware core overflow and GStreamer SIGABRT crashes.
+        model_keys += ["retinaface", "plate_detector", "lprnet"]
+    elif spec.face:
         model_keys += ["retinaface", "facenet"]
-    if spec.lpr:
+    elif spec.lpr:
         model_keys += ["plate_detector", "lprnet"]
     cores = _allocate_cores(model_keys)
 
@@ -367,32 +383,33 @@ def build_network(spec: NetworkSpec, opts: Optional[BuildOptions] = None) -> Dic
                 }
             }
         )
-        pipeline.append(
-            {
-                TASK_FACE_EMB: {
-                    "model_name": _MODEL_DEFS["facenet"]["name"],
-                    "input": {
-                        "type": "image",
-                        "source": "roi",
-                        "where": TASK_FACES,
-                        "which": "AREA",
-                        "top_k": opts.max_faces_per_frame,
-                        "min_width": opts.min_face_px,
-                        "min_height": opts.min_face_px,
-                        "image_processing_on_roi": [
-                            {"facealign": {"width": 192, "height": 192, "use_self_normalizing": False}}
+        if not has_face_and_lpr:
+            pipeline.append(
+                {
+                    TASK_FACE_EMB: {
+                        "model_name": _MODEL_DEFS["facenet"]["name"],
+                        "input": {
+                            "type": "image",
+                            "source": "roi",
+                            "where": TASK_FACES,
+                            "which": "AREA",
+                            "top_k": opts.max_faces_per_frame,
+                            "min_width": opts.min_face_px,
+                            "min_height": opts.min_face_px,
+                            "image_processing_on_roi": [
+                                {"facealign": {"width": 192, "height": 192, "use_self_normalizing": False}}
+                            ],
+                        },
+                        "preprocess": [
+                            {"resize": {"width": 192, "height": 192}},
+                            {"centercrop": {"width": 160, "height": 160}},
+                            {"torch-totensor": None},
+                            {"normalize": {"mean": "0.5, 0.5, 0.5", "std": "0.501960784, 0.501960784, 0.501960784"}},
                         ],
-                    },
-                    "preprocess": [
-                        {"resize": {"width": 192, "height": 192}},
-                        {"centercrop": {"width": 160, "height": 160}},
-                        {"torch-totensor": None},
-                        {"normalize": {"mean": "0.5, 0.5, 0.5", "std": "0.501960784, 0.501960784, 0.501960784"}},
-                    ],
-                    "postprocess": [{"decodeembeddings": None}],
+                        "postprocess": [{"decodeembeddings": None}],
+                    }
                 }
-            }
-        )
+            )
         operators["decode-retinaface"] = {
             "class": "DecodeRetinaface",
             "class_path": f"{_FW}/ax_models/decoders/retinaface.py",
@@ -475,7 +492,7 @@ def build_network(spec: NetworkSpec, opts: Optional[BuildOptions] = None) -> Dic
         "name": spec.name,
         "description": (
             f"Upside person/pose ({spec.pose_model}) + OC-SORT"
-            + (" + RetinaFace/FaceNet face embeddings" if spec.face else "")
+            + (" + RetinaFace (CPU FaceNet embeddings)" if has_face_and_lpr else (" + RetinaFace/FaceNet face embeddings" if spec.face else ""))
             + (" + YOLOv8n plate/LPRNet OCR" if spec.lpr else "")
             + ", INT8 PTQ on Metis AIPU"
         ),

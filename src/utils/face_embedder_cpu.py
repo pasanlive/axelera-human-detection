@@ -306,47 +306,56 @@ class FaceEmbedderCPU:
         cx, cy = w // 2, h // 2
         return image_bgr[cy - sz // 2 : cy + sz // 2, cx - sz // 2 : cx + sz // 2]
 
-    def embed(self, image_bgr: np.ndarray) -> Optional[np.ndarray]:
+    def embed_crop(self, face_crop_bgr: np.ndarray) -> Optional[np.ndarray]:
         """
-        Extracts 512-d normalized FaceNet face embedding from a BGR image.
-        Returns None if model weights are unavailable or no face is present.
+        Extracts 512-d normalized FaceNet face embedding directly from an already cropped face BGR ROI.
+        Bypasses face detection cascade for high-speed live stream processing.
         """
         if self._model is None:
             self._load_model()
             if self._model is None:
                 return None
 
-        if image_bgr is None or image_bgr.size == 0:
+        if face_crop_bgr is None or face_crop_bgr.size == 0:
             return None
 
         try:
-            # 1. Detect & crop face ROI
-            face_crop = self.detect_face_roi(image_bgr)
-            if face_crop is None or face_crop.size == 0:
-                face_crop = image_bgr
-
-            # 2. Resize to 160x160 and convert BGR -> RGB
-            resized = cv2.resize(face_crop, (160, 160), interpolation=cv2.INTER_LINEAR)
+            # 1. Resize to 160x160 and convert BGR -> RGB
+            resized = cv2.resize(face_crop_bgr, (160, 160), interpolation=cv2.INTER_LINEAR)
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32)
 
-            # 3. Axelera normalization: (x / 255.0 - 0.5) / 0.501960784
+            # 2. Axelera normalization: (x / 255.0 - 0.5) / 0.501960784
             # Equivalent to (x - 127.5) / 128.0
             norm = (rgb - 127.5) / 128.0
             tensor = torch.from_numpy(norm.transpose(2, 0, 1)).unsqueeze(0).float()
 
-            # 4. Inference
+            # 3. Inference
             with torch.no_grad():
                 out = self._model(tensor)
                 emb = out.squeeze(0).cpu().numpy().astype(np.float32)
 
-            # 5. L2 normalization to unit hypersphere
+            # 4. L2 normalization to unit hypersphere
             norm_val = np.linalg.norm(emb)
             if norm_val > 1e-6:
                 emb = emb / norm_val
             return emb
         except Exception as e:
-            print(f"[FACE EMBEDDER CPU] Error during CPU face embedding: {e}")
+            print(f"[FACE EMBEDDER CPU] Error during CPU face crop embedding: {e}")
             return None
+
+    def embed(self, image_bgr: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Extracts 512-d normalized FaceNet face embedding from a BGR image.
+        Returns None if model weights are unavailable or no face is present.
+        """
+        if image_bgr is None or image_bgr.size == 0:
+            return None
+
+        face_crop = self.detect_face_roi(image_bgr)
+        if face_crop is None or face_crop.size == 0:
+            face_crop = image_bgr
+
+        return self.embed_crop(face_crop)
 
 
 # ── Global singleton accessor ────────────────────────────────────────────────

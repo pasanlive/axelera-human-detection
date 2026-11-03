@@ -80,15 +80,15 @@ class TestNetworkBuilder(unittest.TestCase):
             tasks = [next(iter(t)) for t in net["pipeline"]]
             self.assertEqual(tasks[:2], [TASK_PERSONS, TASK_TRACKS])
             self.assertEqual(TASK_FACES in tasks, spec.face)
-            self.assertEqual(TASK_FACE_EMB in tasks, spec.face)
+            self.assertEqual(TASK_FACE_EMB in tasks, spec.face and not spec.lpr)
             self.assertEqual(TASK_PLATES in tasks, spec.lpr)
             self.assertEqual(TASK_PLATE_TEXT in tasks, spec.lpr)
-            # every referenced model is defined, and AIPU cores never exceed the 4 Metis cores
+            # every referenced model is defined, and AIPU cores strictly equal the 4 Metis cores
             for t in net["pipeline"]:
                 self.assertIn(next(iter(t.values()))["model_name"], net["models"])
             cores = [m["extra_kwargs"]["aipu_cores"] for k, m in net["models"].items() if k != "tracker"]
             self.assertTrue(all(c >= 1 for c in cores))
-            self.assertLessEqual(sum(cores), max(4, len(cores)))
+            self.assertEqual(sum(cores), 4)
             for m in net["models"].values():
                 if "dataset" in m:
                     self.assertIn(m["dataset"], net["datasets"])
@@ -104,14 +104,42 @@ class TestNetworkBuilder(unittest.TestCase):
             data = yaml.safe_load(text)
             self.assertEqual(data["datasets"]["CocoDataset-keypoint-COCO2017"]["repr_imgs_dir_path"],
                              os.path.realpath(cal))
-            self.assertNotIn("repr_imgs_dir_path", data["datasets"]["LFWTorchvisionPeople"])
+            self.assertIn("WiderFace", data["datasets"])
+            self.assertIn("CocoDataset-LicensePlate", data["datasets"])
+            self.assertNotIn("LFWTorchvisionPeople", data["datasets"])  # FaceNet on CPU for 4-core Metis limit
             dec = data["pipeline"][0][TASK_PERSONS]["postprocess"][0]["decodeyolopose"]
             self.assertAlmostEqual(dec["conf_threshold"], 0.33)
+
+            # In face-only network, FaceNet is on AIPU and uses LFWTorchvisionPeople without camera calibration
+            path_face = write_network(NetworkSpec("yolov8spose", face=True, lpr=False), tmp, opts)
+            data_face = yaml.safe_load(open(path_face).read())
+            self.assertNotIn("repr_imgs_dir_path", data_face["datasets"]["LFWTorchvisionPeople"])
 
     def test_enroll_network(self):
         net = face_enroll_spec_yaml()
         self.assertEqual([next(iter(t)) for t in net["pipeline"]], [TASK_FACES, TASK_FACE_EMB])
         self.assertEqual(len(net["models"]), 2)
+
+    def test_core_allocation_capped_at_four(self):
+        from src.voyager.network_builder import _allocate_cores
+        # Single model: all 4 cores
+        self.assertEqual(_allocate_cores(["yolov8spose"]), {"yolov8spose": 4})
+        # Pose + Face (3 models): 2 + 1 + 1 = 4 cores
+        c3_face = _allocate_cores(["yolov8spose", "retinaface", "facenet"])
+        self.assertEqual(sum(c3_face.values()), 4)
+        self.assertEqual(c3_face["yolov8spose"], 2)
+        # Pose + LPR (3 models): 2 + 1 + 1 = 4 cores
+        c3_lpr = _allocate_cores(["yolov8spose", "plate_detector", "lprnet"])
+        self.assertEqual(sum(c3_lpr.values()), 4)
+        self.assertEqual(c3_lpr["yolov8spose"], 2)
+        # Pose + Face + LPR on AIPU (4 models): 1 + 1 + 1 + 1 = 4 cores
+        c4 = _allocate_cores(["yolov8spose", "retinaface", "plate_detector", "lprnet"])
+        self.assertEqual(sum(c4.values()), 4)
+        self.assertEqual(c4, {"yolov8spose": 1, "retinaface": 1, "plate_detector": 1, "lprnet": 1})
+        # Even with 5 models directly passed, sum must strictly be <= 4
+        c5 = _allocate_cores(["yolov8spose", "retinaface", "facenet", "plate_detector", "lprnet"])
+        self.assertLessEqual(sum(c5.values()), 4)
+        self.assertEqual(sum(c5.values()), 4)
 
 
 class TestCapacityPlanner(unittest.TestCase):
@@ -508,6 +536,42 @@ class TestPipelineSimulated(unittest.TestCase):
                 self.assertTrue(self._wait(lambda: p.get_stats()["faces_recognized"] >= 1))
             finally:
                 p.stop()
+
+    def test_cpu_face_embedding_fallback_when_aipu_embedding_absent(self):
+        from unittest.mock import MagicMock, patch
+        from src.voyager.result_parser import FrameAnalysis
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _sim_config(tmp, 1)
+            p = MultiCameraPipeline(cfg, simulate=True)
+
+            # Enroll a test face into face_db
+            dummy_emb = np.ones(512, dtype=np.float32)
+            dummy_emb = dummy_emb / np.linalg.norm(dummy_emb)
+            p.face_db.add_identity("TestSubject", [dummy_emb])
+
+            # Prepare a FrameAnalysis where face embedding is None (omitted on 4-core multi-model pipeline)
+            fa = FrameAnalysis(
+                stream_id=0,
+                timestamp=time.time(),
+                persons=[{"track_id": 1, "bbox": [100, 100, 300, 500], "confidence": 0.9}],
+                faces=[{"bbox": [120, 110, 200, 200], "confidence": 0.95, "embedding": None, "person_index": 0}],
+                plates=[],
+            )
+            dummy_img = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+            mock_embedder = MagicMock()
+            mock_embedder.embed_crop.return_value = dummy_emb
+
+            with patch("src.utils.face_embedder_cpu.get_cpu_face_embedder", return_value=mock_embedder):
+                p._on_result("cam_00", fa, lambda: dummy_img)
+
+            # Face embedding was computed on CPU and identity was matched
+            self.assertIsNotNone(fa.faces[0]["embedding"])
+            self.assertTrue(np.allclose(fa.faces[0]["embedding"], dummy_emb))
+            latest_faces = p._latest.get("cam_00", {}).get("faces", [])
+            self.assertEqual(len(latest_faces), 1)
+            self.assertEqual(latest_faces[0]["name"], "TestSubject")
 
     def test_preview_only_renders_when_viewed(self):
         with tempfile.TemporaryDirectory() as tmp:

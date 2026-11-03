@@ -736,8 +736,9 @@ class VoyagerRuntime(BaseRuntime):
         if spec.name == "yolov5m-v7-coco-tracker" or getattr(spec, "pose_model", "") == "yolov5m-v7-coco-tracker":
             return "yolov5m-v7-coco-tracker"
         path = self.networks_dir / f"{spec.name}.yaml"
-        if not path.exists():
-            write_network(spec, self.networks_dir, self.build_opts)
+        # Always write / refresh the YAML specification so changes in core allocation
+        # or model layout are immediately active without manual deletion of stale YAML files.
+        write_network(spec, self.networks_dir, self.build_opts)
         missing = self.missing_models(spec, path)
         if missing:
             self.on_event(None, "error", f"{spec.name}: missing compiled models {missing}")

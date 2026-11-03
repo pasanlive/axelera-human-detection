@@ -519,6 +519,30 @@ class MultiCameraPipeline:
                 valid_faces.append(f)
             fa.faces = valid_faces
 
+            if face_rec_on:
+                for f in fa.faces:
+                    w_f = f["bbox"][2] - f["bbox"][0]
+                    h_f = f["bbox"][3] - f["bbox"][1]
+                    if f.get("embedding") is None and w_f >= min_face_px and h_f >= min_face_px:
+                        fr = _get_frame()
+                        if fr is not None:
+                            fh, fw = fr.shape[:2]
+                            b = f["bbox"]
+                            bx = [b[0] * fw, b[1] * fh, b[2] * fw, b[3] * fh] if max(b) <= 1.05 and fw > 0 else b
+                            x1, y1, x2, y2 = map(int, bx)
+                            x1, y1 = max(0, x1), max(0, y1)
+                            x2, y2 = min(fw, x2), min(fh, y2)
+                            if x2 > x1 and y2 > y1:
+                                crop = fr[y1:y2, x1:x2]
+                                try:
+                                    from src.utils.face_embedder_cpu import get_cpu_face_embedder
+                                    net_dir = getattr(self.runtime, "networks_dir", None)
+                                    embedder = get_cpu_face_embedder(net_dir)
+                                    if embedder:
+                                        f["embedding"] = embedder.embed_crop(crop)
+                                except Exception:
+                                    pass
+
             with_emb = [f for f in fa.faces if f.get("embedding") is not None
                         and (f["bbox"][2] - f["bbox"][0]) >= min_face_px
                         and (f["bbox"][3] - f["bbox"][1]) >= min_face_px] if face_rec_on else []
