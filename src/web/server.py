@@ -598,11 +598,41 @@ class WebServer:
                 res = test_camera_stream(source, username=username, password=password, timeout_s=timeout, transport=transport)
                 return (200 if res.get("success") else 400), res
 
+            if method == "POST" and path == "/api/cameras/test-channels":
+                from src.utils.camera_discovery import probe_device_channels
+                ip = body.get("ip") or ""
+                if not ip:
+                    return 400, {"success": False, "error": "Device IP is required"}
+                port = int(body.get("port") or 554)
+                username = body.get("username")
+                password = body.get("password")
+                vendor = body.get("vendor", "")
+                channels = body.get("channels")
+                max_channels = int(body.get("max_channels") or body.get("channel_count") or 8)
+                pattern = body.get("pattern")
+                transport = body.get("transport", "auto")
+                timeout = float(body.get("timeout", 3.5))
+                res = probe_device_channels(
+                    ip=ip, port=port, username=username, password=password,
+                    vendor=vendor, channels=channels, max_channels=max_channels,
+                    pattern=pattern, transport=transport, timeout_s=timeout
+                )
+                return 200, res
+
             if method == "GET" and path == "/api/cameras":
                 return 200, {"cameras": p.get_camera_status(), "capacity": p.get_capacity_plan()}
             if method == "POST" and path == "/api/cameras":
                 cam = p.add_camera(body)
                 return 200, {"success": True, "camera": cam, "capacity": p.get_capacity_plan()}
+            if method == "POST" and path == "/api/cameras/batch":
+                cams = body.get("cameras")
+                if not isinstance(cams, list) or not cams:
+                    return 400, {"success": False, "error": "List of 'cameras' is required"}
+                try:
+                    added = p.add_cameras_batch(cams)
+                    return 200, {"success": True, "added": added, "count": len(added), "capacity": p.get_capacity_plan()}
+                except Exception as e:
+                    return 400, {"success": False, "error": str(e)}
             if path.startswith("/api/cameras/"):
                 rest = path[len("/api/cameras/"):].split("/")
                 cam_id = urllib.parse.unquote(rest[0])

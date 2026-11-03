@@ -349,6 +349,42 @@ class MultiCameraPipeline:
         self.request_replan()
         return entry
 
+    def add_cameras_batch(self, cam_cfgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Add multiple cameras in a single batch, persisting config once and replanning once."""
+        if not cam_cfgs:
+            return []
+        cams = self.config.setdefault("cameras", [])
+        added = []
+        for cam_cfg in cam_cfgs:
+            if not cam_cfg.get("source"):
+                raise ValueError("Camera 'source' is required for all batch entries")
+            base_id = cam_cfg.get("id")
+            if not base_id:
+                idx = len(cams) + len(added) + 1
+                base_id = f"cam_{idx:02d}"
+                while any(c["id"] == base_id for c in cams) or any(c["id"] == base_id for c in added):
+                    idx += 1
+                    base_id = f"cam_{idx:02d}"
+            else:
+                if any(c["id"] == base_id for c in cams) or any(c["id"] == base_id for c in added):
+                    raise ValueError(f"Camera id '{base_id}' already exists")
+
+            entry = {
+                "id": base_id,
+                "name": cam_cfg.get("name", base_id),
+                "enabled": cam_cfg.get("enabled", True),
+                "source": cam_cfg["source"],
+            }
+            for k in ("source_sub", "main_resolution", "sub_resolution", "native_fps", "features", "transport"):
+                if cam_cfg.get(k) is not None:
+                    entry[k] = cam_cfg[k]
+            added.append(entry)
+
+        cams.extend(added)
+        self._persist_config()
+        self.request_replan()
+        return added
+
     def remove_camera(self, cam_id: str) -> bool:
         cams = self.config.get("cameras", []) or []
         keep = [c for c in cams if c["id"] != cam_id]

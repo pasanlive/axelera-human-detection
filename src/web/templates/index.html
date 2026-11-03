@@ -2078,10 +2078,10 @@
 
     <!-- ── Link Camera to System Modal ────────────────────────────────────── -->
     <div class="modal-overlay" id="link-camera-modal">
-        <div class="modal-card" style="max-width: 640px;">
+        <div class="modal-card" id="link-modal-card" style="max-width: 860px; transition: max-width 0.25s ease;">
             <div class="modal-header">
                 <div style="font-weight: 700; font-size: 1.15rem; display: flex; align-items: center; gap: 0.5rem;">
-                    <span>📹</span> Link Camera to System
+                    <span>📹</span> Link Camera / Multi-Channel Video Source
                 </div>
                 <button class="btn-close" onclick="closeLinkCameraModal()">&times;</button>
             </div>
@@ -2095,96 +2095,196 @@
                 <span id="link-cam-proto-badge" style="background: rgba(16, 185, 129, 0.15); color: var(--accent-success); border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.25rem 0.6rem; font-size: 0.75rem; border-radius: 6px; font-weight: 600;">RTSP Online</span>
             </div>
 
-            <!-- Configuration Inputs Grid -->
-            <div class="form-grid" style="grid-template-columns: 1fr 1fr; gap: 0.85rem;">
-                <div class="form-group">
-                    <label class="form-label">Camera Identifier (ID)</label>
-                    <input type="text" id="link-cam-id" class="form-input" placeholder="e.g. cam_02">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Friendly Camera Name</label>
-                    <input type="text" id="link-cam-name" class="form-input" placeholder="e.g. Front Entrance">
-                </div>
+            <!-- Mode Selector Segmented Tabs -->
+            <div style="display: flex; gap: 6px; background: rgba(0,0,0,0.25); border: 1px solid var(--border-subtle); padding: 4px; border-radius: 8px;">
+                <button type="button" id="tab-link-single" class="nav-btn active" style="flex: 1; justify-content: center; font-size: 0.82rem; padding: 0.4rem;" onclick="switchLinkMode('single')">
+                    📹 Single Camera Stream
+                </button>
+                <button type="button" id="tab-link-multi" class="nav-btn" style="flex: 1; justify-content: center; font-size: 0.82rem; padding: 0.4rem;" onclick="switchLinkMode('multi')">
+                    🎛️ Multi-Channel DVR / NVR (Batch Link)
+                </button>
+            </div>
 
-                <div class="form-group">
-                    <label class="form-label">Camera Username</label>
-                    <input type="text" id="link-cam-user" class="form-input" value="admin" placeholder="admin" oninput="onLinkConfigChange()">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Camera Password</label>
-                    <div style="position: relative;">
-                        <input type="password" id="link-cam-pass" class="form-input" placeholder="••••••••" oninput="onLinkConfigChange()">
-                        <button type="button" onclick="togglePassVisibility('link-cam-pass')" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: transparent; border: none; cursor: pointer; color: var(--text-dim); font-size: 0.9rem;">👁️</button>
+            <!-- ── SINGLE CAMERA CONTAINER ────────────────────────────────── -->
+            <div id="link-single-container">
+                <!-- Configuration Inputs Grid -->
+                <div class="form-grid" style="grid-template-columns: 1fr 1fr; gap: 0.85rem;">
+                    <div class="form-group">
+                        <label class="form-label">Camera Identifier (ID)</label>
+                        <input type="text" id="link-cam-id" class="form-input" placeholder="e.g. cam_02">
                     </div>
-                </div>
+                    <div class="form-group">
+                        <label class="form-label">Friendly Camera Name</label>
+                        <input type="text" id="link-cam-name" class="form-input" placeholder="e.g. Front Entrance">
+                    </div>
 
-                <div class="form-group" style="grid-column: 1 / -1;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
-                        <label class="form-label" style="margin-bottom: 0;">Main Stream RTSP Path</label>
-                        <select id="link-cam-path-presets" class="form-input" style="width: auto; padding: 0.15rem 0.4rem; font-size: 0.75rem; height: auto;" onchange="applyPathPreset(this.value)">
-                            <option value="">-- Choose preset path --</option>
+                    <div class="form-group">
+                        <label class="form-label">Camera Username</label>
+                        <input type="text" id="link-cam-user" class="form-input" value="admin" placeholder="admin" oninput="onLinkConfigChange()">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Camera Password</label>
+                        <div style="position: relative;">
+                            <input type="password" id="link-cam-pass" class="form-input" placeholder="••••••••" oninput="onLinkConfigChange()">
+                            <button type="button" onclick="togglePassVisibility('link-cam-pass')" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: transparent; border: none; cursor: pointer; color: var(--text-dim); font-size: 0.9rem;">👁️</button>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+                            <label class="form-label" style="margin-bottom: 0;">Main Stream RTSP Path</label>
+                            <select id="link-cam-path-presets" class="form-input" style="width: auto; padding: 0.15rem 0.4rem; font-size: 0.75rem; height: auto;" onchange="applyPathPreset(this.value)">
+                                <option value="">-- Choose preset path --</option>
+                            </select>
+                        </div>
+                        <input type="text" id="link-cam-path" class="form-input" placeholder="/h264/ch1/main/av_stream" oninput="onLinkConfigChange()">
+                    </div>
+
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label class="form-label">Sub-Stream RTSP Path (Optional, for low-latency)</label>
+                        <input type="text" id="link-cam-subpath" class="form-input" placeholder="/h264/ch1/sub/av_stream">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Native Frame Rate (FPS)</label>
+                        <input type="number" id="link-cam-fps" class="form-input" value="15" min="1" max="60">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Transport Protocol</label>
+                        <select id="link-cam-transport" class="form-input" onchange="onLinkConfigChange()">
+                            <option value="auto" selected>Auto (TCP with UDP Fallback)</option>
+                            <option value="tcp">TCP (Lossless Interleaved)</option>
+                            <option value="udp">UDP (For Cameras Rejecting TCP)</option>
                         </select>
                     </div>
-                    <input type="text" id="link-cam-path" class="form-input" placeholder="/h264/ch1/main/av_stream" oninput="onLinkConfigChange()">
                 </div>
 
-                <div class="form-group" style="grid-column: 1 / -1;">
-                    <label class="form-label">Sub-Stream RTSP Path (Optional, for low-latency)</label>
-                    <input type="text" id="link-cam-subpath" class="form-input" placeholder="/h264/ch1/sub/av_stream">
+                <!-- Full Computed RTSP URL Preview -->
+                <div style="font-size: 0.75rem; color: var(--text-dim); background: rgba(0,0,0,0.25); padding: 0.45rem 0.75rem; border-radius: 6px; font-family: var(--font-mono); word-break: break-all; margin: 0.85rem 0;" id="link-cam-computed-url">
+                    rtsp://admin:***@...
                 </div>
 
-                <div class="form-group">
-                    <label class="form-label">Native Frame Rate (FPS)</label>
-                    <input type="number" id="link-cam-fps" class="form-input" value="15" min="1" max="60">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Transport Protocol</label>
-                    <select id="link-cam-transport" class="form-input" onchange="onLinkConfigChange()">
-                        <option value="auto" selected>Auto (TCP with UDP Fallback)</option>
-                        <option value="tcp">TCP (Lossless Interleaved)</option>
-                        <option value="udp">UDP (For Cameras Rejecting TCP)</option>
-                    </select>
-                </div>
-            </div>
-
-            <!-- Full Computed RTSP URL Preview -->
-            <div style="font-size: 0.75rem; color: var(--text-dim); background: rgba(0,0,0,0.25); padding: 0.45rem 0.75rem; border-radius: 6px; font-family: var(--font-mono); word-break: break-all;" id="link-cam-computed-url">
-                rtsp://admin:***@...
-            </div>
-
-            <!-- Connection Test & Live Snapshot Preview Container -->
-            <div style="background: rgba(0,0,0,0.25); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1rem;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-                    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-main); display: flex; align-items: center; gap: 0.4rem;">
-                        <span>🔌</span> Live Connection Verification
+                <!-- Connection Test & Live Snapshot Preview Container -->
+                <div style="background: rgba(0,0,0,0.25); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                        <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-main); display: flex; align-items: center; gap: 0.4rem;">
+                            <span>🔌</span> Live Connection Verification
+                        </div>
+                        <button type="button" class="btn-quick" id="btn-test-connection" onclick="runConnectionTest()" style="padding: 0.35rem 0.85rem; font-size: 0.8rem;">
+                            <span id="test-btn-icon">⚡</span> <span id="test-btn-text">Test Connection</span>
+                        </button>
                     </div>
-                    <button type="button" class="btn-quick" id="btn-test-connection" onclick="runConnectionTest()" style="padding: 0.35rem 0.85rem; font-size: 0.8rem;">
-                        <span id="test-btn-icon">⚡</span> <span id="test-btn-text">Test Connection</span>
+
+                    <!-- Snapshot Preview Box -->
+                    <div id="cam-preview-box" style="width: 100%; height: 210px; background: rgba(0,0,0,0.4); border-radius: 8px; border: 1px dashed var(--border-subtle); display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; position: relative;">
+                        <img id="link-test-snapshot" src="" alt="Stream Preview" style="display: none; width: 100%; height: 100%; object-fit: contain;">
+                        <div id="link-test-placeholder" style="text-align: center; color: var(--text-dim); font-size: 0.82rem; padding: 1rem;">
+                            Click <b>"Test Connection"</b> to verify camera access and capture live preview.<br>
+                            <span style="font-size: 0.75rem; opacity: 0.7;">Link button will be enabled once video stream is verified.</span>
+                        </div>
+                        <div id="link-test-loading" style="display: none; flex-direction: column; align-items: center; gap: 0.5rem; color: var(--accent-primary);">
+                            <span class="spinner" style="display: inline-block; width: 24px; height: 24px; border: 3px solid rgba(255,255,255,0.2); border-top-color: var(--accent-primary); border-radius: 50%; animation: spin 0.8s linear infinite;"></span>
+                            <span style="font-size: 0.82rem; font-weight: 600;">Connecting to RTSP video stream...</span>
+                        </div>
+                    </div>
+
+                    <div id="link-test-msg" style="display: none; margin-top: 0.6rem; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;"></div>
+                </div>
+
+                <!-- Single Modal Action Buttons -->
+                <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1rem;">
+                    <button type="button" class="btn-quick" onclick="closeLinkCameraModal()">Cancel</button>
+                    <button type="button" class="btn-quick primary" id="btn-confirm-link-cam" onclick="submitLinkedCamera()" disabled style="opacity: 0.45; cursor: not-allowed;">
+                        <span>🔗</span> Link Camera to System
                     </button>
                 </div>
+            </div>
 
-                <!-- Snapshot Preview Box -->
-                <div id="cam-preview-box" style="width: 100%; height: 210px; background: rgba(0,0,0,0.4); border-radius: 8px; border: 1px dashed var(--border-subtle); display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; position: relative;">
-                    <img id="link-test-snapshot" src="" alt="Stream Preview" style="display: none; width: 100%; height: 100%; object-fit: contain;">
-                    <div id="link-test-placeholder" style="text-align: center; color: var(--text-dim); font-size: 0.82rem; padding: 1rem;">
-                        Click <b>"Test Connection"</b> to verify camera access and capture live preview.<br>
-                        <span style="font-size: 0.75rem; opacity: 0.7;">Link button will be enabled once video stream is verified.</span>
+            <!-- ── MULTI-CHANNEL DVR / NVR CONTAINER ───────────────────────── -->
+            <div id="link-multi-container" style="display: none;">
+                <!-- DVR Configuration Grid -->
+                <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.85rem; margin-bottom: 0.85rem;">
+                    <div class="form-group">
+                        <label class="form-label">Available Channels</label>
+                        <select id="link-multi-channels" class="form-input" onchange="onMultiConfigChange()">
+                            <option value="4">4 Channels (CH 1 - 4)</option>
+                            <option value="8" selected>8 Channels (CH 1 - 8)</option>
+                            <option value="16">16 Channels (CH 1 - 16)</option>
+                            <option value="32">32 Channels (CH 1 - 32)</option>
+                        </select>
                     </div>
-                    <div id="link-test-loading" style="display: none; flex-direction: column; align-items: center; gap: 0.5rem; color: var(--accent-primary);">
-                        <span class="spinner" style="display: inline-block; width: 24px; height: 24px; border: 3px solid rgba(255,255,255,0.2); border-top-color: var(--accent-primary); border-radius: 50%; animation: spin 0.8s linear infinite;"></span>
-                        <span style="font-size: 0.82rem; font-weight: 600;">Connecting to RTSP video stream...</span>
+                    <div class="form-group">
+                        <label class="form-label">DVR / NVR Stream Preset</label>
+                        <select id="link-multi-preset" class="form-input" onchange="applyMultiPreset(this.value)">
+                            <option value="hikvision_sub" selected>Hikvision / Annke Sub-stream (/Streaming/Channels/{ch}02) [Recommended]</option>
+                            <option value="hikvision_main">Hikvision / Annke Main-stream (/Streaming/Channels/{ch}01)</option>
+                            <option value="hikvision_legacy_sub">Hikvision Legacy (/h264/ch{ch}/sub/av_stream)</option>
+                            <option value="dahua_sub">Dahua / Amcrest Sub-stream (/cam/realmonitor?channel={ch}&subtype=1) [Recommended]</option>
+                            <option value="dahua_main">Dahua / Amcrest Main-stream (/cam/realmonitor?channel={ch}&subtype=0)</option>
+                            <option value="uniview_sub">Uniview / UNV Sub-stream (/unicast/c{ch}/s1/live) [Recommended]</option>
+                            <option value="uniview_main">Uniview / UNV Main-stream (/unicast/c{ch}/s0/live)</option>
+                            <option value="generic_sub">Generic DVR (/live/ch{ch})</option>
+                            <option value="custom">Custom Pattern (using {ch} placeholder)...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Channel RTSP Pattern ({ch})</label>
+                        <input type="text" id="link-multi-pattern" class="form-input" value="/Streaming/Channels/{ch}02" placeholder="/Streaming/Channels/{ch}02" oninput="onMultiConfigChange()">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">DVR Username</label>
+                        <input type="text" id="link-multi-user" class="form-input" value="admin" placeholder="admin" oninput="onMultiConfigChange()">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">DVR Password</label>
+                        <div style="position: relative;">
+                            <input type="password" id="link-multi-pass" class="form-input" placeholder="••••••••" oninput="onMultiConfigChange()">
+                            <button type="button" onclick="togglePassVisibility('link-multi-pass')" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: transparent; border: none; cursor: pointer; color: var(--text-dim); font-size: 0.9rem;">👁️</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Transport Protocol</label>
+                        <select id="link-multi-transport" class="form-input" onchange="onMultiConfigChange()">
+                            <option value="auto" selected>Auto (TCP with UDP Fallback)</option>
+                            <option value="tcp">TCP (Lossless)</option>
+                            <option value="udp">UDP</option>
+                        </select>
                     </div>
                 </div>
 
-                <div id="link-test-msg" style="display: none; margin-top: 0.6rem; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;"></div>
-            </div>
+                <!-- Probing Action Bar & Active Summary -->
+                <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.5rem;">
+                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                        <button type="button" class="btn-quick" id="btn-probe-channels" onclick="runMultiChannelProbe()" style="padding: 0.45rem 1rem; font-size: 0.85rem; font-weight: 600;">
+                            <span id="probe-btn-icon">⚡</span> <span id="probe-btn-text">Test Connection & Probe Channels</span>
+                        </button>
+                        <span id="multi-probe-status" style="font-size: 0.82rem; font-weight: 600; color: var(--text-dim);">Ready to test DVR/NVR channels</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <button type="button" class="btn-quick" onclick="toggleMultiSelect(true)" style="padding: 0.35rem 0.65rem; font-size: 0.75rem;">✓ Select Active</button>
+                        <button type="button" class="btn-quick" onclick="toggleMultiSelect(false)" style="padding: 0.35rem 0.65rem; font-size: 0.75rem;">✕ Deselect All</button>
+                    </div>
+                </div>
 
-            <!-- Modal Action Buttons -->
-            <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 0.5rem;">
-                <button type="button" class="btn-quick" onclick="closeLinkCameraModal()">Cancel</button>
-                <button type="button" class="btn-quick primary" id="btn-confirm-link-cam" onclick="submitLinkedCamera()" disabled style="opacity: 0.45; cursor: not-allowed;">
-                    <span>🔗</span> Link Camera to System
-                </button>
+                <!-- Channels Previews Grid Box -->
+                <div id="multi-channels-grid-container" style="background: rgba(0,0,0,0.25); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 0.85rem; max-height: 380px; overflow-y: auto;">
+                    <div id="multi-channels-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(185px, 1fr)); gap: 0.75rem;">
+                        <!-- Dynamic channel cards populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Multi Modal Action Buttons -->
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+                    <div style="font-size: 0.82rem; color: var(--text-dim);">
+                        Selected to Link: <b id="batch-selected-count-label" style="color: var(--accent-primary);">0</b> channels
+                    </div>
+                    <div style="display: flex; gap: 0.75rem;">
+                        <button type="button" class="btn-quick" onclick="closeLinkCameraModal()">Cancel</button>
+                        <button type="button" class="btn-quick primary" id="btn-confirm-batch-link" onclick="submitBatchLinkedCameras()" disabled style="opacity: 0.45; cursor: not-allowed; padding: 0.45rem 1.15rem;">
+                            <span>🔗</span> Link Selected Channels to System (<span id="batch-selected-count">0</span>)
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -3087,10 +3187,14 @@
             }
         }
 
+        let _linkMode = 'single';
+        let _probedChannels = [];
+
         function openLinkCameraModal(camData) {
             _activeLinkingCam = camData;
             _connectionVerified = false;
             _verifiedRawUrl = null;
+            _probedChannels = [];
 
             // Generate default ID
             const existingRows = document.querySelectorAll('#cameras-table-body tr');
@@ -3105,6 +3209,7 @@
             if (endpointLabel) endpointLabel.innerText = `${camData.ip}:${camData.port || 554}`;
             if (protoBadge) protoBadge.innerText = (camData.protocol || 'RTSP').toUpperCase() + ' Online';
 
+            // Setup Single Mode Inputs
             document.getElementById('link-cam-id').value = defId;
             document.getElementById('link-cam-name').value = camData.name || `${camData.vendor || 'Camera'} (${camData.ip})`;
             document.getElementById('link-cam-user').value = 'admin';
@@ -3113,7 +3218,31 @@
             document.getElementById('link-cam-subpath').value = camData.default_sub_path || '/h264/ch1/sub/av_stream';
             document.getElementById('link-cam-fps').value = 15;
 
-            // Populate presets dropdown
+            // Setup Multi Mode Inputs
+            const multiUser = document.getElementById('link-multi-user');
+            const multiPass = document.getElementById('link-multi-pass');
+            if (multiUser) multiUser.value = 'admin';
+            if (multiPass) multiPass.value = '';
+
+            // Detect DVR / NVR or multi-channel
+            const vendor = (camData.vendor || '').toLowerCase();
+            const model = (camData.model || '').toLowerCase();
+            const name = (camData.name || '').toLowerCase();
+            const isDvrNvr = /dvr|nvr|hikvision|dahua|uniview|channel|multi/i.test(`${vendor} ${model} ${name}`);
+
+            const multiPreset = document.getElementById('link-multi-preset');
+            if (multiPreset) {
+                if (vendor.includes('dahua') || vendor.includes('amcrest')) {
+                    multiPreset.value = 'dahua_sub';
+                } else if (vendor.includes('uniview') || vendor.includes('unv')) {
+                    multiPreset.value = 'uniview_sub';
+                } else {
+                    multiPreset.value = 'hikvision_sub';
+                }
+                applyMultiPreset(multiPreset.value);
+            }
+
+            // Populate single presets dropdown
             const presetsSelect = document.getElementById('link-cam-path-presets');
             if (presetsSelect) {
                 let opts = '<option value="">-- Quick path presets --</option>';
@@ -3124,7 +3253,7 @@
                 presetsSelect.innerHTML = opts;
             }
 
-            // Reset test verification state
+            // Reset single test verification state
             const confirmBtn = document.getElementById('btn-confirm-link-cam');
             if (confirmBtn) {
                 confirmBtn.disabled = true;
@@ -3149,6 +3278,9 @@
 
             updateComputedUrlPreview();
 
+            // Default active mode
+            switchLinkMode(isDvrNvr ? 'multi' : 'single');
+
             const modal = document.getElementById('link-camera-modal');
             if (modal) modal.classList.add('active');
         }
@@ -3157,6 +3289,7 @@
             const modal = document.getElementById('link-camera-modal');
             if (modal) modal.classList.remove('active');
             _activeLinkingCam = null;
+            _probedChannels = [];
         }
 
         function togglePassVisibility(inputId) {
@@ -3391,6 +3524,337 @@
                 if (confirmBtn) {
                     confirmBtn.disabled = false;
                     confirmBtn.innerHTML = '<span>🔗</span> Link Camera to System';
+                }
+            });
+        }
+
+        // ── Multi-Channel DVR / NVR Link Handlers ─────────────────────────────
+        function switchLinkMode(mode) {
+            _linkMode = mode;
+            const singleTab = document.getElementById('tab-link-single');
+            const multiTab = document.getElementById('tab-link-multi');
+            const singleContainer = document.getElementById('link-single-container');
+            const multiContainer = document.getElementById('link-multi-container');
+
+            if (mode === 'multi') {
+                if (singleTab) singleTab.classList.remove('active');
+                if (multiTab) multiTab.classList.add('active');
+                if (singleContainer) singleContainer.style.display = 'none';
+                if (multiContainer) multiContainer.style.display = 'block';
+
+                // Sync credentials from single to multi if multi is empty/default
+                const singleUser = document.getElementById('link-cam-user').value;
+                const singlePass = document.getElementById('link-cam-pass').value;
+                const multiUser = document.getElementById('link-multi-user');
+                const multiPass = document.getElementById('link-multi-pass');
+                if (multiUser && singleUser) multiUser.value = singleUser;
+                if (multiPass && singlePass) multiPass.value = singlePass;
+
+                if (!_probedChannels || _probedChannels.length === 0) {
+                    renderUnprobedChannels();
+                }
+            } else {
+                if (singleTab) singleTab.classList.add('active');
+                if (multiTab) multiTab.classList.remove('active');
+                if (singleContainer) singleContainer.style.display = 'block';
+                if (multiContainer) multiContainer.style.display = 'none';
+            }
+        }
+
+        function renderUnprobedChannels() {
+            const grid = document.getElementById('multi-channels-grid');
+            if (!grid) return;
+            const chCount = parseInt(document.getElementById('link-multi-channels').value, 10) || 8;
+            const baseName = _activeLinkingCam ? (_activeLinkingCam.name || _activeLinkingCam.vendor || 'Camera') : 'Camera';
+            let html = '';
+            for (let i = 1; i <= chCount; i++) {
+                html += `
+                    <div class="channel-card" id="ch-card-${i}" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 0.6rem; display: flex; flex-direction: column; gap: 0.5rem; transition: border-color 0.2s ease;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <label style="display: flex; align-items: center; gap: 0.4rem; font-weight: 700; font-size: 0.82rem; cursor: pointer;">
+                                <input type="checkbox" id="ch-cb-${i}" value="${i}" onchange="updateBatchSelectedCount()" style="cursor: pointer;">
+                                <span>CH ${i}</span>
+                            </label>
+                            <span class="badge" style="font-size: 0.7rem; background: rgba(255,255,255,0.06); color: var(--text-dim); padding: 0.15rem 0.45rem; border-radius: 4px;">Unprobed</span>
+                        </div>
+                        <div style="width: 100%; height: 95px; background: rgba(0,0,0,0.5); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 0.72rem; color: var(--text-dim); text-align: center; border: 1px dashed var(--border-subtle);">
+                            Ready to probe
+                        </div>
+                        <input type="text" class="form-input" id="ch-name-${i}" value="${baseName} CH ${i}" style="padding: 0.25rem 0.5rem; font-size: 0.78rem;">
+                    </div>
+                `;
+            }
+            grid.innerHTML = html;
+            updateBatchSelectedCount();
+        }
+
+        function applyMultiPreset(val) {
+            const patInput = document.getElementById('link-multi-pattern');
+            if (!patInput) return;
+            const presets = {
+                'hikvision_sub': '/Streaming/Channels/{ch}02',
+                'hikvision_main': '/Streaming/Channels/{ch}01',
+                'hikvision_legacy_sub': '/h264/ch{ch}/sub/av_stream',
+                'dahua_sub': '/cam/realmonitor?channel={ch}&subtype=1',
+                'dahua_main': '/cam/realmonitor?channel={ch}&subtype=0',
+                'uniview_sub': '/unicast/c{ch}/s1/live',
+                'uniview_main': '/unicast/c{ch}/s0/live',
+                'generic_sub': '/live/ch{ch}'
+            };
+            if (presets[val]) {
+                patInput.value = presets[val];
+            }
+            onMultiConfigChange();
+        }
+
+        function onMultiConfigChange() {
+            _probedChannels = [];
+            const statusEl = document.getElementById('multi-probe-status');
+            if (statusEl) {
+                statusEl.innerText = 'Settings changed. Click "Test Connection & Probe Channels" to verify.';
+                statusEl.style.color = 'var(--accent-warning)';
+            }
+            renderUnprobedChannels();
+        }
+
+        function runMultiChannelProbe() {
+            if (!_activeLinkingCam) return;
+            const ip = _activeLinkingCam.ip;
+            const port = _activeLinkingCam.port || 554;
+            const user = document.getElementById('link-multi-user').value.trim();
+            const pass = document.getElementById('link-multi-pass').value.trim();
+            const chCount = parseInt(document.getElementById('link-multi-channels').value, 10) || 8;
+            const pattern = document.getElementById('link-multi-pattern').value.trim();
+            const transport = document.getElementById('link-multi-transport').value || 'auto';
+
+            const probeBtn = document.getElementById('btn-probe-channels');
+            const probeIcon = document.getElementById('probe-btn-icon');
+            const probeText = document.getElementById('probe-btn-text');
+            const statusEl = document.getElementById('multi-probe-status');
+            const grid = document.getElementById('multi-channels-grid');
+
+            if (probeBtn) probeBtn.disabled = true;
+            if (probeIcon) probeIcon.innerText = '⏳';
+            if (probeText) probeText.innerText = 'Probing...';
+            if (statusEl) {
+                statusEl.innerText = `Connecting to DVR and probing ${chCount} channels in parallel...`;
+                statusEl.style.color = 'var(--accent-primary)';
+            }
+
+            if (grid) {
+                grid.innerHTML = `
+                    <div style="grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2.5rem 1rem; gap: 0.75rem; color: var(--accent-primary);">
+                        <span class="spinner" style="display: inline-block; width: 28px; height: 28px; border: 3px solid rgba(255,255,255,0.2); border-top-color: var(--accent-primary); border-radius: 50%; animation: spin 0.8s linear infinite;"></span>
+                        <div style="font-weight: 600; font-size: 0.9rem;">Testing RTSP feeds and capturing live previews across all ${chCount} channels...</div>
+                        <div style="font-size: 0.78rem; color: var(--text-dim);">Concurrently testing streams on ${ip}:${port}</div>
+                    </div>
+                `;
+            }
+
+            fetch('/api/cameras/test-channels', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ip: ip,
+                    port: port,
+                    username: user || undefined,
+                    password: pass || undefined,
+                    channel_count: chCount,
+                    pattern: pattern,
+                    transport: transport,
+                    vendor: _activeLinkingCam.vendor || '',
+                    timeout: 4.0
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) throw new Error(data.error || 'Failed to probe channels');
+                _probedChannels = data.channels || [];
+                renderProbedChannels(_probedChannels);
+                if (statusEl) {
+                    statusEl.innerHTML = `✓ <b>Probed complete:</b> ${data.online_count} of ${data.total_probed} channels online with active video feeds.`;
+                    statusEl.style.color = 'var(--accent-success)';
+                }
+                showToast(`✓ Found ${data.online_count} active channels with video signal!`);
+            })
+            .catch(e => {
+                if (statusEl) {
+                    statusEl.innerText = '✕ Probing error: ' + e;
+                    statusEl.style.color = 'var(--accent-danger)';
+                }
+                renderUnprobedChannels();
+                showToast('Failed to probe channels: ' + e, true);
+            })
+            .finally(() => {
+                if (probeBtn) probeBtn.disabled = false;
+                if (probeIcon) probeIcon.innerText = '⚡';
+                if (probeText) probeText.innerText = 'Test Connection & Probe Channels';
+            });
+        }
+
+        function renderProbedChannels(channels) {
+            const grid = document.getElementById('multi-channels-grid');
+            if (!grid) return;
+            const baseName = _activeLinkingCam ? (_activeLinkingCam.name || _activeLinkingCam.vendor || 'Camera') : 'Camera';
+            let html = '';
+
+            channels.forEach(ch => {
+                const isOnline = !!ch.online;
+                const badgeColor = isOnline ? 'var(--accent-success)' : 'var(--text-dim)';
+                const badgeBg = isOnline ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255,255,255,0.06)';
+                const badgeBorder = isOnline ? 'rgba(16, 185, 129, 0.3)' : 'var(--border-subtle)';
+                const badgeText = isOnline ? `${ch.width}x${ch.height} @ ${ch.fps}fps (${ch.latency_ms}ms)` : 'No Signal';
+
+                const mediaPreview = isOnline && ch.preview_image
+                    ? `<img src="${ch.preview_image}" alt="CH ${ch.channel}" style="width: 100%; height: 95px; object-fit: cover; border-radius: 6px; display: block;">`
+                    : `<div style="width: 100%; height: 95px; background: rgba(0,0,0,0.5); border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 0.72rem; color: var(--text-dim); text-align: center; border: 1px dashed var(--border-subtle); padding: 0.3rem;">
+                        <span style="font-size: 1.1rem; opacity: 0.5; margin-bottom: 2px;">📷</span>
+                        <span>No Video Feed</span>
+                        <span style="font-size: 0.65rem; opacity: 0.6; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; max-width: 150px; white-space: nowrap;">${ch.error || 'Empty'}</span>
+                       </div>`;
+
+                const isChecked = isOnline ? 'checked' : '';
+                const cardBorder = isOnline ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid var(--border-subtle)';
+
+                html += `
+                    <div class="channel-card" id="ch-card-${ch.channel}" style="background: rgba(0,0,0,0.3); border: ${cardBorder}; border-radius: 8px; padding: 0.6rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <label style="display: flex; align-items: center; gap: 0.4rem; font-weight: 700; font-size: 0.82rem; cursor: pointer;">
+                                <input type="checkbox" id="ch-cb-${ch.channel}" value="${ch.channel}" ${isChecked} onchange="updateBatchSelectedCount()" style="cursor: pointer;">
+                                <span>CH ${ch.channel}</span>
+                            </label>
+                            <span class="badge" style="font-size: 0.68rem; background: ${badgeBg}; color: ${badgeColor}; border: 1px solid ${badgeBorder}; padding: 0.12rem 0.4rem; border-radius: 4px; font-weight: 600;">
+                                ${isOnline ? '🟢 Live' : '⚪ Offline'}
+                            </span>
+                        </div>
+                        ${mediaPreview}
+                        <div style="font-size: 0.7rem; color: var(--text-dim); font-family: var(--font-mono); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            ${badgeText}
+                        </div>
+                        <input type="text" class="form-input" id="ch-name-${ch.channel}" value="${baseName} CH ${ch.channel}" style="padding: 0.25rem 0.5rem; font-size: 0.78rem;" placeholder="Camera Name">
+                    </div>
+                `;
+            });
+
+            grid.innerHTML = html;
+            updateBatchSelectedCount();
+        }
+
+        function toggleMultiSelect(onlyActive) {
+            const chCount = parseInt(document.getElementById('link-multi-channels').value, 10) || 8;
+            for (let i = 1; i <= chCount; i++) {
+                const cb = document.getElementById(`ch-cb-${i}`);
+                if (!cb) continue;
+                if (onlyActive) {
+                    const chObj = _probedChannels.find(c => c.channel === i);
+                    cb.checked = chObj ? !!chObj.online : true;
+                } else {
+                    cb.checked = false;
+                }
+            }
+            updateBatchSelectedCount();
+        }
+
+        function updateBatchSelectedCount() {
+            const chCount = parseInt(document.getElementById('link-multi-channels').value, 10) || 8;
+            let selected = 0;
+            for (let i = 1; i <= chCount; i++) {
+                const cb = document.getElementById(`ch-cb-${i}`);
+                if (cb && cb.checked) selected++;
+            }
+            const countSpan = document.getElementById('batch-selected-count');
+            const countLabel = document.getElementById('batch-selected-count-label');
+            const btn = document.getElementById('btn-confirm-batch-link');
+
+            if (countSpan) countSpan.innerText = selected;
+            if (countLabel) countLabel.innerText = selected;
+
+            if (btn) {
+                if (selected > 0) {
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    btn.style.cursor = 'pointer';
+                } else {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.45';
+                    btn.style.cursor = 'not-allowed';
+                }
+            }
+        }
+
+        function submitBatchLinkedCameras() {
+            if (!_activeLinkingCam) return;
+            const chCount = parseInt(document.getElementById('link-multi-channels').value, 10) || 8;
+            const transport = document.getElementById('link-multi-transport').value || 'auto';
+            const user = document.getElementById('link-multi-user').value.trim();
+            const pass = document.getElementById('link-multi-pass').value.trim();
+            const pattern = document.getElementById('link-multi-pattern').value.trim();
+            const ip = _activeLinkingCam.ip;
+            const port = _activeLinkingCam.port || 554;
+
+            const camerasToLink = [];
+            for (let i = 1; i <= chCount; i++) {
+                const cb = document.getElementById(`ch-cb-${i}`);
+                if (!cb || !cb.checked) continue;
+
+                const nameInput = document.getElementById(`ch-name-${i}`);
+                const camName = nameInput ? nameInput.value.trim() : `Channel ${i}`;
+
+                const probed = _probedChannels.find(c => c.channel === i);
+                let source = probed && probed.source ? probed.source : '';
+                if (!source) {
+                    let path = pattern.replace('{ch}', i);
+                    if (!path.startsWith('/')) path = '/' + path;
+                    const auth = user ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : '';
+                    source = `rtsp://${auth}${ip}:${port}${path}`;
+                }
+
+                camerasToLink.push({
+                    name: camName,
+                    source: source,
+                    native_fps: 15,
+                    transport: transport,
+                    enabled: true
+                });
+            }
+
+            if (camerasToLink.length === 0) {
+                showToast('Please select at least one channel to link.', true);
+                return;
+            }
+
+            const btn = document.getElementById('btn-confirm-batch-link');
+            if (btn) {
+                btn.disabled = true;
+                btn.innerText = `Linking ${camerasToLink.length} channels...`;
+            }
+
+            fetch('/api/cameras/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cameras: camerasToLink })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.success) throw new Error(data.error || 'Failed to link cameras in batch');
+                showToast(`✓ Successfully linked all ${camerasToLink.length} channels to the system!`);
+                closeLinkCameraModal();
+                fetchCameras();
+                // Refresh discovery list
+                if (_discoveredCameras && _discoveredCameras.length > 0) {
+                    const found = _discoveredCameras.find(c => c.ip === _activeLinkingCam.ip);
+                    if (found) {
+                        found.already_configured = true;
+                        found.configured_id = `batch (${camerasToLink.length} ch)`;
+                    }
+                    scanNetworkCameras();
+                }
+            })
+            .catch(e => {
+                showToast('Batch linking error: ' + e, true);
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = `<span>🔗</span> Link Selected Channels to System (<span id="batch-selected-count">${camerasToLink.length}</span>)`;
                 }
             });
         }

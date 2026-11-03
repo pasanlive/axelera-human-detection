@@ -884,6 +884,137 @@ class TestWebApi(unittest.TestCase):
             finally:
                 pipeline.stop()
 
+    def test_multi_channel_dvr_probing_and_batch_linking(self):
+        """Tests probe_device_channels, add_cameras_batch, and multi-channel API endpoints."""
+        from unittest.mock import patch
+        from src.utils.camera_discovery import probe_device_channels, DVR_NVR_PRESETS
+
+        # 1. Test probe_device_channels with simulated responses
+        def _mock_test_stream(url, username=None, password=None, timeout_s=3.5, transport="auto"):
+            # Mock channels 1, 2, 3 as active, others as inactive
+            ch_match = None
+            for num in range(1, 17):
+                if f"{num}02" in url or f"channel={num}" in url or f"c{num}" in url:
+                    ch_match = num
+                    break
+            if ch_match is not None and ch_match <= 3:
+                return {
+                    "success": True,
+                    "url": url,
+                    "raw_url": url,
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 15.0,
+                    "latency_ms": 35.0,
+                    "transport": transport,
+                    "preview_image": "data:image/jpeg;base64,fakejpgdata",
+                }
+            return {
+                "success": False,
+                "url": url,
+                "error": "No signal on channel",
+            }
+
+        with patch("src.utils.camera_discovery.test_camera_stream", side_effect=_mock_test_stream):
+            # Test Hikvision DVR preset probing (8 channels)
+            res = probe_device_channels(
+                ip="192.168.1.200",
+                port=554,
+                username="admin",
+                password="password123",
+                vendor="Hikvision",
+                max_channels=8,
+            )
+            self.assertTrue(res["success"])
+            self.assertEqual(res["total_probed"], 8)
+            self.assertEqual(res["online_count"], 3)
+            self.assertEqual(len(res["channels"]), 8)
+            # Verify sorted order
+            self.assertEqual([c["channel"] for c in res["channels"]], list(range(1, 9)))
+            # Check online channels
+            self.assertTrue(res["channels"][0]["online"])
+            self.assertEqual(res["channels"][0]["width"], 1920)
+            self.assertFalse(res["channels"][4]["online"])
+
+            # Test Dahua DVR preset probing
+            res_dahua = probe_device_channels(
+                ip="192.168.1.201",
+                vendor="Dahua",
+                max_channels=4,
+            )
+            self.assertTrue(res_dahua["success"])
+            self.assertEqual(res_dahua["total_probed"], 4)
+            self.assertIn("cam/realmonitor", res_dahua["pattern"])
+
+        # 2. Test MultiCameraPipeline add_cameras_batch
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_cfg_path = os.path.join(tmpdir, "config.yaml")
+            cfg = _sim_config(tmpdir, 1)
+            with open(tmp_cfg_path, "w") as f:
+                yaml.safe_dump(cfg, f)
+            pipeline = MultiCameraPipeline(cfg, simulate=True, config_path=tmp_cfg_path)
+            web_server = WebServer(pipeline, host="127.0.0.1", port=0, use_https=False)
+            try:
+                initial_count = len(pipeline.config.get("cameras", []))
+                batch_cams = [
+                    {"name": "DVR CH 1", "source": "rtsp://admin:pass@192.168.1.200:554/Streaming/Channels/102", "native_fps": 15},
+                    {"name": "DVR CH 2", "source": "rtsp://admin:pass@192.168.1.200:554/Streaming/Channels/202", "native_fps": 15},
+                    {"name": "DVR CH 3", "source": "rtsp://admin:pass@192.168.1.200:554/Streaming/Channels/302", "native_fps": 15},
+                ]
+                added = pipeline.add_cameras_batch(batch_cams)
+                self.assertEqual(len(added), 3)
+                self.assertEqual(len(pipeline.config["cameras"]), initial_count + 3)
+                # Verify unique auto-generated IDs
+                ids = [c["id"] for c in added]
+                self.assertEqual(len(set(ids)), 3)
+                self.assertTrue(all(cid.startswith("cam_") for cid in ids))
+
+                # Verify persisting to YAML disk
+                with open(tmp_cfg_path, "r") as f:
+                    disk_cfg = yaml.safe_load(f)
+                self.assertEqual(len(disk_cfg["cameras"]), initial_count + 3)
+
+                # 3. Test WebServer /api/cameras/test-channels endpoint
+                mock_probe_res = {
+                    "success": True,
+                    "ip": "192.168.1.200",
+                    "total_probed": 4,
+                    "online_count": 2,
+                    "channels": [
+                        {"channel": 1, "online": True, "source": "rtsp://.../102"},
+                        {"channel": 2, "online": True, "source": "rtsp://.../202"},
+                    ],
+                }
+                with patch("src.utils.camera_discovery.probe_device_channels", return_value=mock_probe_res):
+                    code, body = web_server.handle_api("POST", "/api/cameras/test-channels", {}, {"ip": "192.168.1.200", "channel_count": 4})
+                    self.assertEqual(code, 200)
+                    self.assertTrue(body["success"])
+                    self.assertEqual(body["online_count"], 2)
+
+                # Test missing IP
+                code, body = web_server.handle_api("POST", "/api/cameras/test-channels", {}, {})
+                self.assertEqual(code, 400)
+                self.assertIn("required", body["error"])
+
+                # 4. Test WebServer /api/cameras/batch endpoint
+                batch_req = {
+                    "cameras": [
+                        {"name": "Batch Cam 1", "source": "rtsp://192.168.1.50/live/1"},
+                        {"name": "Batch Cam 2", "source": "rtsp://192.168.1.50/live/2"},
+                    ]
+                }
+                code, body = web_server.handle_api("POST", "/api/cameras/batch", {}, batch_req)
+                self.assertEqual(code, 200)
+                self.assertTrue(body["success"])
+                self.assertEqual(body["count"], 2)
+
+                # Test invalid batch request (empty)
+                code, body = web_server.handle_api("POST", "/api/cameras/batch", {}, {"cameras": []})
+                self.assertEqual(code, 400)
+                self.assertIn("required", body["error"])
+            finally:
+                pipeline.stop()
+
     def test_voyager_runtime_pipeline_kwargs(self):
         """Verifies that VoyagerRuntime defaults specified_frame_rate to 0 to prevent videorate duplication."""
         from unittest.mock import patch

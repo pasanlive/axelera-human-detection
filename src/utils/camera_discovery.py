@@ -447,6 +447,163 @@ def test_camera_stream(source: str, username: Optional[str] = None,
     }
 
 
+DVR_NVR_PRESETS: Dict[str, Dict[str, Any]] = {
+    "hikvision_sub": {
+        "label": "Hikvision / Annke / HiLook (Sub-stream - Recommended)",
+        "pattern": "/Streaming/Channels/{ch}02",
+        "default_fps": 15,
+        "vendor": "hikvision",
+    },
+    "hikvision_main": {
+        "label": "Hikvision / Annke / HiLook (Main-stream)",
+        "pattern": "/Streaming/Channels/{ch}01",
+        "default_fps": 20,
+        "vendor": "hikvision",
+    },
+    "hikvision_legacy_sub": {
+        "label": "Hikvision Legacy (/h264/ch{ch}/sub/av_stream)",
+        "pattern": "/h264/ch{ch}/sub/av_stream",
+        "default_fps": 15,
+        "vendor": "hikvision",
+    },
+    "dahua_sub": {
+        "label": "Dahua / Amcrest / Lorex (Sub-stream - Recommended)",
+        "pattern": "/cam/realmonitor?channel={ch}&subtype=1",
+        "default_fps": 15,
+        "vendor": "dahua",
+    },
+    "dahua_main": {
+        "label": "Dahua / Amcrest / Lorex (Main-stream)",
+        "pattern": "/cam/realmonitor?channel={ch}&subtype=0",
+        "default_fps": 20,
+        "vendor": "dahua",
+    },
+    "uniview_sub": {
+        "label": "Uniview / UNV (Sub-stream - Recommended)",
+        "pattern": "/unicast/c{ch}/s1/live",
+        "default_fps": 15,
+        "vendor": "uniview",
+    },
+    "uniview_main": {
+        "label": "Uniview / UNV (Main-stream)",
+        "pattern": "/unicast/c{ch}/s0/live",
+        "default_fps": 20,
+        "vendor": "uniview",
+    },
+    "generic_sub": {
+        "label": "Generic DVR / NVR (/live/ch{ch})",
+        "pattern": "/live/ch{ch}",
+        "default_fps": 15,
+        "vendor": "generic",
+    },
+}
+
+
+def probe_device_channels(
+    ip: str,
+    port: int = 554,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    vendor: str = "",
+    channels: Optional[List[int]] = None,
+    max_channels: int = 8,
+    pattern: Optional[str] = None,
+    transport: str = "auto",
+    timeout_s: float = 3.5,
+) -> Dict[str, Any]:
+    """
+    Concurrently probes multiple channels on a multi-channel video source (DVR/NVR/multi-cam).
+    Tests each channel stream, grabs a live snapshot preview, and measures resolution/FPS/latency.
+    """
+    if not ip:
+        return {"success": False, "error": "IP address is required."}
+
+    channel_list = channels
+    if not channel_list:
+        max_ch = max(1, min(int(max_channels or 8), 32))
+        channel_list = list(range(1, max_ch + 1))
+
+    # Resolve URL pattern
+    pat = pattern
+    if not pat:
+        v_low = (vendor or "").lower()
+        if "dahua" in v_low or "amcrest" in v_low or "lorex" in v_low:
+            pat = DVR_NVR_PRESETS["dahua_sub"]["pattern"]
+        elif "uniview" in v_low or "unv" in v_low:
+            pat = DVR_NVR_PRESETS["uniview_sub"]["pattern"]
+        else:
+            pat = DVR_NVR_PRESETS["hikvision_sub"]["pattern"]
+
+    def _test_one_channel(ch_num: int) -> Dict[str, Any]:
+        if pat.startswith("rtsp://"):
+            raw_url = pat.format(ch=ch_num)
+        else:
+            path = pat.format(ch=ch_num)
+            if not path.startswith("/"):
+                path = "/" + path
+            auth = ""
+            if username:
+                u_enc = urllib.parse.quote(username)
+                p_enc = urllib.parse.quote(password) if password else ""
+                auth = f"{u_enc}:{p_enc}@" if password else f"{u_enc}@"
+            raw_url = f"rtsp://{auth}{ip}:{port}{path}"
+
+        test_res = test_camera_stream(
+            raw_url,
+            username=username,
+            password=password,
+            timeout_s=timeout_s,
+            transport=transport,
+        )
+
+        online = bool(test_res.get("success"))
+        return {
+            "channel": ch_num,
+            "name": f"Channel {ch_num}",
+            "source": test_res.get("raw_url", raw_url),
+            "safe_url": test_res.get("url"),
+            "online": online,
+            "width": test_res.get("width"),
+            "height": test_res.get("height"),
+            "fps": test_res.get("fps"),
+            "latency_ms": test_res.get("latency_ms"),
+            "transport": test_res.get("transport"),
+            "preview_image": test_res.get("preview_image"),
+            "error": test_res.get("error") if not online else None,
+        }
+
+    max_workers = min(len(channel_list), 16)
+    results: List[Dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_test_one_channel, ch): ch for ch in channel_list}
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                results.append(fut.result())
+            except Exception as e:
+                ch = futures[fut]
+                results.append({
+                    "channel": ch,
+                    "name": f"Channel {ch}",
+                    "source": "",
+                    "safe_url": "",
+                    "online": False,
+                    "error": f"Probing exception: {str(e)}",
+                })
+
+    results.sort(key=lambda x: x["channel"])
+    online_count = sum(1 for c in results if c.get("online"))
+
+    return {
+        "success": True,
+        "ip": ip,
+        "port": port,
+        "pattern": pat,
+        "total_probed": len(channel_list),
+        "online_count": online_count,
+        "channels": results,
+    }
+
+
 if __name__ == "__main__":
     from tools.discover_cameras import main as cli_main
     sys.exit(cli_main())
