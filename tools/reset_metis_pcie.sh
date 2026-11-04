@@ -45,23 +45,41 @@ sudo rm -f /etc/modprobe.d/axl.conf /etc/modprobe.d/metis.conf 2>/dev/null || tr
 sudo rmmod axl 2>/dev/null || sudo rmmod axl_aipu 2>/dev/null || sudo rmmod metis 2>/dev/null || true
 sleep 1
 
-# Try modprobe first with explicit parameters, or find and insmod directly if depmod is stale
+# Try loading via modprobe or direct insmod
 MODULE_LOADED=0
 for mod in metis axl; do
-    if sudo modprobe "$mod" single_msi=1 dma_poll=0 irq_timeout=30 dma_timeout=10 2>/dev/null; then
+    if sudo modprobe "$mod" single_msi=1 dma_poll=0 irq_timeout=30 dma_timeout=10; then
+        echo "      Successfully loaded $mod module via modprobe"
         MODULE_LOADED=1
         break
     fi
 done
 
 if [ "$MODULE_LOADED" -eq 0 ]; then
-    KO_FILE=$(find "/lib/modules/$(uname -r)" -name "metis.ko*" -o -name "axl*.ko*" 2>/dev/null | head -n 1)
+    # Look for driver module (.ko or .ko.xz / .ko.zst) across /lib/modules
+    KO_FILE=$(sudo find /lib/modules/ -name "metis.ko*" -o -name "axl*.ko*" 2>/dev/null | head -n 1)
     if [ -n "$KO_FILE" ] && [ -f "$KO_FILE" ]; then
         echo "      Loading module directly via insmod: $KO_FILE"
-        sudo insmod "$KO_FILE" single_msi=1 dma_poll=0 irq_timeout=30 dma_timeout=10 2>/dev/null || true
+        sudo insmod "$KO_FILE" single_msi=1 dma_poll=0 irq_timeout=30 dma_timeout=10 || true
+    else
+        echo "      [WARNING] Could not find metis.ko or axl.ko in /lib/modules/"
     fi
 fi
 sleep 1
+
+# If device is not bound to driver after module load, bind it explicitly
+if [ -n "$AXL_PCI" ]; then
+    DRIVER_PATH="/sys/bus/pci/devices/$AXL_PCI/driver"
+    if [ ! -e "$DRIVER_PATH" ]; then
+        for drv in metis axl; do
+            if [ -d "/sys/bus/pci/drivers/$drv" ]; then
+                echo "      Binding $AXL_PCI to $drv driver..."
+                echo "$AXL_PCI" | sudo tee "/sys/bus/pci/drivers/$drv/bind" >/dev/null 2>&1 || true
+                break
+            fi
+        done
+    fi
+fi
 
 # 5. Verify MSI vector configuration
 echo "[5/6] Verifying device status and MSI allocation..."
