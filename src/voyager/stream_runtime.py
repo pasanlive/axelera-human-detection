@@ -551,13 +551,13 @@ def _patch_voyager_stream_input() -> None:
         elif cam_transport == "tcp":
             rtsp_props['protocols'] = 4
         else:
-            env_proto = (os.environ.get("AXELERA_RTSP_PROTOCOL") or "auto").lower()
+            env_proto = (os.environ.get("AXELERA_RTSP_PROTOCOL") or "tcp").lower()
             if env_proto == "udp":
                 rtsp_props['protocols'] = 1
             elif env_proto == "tcp":
-                rtsp_props['protocols'] = 5  # prefer TCP, fallback to UDP on 461
+                rtsp_props['protocols'] = 4  # GST_RTSP_LOWER_TRANS_TCP strictly (prevents 5s UDP timeout & renegotiation)
             else:
-                rtsp_props['protocols'] = 5  # default: TCP with UDP fallback
+                rtsp_props['protocols'] = 4  # default: strictly TCP
 
         gst.rtspsrc(rtsp_props)
         gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
