@@ -56,13 +56,20 @@ for mod in metis axl; do
 done
 
 if [ "$MODULE_LOADED" -eq 0 ]; then
-    # Look for driver module (.ko or .ko.xz / .ko.zst) across /lib/modules
-    KO_FILE=$(sudo find /lib/modules/ -name "metis.ko*" -o -name "axl*.ko*" 2>/dev/null | head -n 1)
+    # Look for driver module compiled specifically for the currently running kernel: $(uname -r)
+    CURR_KVER=$(uname -r)
+    KO_FILE=$(sudo find "/lib/modules/$CURR_KVER" -name "metis.ko*" -o -name "axl*.ko*" 2>/dev/null | head -n 1)
+
+    # Fallback to general search if not found in current kernel tree
+    if [ -z "$KO_FILE" ]; then
+        KO_FILE=$(sudo find /lib/modules/ -path "*$CURR_KVER*" \( -name "metis.ko*" -o -name "axl*.ko*" \) 2>/dev/null | head -n 1)
+    fi
+
     if [ -n "$KO_FILE" ] && [ -f "$KO_FILE" ]; then
         echo "      Loading module directly via insmod: $KO_FILE"
         sudo insmod "$KO_FILE" single_msi=1 dma_poll=0 irq_timeout=30 dma_timeout=10 || true
     else
-        echo "      [WARNING] Could not find metis.ko or axl.ko in /lib/modules/"
+        echo "      [WARNING] Could not find metis.ko or axl.ko matching kernel $CURR_KVER in /lib/modules/"
     fi
 fi
 sleep 1
