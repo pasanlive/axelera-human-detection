@@ -45,7 +45,22 @@ sudo rm -f /etc/modprobe.d/axl.conf /etc/modprobe.d/metis.conf 2>/dev/null || tr
 sudo rmmod axl 2>/dev/null || sudo rmmod axl_aipu 2>/dev/null || sudo rmmod metis 2>/dev/null || true
 sleep 1
 
-sudo modprobe axl 2>/dev/null || sudo modprobe axl_aipu 2>/dev/null || sudo modprobe metis 2>/dev/null || true
+# Try modprobe first with explicit parameters, or find and insmod directly if depmod is stale
+MODULE_LOADED=0
+for mod in metis axl; do
+    if sudo modprobe "$mod" single_msi=1 dma_poll=0 irq_timeout=30 dma_timeout=10 2>/dev/null; then
+        MODULE_LOADED=1
+        break
+    fi
+done
+
+if [ "$MODULE_LOADED" -eq 0 ]; then
+    KO_FILE=$(find "/lib/modules/$(uname -r)" -name "metis.ko*" -o -name "axl*.ko*" 2>/dev/null | head -n 1)
+    if [ -n "$KO_FILE" ] && [ -f "$KO_FILE" ]; then
+        echo "      Loading module directly via insmod: $KO_FILE"
+        sudo insmod "$KO_FILE" single_msi=1 dma_poll=0 irq_timeout=30 dma_timeout=10 2>/dev/null || true
+    fi
+fi
 sleep 1
 
 # 5. Verify MSI vector configuration

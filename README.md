@@ -191,6 +191,12 @@ Model IDs: `human_detector`, `pose_estimator`, `face_recognizer`, `license_plate
 
 ---
 
+## 🔧 Troubleshoot Guides
+
+- [PCIe MSI Timeout & Level-Zero `L0::Exception` Crash](guides/troubleshoot/pcie_msi_timeout_l0_exception.md) — Diagnosing and recovering from RK3588 PCIe link training failures, MSI interrupt dropouts, and AIPU binary completion wait timeouts (`-1301`).
+
+---
+
 ## 🧪 Tests
 ```bash
 python -m unittest discover tests     # runs without the SDK (simulated runtime)
