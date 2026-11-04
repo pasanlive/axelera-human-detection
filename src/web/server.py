@@ -788,6 +788,50 @@ class WebServer:
                 text = urllib.parse.unquote(path.split("/")[-1])
                 return 200, {"success": p.plate_db.remove_plate(text), "plate_text": text}
 
+            # ── activities & incidents ───────────────────────────────────────
+            if method == "GET" and path == "/api/activities":
+                def _get_q(k, default=None):
+                    v = query.get(k, default)
+                    return v[0] if isinstance(v, list) and v else v
+
+                try:
+                    limit = int(_get_q("limit", 50))
+                except (ValueError, TypeError):
+                    limit = 50
+                try:
+                    offset = int(_get_q("offset", 0))
+                except (ValueError, TypeError):
+                    offset = 0
+
+                cam_id = _get_q("camera_id")
+                det_type = _get_q("detection_type")
+                date_q = _get_q("date")
+                search_q = _get_q("search")
+
+                if hasattr(p, "activity_db"):
+                    activities = p.activity_db.get_activities(
+                        limit=limit,
+                        offset=offset,
+                        camera_id=cam_id,
+                        detection_type=det_type,
+                        date=date_q,
+                        search=search_q,
+                    )
+                    stats = p.activity_db.get_stats()
+                else:
+                    activities = []
+                    stats = {}
+                return 200, {"activities": activities, "count": len(activities), "stats": stats}
+
+            if method == "GET" and path == "/api/activities/stats":
+                st = p.activity_db.get_stats() if hasattr(p, "activity_db") else {}
+                return 200, {"stats": st, **st}
+
+            if method == "POST" and path == "/api/activities/clear":
+                if hasattr(p, "activity_db"):
+                    p.activity_db.clear()
+                return 200, {"success": True}
+
             # ── display settings ────────────────────────────────────────────
             if method == "GET" and path == "/api/display":
                 vis = getattr(p, "visualizer", None)

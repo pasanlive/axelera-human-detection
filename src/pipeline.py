@@ -31,6 +31,7 @@ from src.analytics.identity import TrackIdentityResolver
 from src.render.preview import GRID, PreviewHub
 from src.utils.face_db import FaceDatabase
 from src.utils.face_history_db import FaceHistoryDatabase
+from src.utils.activity_db import ActivityDatabase
 from src.utils.plate_db import PlateDatabase
 from src.utils.visualization import Visualizer
 from src.voyager.capacity_planner import (
@@ -111,6 +112,10 @@ class MultiCameraPipeline:
             db_path=config.get("face_db", {}).get("history_db_path", "data/face_history.db")
         )
         self.plate_db = PlateDatabase(db_path=config.get("plate_db", {}).get("path", "data/plate_db.json"))
+        self.activity_db = ActivityDatabase(
+            db_path=config.get("activity_db", {}).get("path", "data/activity_history.db"),
+            incident_timeout_s=float(config.get("activity_db", {}).get("incident_timeout_s", 12.0))
+        )
 
         # ── Analytics ────────────────────────────────────────────────────────
         self.identity = TrackIdentityResolver()
@@ -694,6 +699,19 @@ class MultiCameraPipeline:
                                                ((b[0] + b[2]) / 2.0 * sx, (b[1] + b[3]) / 2.0 * sy))
             self._zone_crossing.purge_stale_tracks(cam_id, track_ids)
 
+        # Activity Log Tracking: correlate multi-modal human, face, and plate events
+        try:
+            self.activity_db.record_frame_activity(
+                camera_id=cam_id,
+                now=now,
+                persons=persons,
+                faces=faces_out,
+                plates=plates_out,
+                get_frame=_get_frame,
+            )
+        except Exception as e:
+            pass
+
         with self._state_lock:
             self._latest[cam_id] = {"ts": now, "persons": len(persons), "faces": faces_out,
                                     "faces_detected": len(faces_out),
@@ -959,6 +977,10 @@ class MultiCameraPipeline:
         finally:
             try:
                 self.face_history_db.close()
+            except Exception:
+                pass
+            try:
+                self.activity_db.close()
             except Exception:
                 pass
             self.preview.stop()
