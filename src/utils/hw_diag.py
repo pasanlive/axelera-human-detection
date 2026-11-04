@@ -196,9 +196,9 @@ class HardwareWatchdog:
             except Exception:
                 pass
 
-            # 2. Configure driver parameters dynamically via sysfs if writable (dma_poll=0 avoids WR CH0 poll error)
+            # 2. Configure driver parameters dynamically via sysfs if writable (preserve current dma_poll or default to 0)
             for mod in ("metis", "axl"):
-                for param, val in [("dma_poll", "0"), ("irq_timeout", "30"), ("dma_timeout", "10")]:
+                for param, val in [("irq_timeout", "30"), ("dma_timeout", "10")]:
                     p = Path(f"/sys/module/{mod}/parameters/{param}")
                     if p.exists():
                         try:
@@ -248,9 +248,9 @@ class HardwareWatchdog:
             # 2. Kill any orphaned axtrace processes so device nodes are not held open
             subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
 
-            # 3. Apply dma_poll=0, irq_timeout=30, dma_timeout=10 to sysfs directly
+            # 3. Apply irq_timeout=30, dma_timeout=10 to sysfs directly (preserving user-configured dma_poll)
             for mod in ("metis", "axl"):
-                for param, val in [("dma_poll", "0"), ("irq_timeout", "30"), ("dma_timeout", "10")]:
+                for param, val in [("irq_timeout", "30"), ("dma_timeout", "10")]:
                     p = Path(f"/sys/module/{mod}/parameters/{param}")
                     if p.exists():
                         try:
