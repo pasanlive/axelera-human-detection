@@ -50,7 +50,7 @@ if command -v setpci >/dev/null 2>&1; then
 fi
 
 # 4. Configure persistent modprobe.d options and reload kernel driver module
-DMA_POLL="${DMA_POLL:-0}"
+DMA_POLL="${DMA_POLL:-1}"
 echo "[4/6] Reloading driver module (enforcing single_msi=1, dma_poll=$DMA_POLL, irq_timeout=30)..."
 if [ -d /etc/modprobe.d ]; then
     printf "options metis single_msi=1 dma_poll=%s irq_timeout=30 dma_timeout=10\noptions axl single_msi=1 dma_poll=%s irq_timeout=30 dma_timeout=10\n" "$DMA_POLL" "$DMA_POLL" > /etc/modprobe.d/metis.conf 2>/dev/null || true

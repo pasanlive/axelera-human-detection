@@ -509,6 +509,9 @@ def _patch_voyager_stream_input() -> None:
     _orig_on_pad_added = getattr(gst_helper, "_on_pad_added", None)
     if _orig_on_pad_added is not None:
         def patched_on_pad_added(element: Any, newPad: Any, sinkPad: Any, prop: Any, key: Any) -> None:
+            if newPad and newPad.is_linked():
+                # Pad is already linked (e.g. secondary audio pad diverted to fakesink)
+                return
             elem_name = element.get_name() if element else ""
             pad_name = newPad.get_name() if newPad else ""
             sink_name = sinkPad.get_name() if sinkPad else ""
