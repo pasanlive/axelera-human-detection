@@ -405,19 +405,9 @@ def _patch_voyager_stream_input() -> None:
                 except Exception as e:
                     print(f"[VOYAGER HW] Failed to hook rtspsrc new-manager: {e}")
 
-                def _on_rtspsrc_select_stream(rtspsrc_elem: Any, stream_num: int, caps: Any) -> bool:
-                    caps_str = caps.to_string() if caps else ""
-                    # Select video streams only; reject audio (AAC/PCM) and metadata tracks.
-                    # Skipping the audio stream prevents rtspsrc from requesting RTSP SETUP for trackID=2,
-                    # eliminating unlinked audio pads and audio preroll deadlock completely.
-                    is_video = "media=(string)video" in caps_str or "video/" in caps_str
-                    print(f"[RTSP SELECT-STREAM] Track {stream_num}: '{caps_str}' -> select={is_video}")
-                    return is_video
-
-                try:
-                    elem.connect("select-stream", _on_rtspsrc_select_stream)
-                except Exception as e:
-                    print(f"[RTSP SELECT-STREAM] Failed to hook select-stream: {e}")
+                # Note: Do NOT hook 'select-stream' to reject audio tracks.
+                # Hikvision/EZVIZ cameras stall if audio tracks offered in the SDP are excluded from RTSP SETUP.
+                # Audio/metadata pads are instead cleanly absorbed by patched_on_pad_added (fakesink async=False).
 
             elif inst == "queue":
                 # Leaky downstream queue: allows at most 1 buffer between decoder and AIPU.

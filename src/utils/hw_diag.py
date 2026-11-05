@@ -259,8 +259,7 @@ class HardwareWatchdog:
                         except Exception:
                             pass
 
-            # Clean up any stale modprobe.d files that could prevent driver insertion
-            subprocess.run(["sudo", "-n", "rm", "-f", "/etc/modprobe.d/metis.conf", "/etc/modprobe.d/axl.conf"], capture_output=True, timeout=2)
+            # Ensure modprobe.d metis.conf is preserved for persistent single_msi=1 and dma_poll=1
 
             # 4. Check device nodes in /dev and PCIe driver binding
             metis_devs = sorted(glob.glob("/dev/metis*") + glob.glob("/dev/axl*"))
