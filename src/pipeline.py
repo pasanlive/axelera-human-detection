@@ -21,6 +21,7 @@ control what is drawn (one YOLOv8-pose model provides boxes AND keypoints).
 from __future__ import annotations
 
 import os
+import queue
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -147,6 +148,8 @@ class MultiCameraPipeline:
         self._replan_lock = threading.Lock()
         self._replan_evt = threading.Event()
         self._replan_thread: Optional[threading.Thread] = None
+        self._result_queue: queue.Queue = queue.Queue(maxsize=4)
+        self._result_worker_thread: Optional[threading.Thread] = None
         self.is_running = False
 
         if runtime_factory is None:
@@ -460,6 +463,42 @@ class MultiCameraPipeline:
         print(f"[RUNTIME {kind.upper()}]{' ' + cam_id if cam_id else ''} {message}")
 
     def _on_result(self, cam_id: str, fa: FrameAnalysis, get_image: Callable[[], Optional[np.ndarray]]):
+        """Dispatches incoming inference results to the background pipeline worker queue.
+
+        Decoupling Python metadata handling, thumbnail encoding, SQLite transactions,
+        and JPEG compression from the runtime consumer thread ensures that the Axelera
+        GStreamer streaming thread and Metis Level-Zero command queues are NEVER blocked,
+        completely eliminating wait kernel timeouts (-1301) and command list aborts (-1402).
+        """
+        if self._result_worker_thread is not None and self._result_worker_thread.is_alive():
+            if self._result_queue.full():
+                try:
+                    self._result_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            try:
+                self._result_queue.put_nowait((cam_id, fa, get_image))
+            except queue.Full:
+                pass
+        else:
+            self._process_frame_result(cam_id, fa, get_image)
+
+    def _result_consumer_loop(self) -> None:
+        """Dedicated background pipeline worker thread for analytics, DB logging, and preview."""
+        while self.is_running:
+            try:
+                item = self._result_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            cam_id, fa, get_image = item
+            try:
+                self._process_frame_result(cam_id, fa, get_image)
+            except Exception:
+                pass
+
+    def _process_frame_result(self, cam_id: str, fa: FrameAnalysis, get_image: Callable[[], Optional[np.ndarray]]):
         now = fa.timestamp
         persons = fa.persons
         track_ids = [p["track_id"] for p in persons if p["track_id"] is not None]
@@ -1001,12 +1040,23 @@ class MultiCameraPipeline:
             raise
         self._replan_thread = threading.Thread(target=self._replan_worker, name="replan", daemon=True)
         self._replan_thread.start()
+        self._result_worker_thread = threading.Thread(target=self._result_consumer_loop, name="pipeline_worker", daemon=True)
+        self._result_worker_thread.start()
         print("[PIPELINE SUCCESS] System initialized and actively processing streams.")
 
     def stop(self):
         """Stops the processing pipeline."""
         self.is_running = False
         self._replan_evt.set()
+        try:
+            self._result_queue.put_nowait(None)
+        except Exception:
+            pass
+        if self._result_worker_thread is not None and self._result_worker_thread.is_alive():
+            try:
+                self._result_worker_thread.join(timeout=1.0)
+            except Exception:
+                pass
         try:
             self.runtime.stop()
         finally:

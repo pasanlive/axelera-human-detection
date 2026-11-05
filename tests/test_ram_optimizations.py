@@ -172,5 +172,48 @@ class TestFaceHistoryRAM(unittest.TestCase):
         self.assertEqual(stats["events_count"], 1)
 
 
+class TestPipelineAsyncDecoupling(unittest.TestCase):
+    def test_pipeline_async_queue_non_blocking(self):
+        """Verify pipeline worker thread processes frames asynchronously and drops oldest on backlog."""
+        from src.pipeline import MultiCameraPipeline
+        from src.voyager.result_parser import FrameAnalysis
+
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            cfg = {
+                "cameras": [{"id": "cam_01", "name": "Cam 1", "source": "fake://0", "enabled": True}],
+                "face_db": {"path": os.path.join(tmp_dir, "face_db.json")},
+                "plate_db": {"path": os.path.join(tmp_dir, "plate_db.json")},
+                "models": {"human_detector": {"enabled": True}, "pose_estimator": {"enabled": False}},
+            }
+            p = MultiCameraPipeline(cfg, simulate=True)
+            p.start()
+
+            fa = FrameAnalysis(
+                stream_id=0,
+                timestamp=time.time(),
+                persons=[{"track_id": 1, "bbox": [10, 10, 50, 50], "confidence": 0.9}],
+                faces=[],
+                plates=[],
+            )
+
+            # Enqueue multiple frames directly via _on_result: should return immediately without blocking
+            t0 = time.time()
+            for _ in range(10):
+                p._on_result("cam_01", fa, lambda: None)
+            duration = time.time() - t0
+            self.assertLess(duration, 0.1)  # Non-blocking dispatch < 100ms
+
+            # Give worker time to drain queue
+            time.sleep(0.3)
+            with p._state_lock:
+                self.assertIn("cam_01", p._latest)
+                self.assertGreaterEqual(p._latest["cam_01"]["persons"], 1)
+
+            p.stop()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

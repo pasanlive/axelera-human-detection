@@ -981,7 +981,7 @@ class VoyagerRuntime(BaseRuntime):
                         analysis = parse_frame_result(result, now)
                         img = result.image
 
-                        def get_image(_img=img):
+                        def get_image(_img=img, _res=result, _evt=event):
                             if _img is None:
                                 return None
                             try:

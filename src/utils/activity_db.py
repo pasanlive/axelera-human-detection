@@ -174,11 +174,15 @@ class ActivityDatabase:
                         break
 
             full_frame = None
-            if get_frame is not None and callable(get_frame):
-                try:
-                    full_frame = get_frame()
-                except Exception:
-                    pass
+
+            def _get_full_frame():
+                nonlocal full_frame
+                if full_frame is None and get_frame is not None and callable(get_frame):
+                    try:
+                        full_frame = get_frame()
+                    except Exception:
+                        pass
+                return full_frame
 
             if incident is None:
                 # Start new incident
@@ -202,8 +206,9 @@ class ActivityDatabase:
                     },
                 }
                 # Capture initial full scene screenshot
-                if full_frame is not None:
-                    incident["evidence"]["screenshot"] = self.encode_thumb(full_frame, max_dim=480, quality=70)
+                ff = _get_full_frame()
+                if ff is not None:
+                    incident["evidence"]["screenshot"] = self.encode_thumb(ff, max_dim=480, quality=70)
                 self._active_incidents[inc_key] = incident
             else:
                 incident["last_seen"] = now
@@ -218,9 +223,11 @@ class ActivityDatabase:
                 name = f.get("name")
                 sim = f.get("similarity", 0.0)
                 thumb = f.get("thumbnail")
-                if not thumb and full_frame is not None and "bbox" in f:
-                    crop = self.crop_roi(full_frame, f["bbox"])
-                    thumb = self.encode_thumb(crop, max_dim=120)
+                if not thumb and "bbox" in f:
+                    ff = _get_full_frame()
+                    if ff is not None:
+                        crop = self.crop_roi(ff, f["bbox"])
+                        thumb = self.encode_thumb(crop, max_dim=120)
 
                 if name and name != "Unknown":
                     incident["identified_faces"].add(name)
@@ -239,9 +246,11 @@ class ActivityDatabase:
                     incident["identified_plates"].add(text)
                     if not any(ep.get("text") == text for ep in incident["evidence"]["plates"]):
                         plate_thumb = None
-                        if full_frame is not None and "bbox" in p:
-                            crop = self.crop_roi(full_frame, p["bbox"])
-                            plate_thumb = self.encode_thumb(crop, max_dim=160)
+                        if "bbox" in p:
+                            ff = _get_full_frame()
+                            if ff is not None:
+                                crop = self.crop_roi(ff, p["bbox"])
+                                plate_thumb = self.encode_thumb(crop, max_dim=160)
                         incident["evidence"]["plates"].append({
                             "text": text,
                             "confidence": round(p.get("confidence", 0.0), 2),
