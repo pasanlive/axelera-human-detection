@@ -153,20 +153,7 @@ class ProcessSupervisor:
         except Exception:
             pass
 
-        # 3. If full hardware reset script is available, run PCIe endpoint reset & module reload
-        reset_script = Path(__file__).resolve().parents[2] / "tools" / "reset_metis_pcie.sh"
-        if reset_script.exists():
-            try:
-                cmd = [str(reset_script)]
-                if os.geteuid() != 0 and shutil.which("sudo"):
-                    cmd = ["sudo", "-n", str(reset_script)]
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                if res.returncode == 0:
-                    actions_taken.append("executed full PCIe endpoint rescan and driver reload via reset_metis_pcie.sh")
-            except Exception:
-                pass
-
-        # 4. Use HardwareWatchdog to verify device nodes, PCIe ASPM, single_msi, and driver binding
+        # 3. Use HardwareWatchdog to verify device nodes, PCIe ASPM, single_msi, and driver binding
         try:
             wd = get_watchdog()
             wd_ok = wd.ensure_device_ready(force=True)

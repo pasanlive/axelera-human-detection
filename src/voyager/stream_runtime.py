@@ -229,19 +229,14 @@ def _patch_voyager_stream_input() -> None:
             element.pop("props", None)
             inst = element.get("instance", "")
             if inst == "axinferencenet":
-                # Crucial for multi-model / composite pipelines on Rockchip RK3588:
-                # In composite pipelines (e.g. YOLOv8-pose + RetinaFace + FaceNet),
-                # Voyager SDK calculates num_children = num_cores // model_cores (4 // 1 = 4).
-                # This instantiates 10 concurrent hardware queues across a 4-core card,
-                # over-subscribing the Level-Zero command queue and causing wait kernel -1402 abort.
-                # Forcing num_children=0 (which AxInference treats as 1 single instance per model)
-                # and disabling double buffering prevents this fatal error.
+                # Crucial for multi-camera / composite pipelines on Rockchip RK3588:
+                # Setting num_children=1 provides exactly 1 dedicated worker thread per model.
+                # This serializes multi-camera streaming threads (rtspsrc0 and rtspsrc1)
+                # entering axinferencenet, completely preventing concurrent Level-Zero command
+                # queue submissions from multiple threads that cause wait kernel -1301 and -1402 aborts.
+                # At the same time, clamping from default (4) to 1 prevents queue over-subscription.
                 element["double_buffer"] = False
-                if element.get("num_children", 0) > 0:
-                    element["num_children"] = 0
-                # On Rockchip RK3588 with software decoding (avdec_h264/avdec_h265),
-                # buffers reside in ordinary system RAM. Disabling dmabuf_inputs and
-                # dmabuf_outputs forces the standard heap allocator and avoids axl_dmabuf_xfer EIO failures.
+                element["num_children"] = 1
                 element["dmabuf_inputs"] = False
                 element["dmabuf_outputs"] = False
 
@@ -281,7 +276,7 @@ def _patch_voyager_stream_input() -> None:
             if inst == "axinferencenet":
                 for prop_name, prop_val in [
                     ("double_buffer", False),
-                    ("num_children", 0),
+                    ("num_children", 1),
                     ("dmabuf_inputs", False),
                     ("dmabuf_outputs", False),
                 ]:
