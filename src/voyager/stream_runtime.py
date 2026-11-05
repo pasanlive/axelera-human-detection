@@ -189,7 +189,7 @@ def _patch_voyager_stream_input() -> None:
     os.environ["AXELERA_USE_DOUBLE_BUFFER"] = "0"
     os.environ["AXELERA_USE_DMABUF"] = "0"
     os.environ["AXELERA_USE_CL_DOUBLE_BUFFER"] = "0"
-    os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "tcp")
+    os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "auto")
 
     try:
         from axelera.app.pipe import io
@@ -330,20 +330,22 @@ def _patch_voyager_stream_input() -> None:
                 # 4 = TCP only, 1 = UDP only, 5 = TCP with UDP fallback (GST_RTSP_LOWER_TRANS_TCP | GST_RTSP_LOWER_TRANS_UDP)
                 # Defaulting to 5 allows cameras that reject TCP with '461 Unsupported Transport'
                 # to gracefully fall back to UDP unicast without connection aborts.
-                desired_proto = element.get("protocols")
-                if desired_proto is None:
-                    loc = element.get("location", "")
-                    cam_transport = get_camera_transport(loc)
-                    if cam_transport == "udp":
+                loc = element.get("location", "")
+                cam_transport = get_camera_transport(loc)
+                if cam_transport == "udp":
+                    desired_proto = 1
+                elif cam_transport == "tcp":
+                    desired_proto = 4
+                else:
+                    raw_proto = element.get("protocols")
+                    if raw_proto in (1, "udp"):
                         desired_proto = 1
-                    elif cam_transport == "tcp":
-                        desired_proto = 4
                     else:
-                        desired_proto = 5
+                        desired_proto = 5  # default: TCP with UDP fallback
 
                 proto_options = [desired_proto]
                 if desired_proto == 5:
-                    proto_options.extend(["tcp+udp", 7, "all"])
+                    proto_options.extend([7, "tcp+udp", "all"])
                 elif desired_proto == 1:
                     proto_options.append("udp")
                 elif desired_proto == 4:
