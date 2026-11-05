@@ -269,7 +269,7 @@ def _patch_voyager_stream_input() -> None:
                 element["sync"] = False
 
             elif inst == "rtspsrc":
-                element.setdefault("buffer-mode", 2)
+                element.setdefault("buffer-mode", 1)
                 element.setdefault("ntp-sync", False)
                 element.setdefault("drop-on-latency", False)
                 element.setdefault("do-rtsp-keep-alive", True)
@@ -307,15 +307,14 @@ def _patch_voyager_stream_input() -> None:
 
             elif inst == "rtspsrc":
                 # Critical RTSP stability parameters for continuous IP camera streaming:
-                # 1. buffer-mode=2 ("buffer"): Prevents rtpjitterbuffer from calculating/resetting clock skew
-                #    on long streaming sessions, eliminating -1402 wait kernel aborts.
+                # 1. buffer-mode=1 ("slave"): Slaves receiver to sender clock without watermark stalling.
                 # 2. ntp-sync=False: Prevents RTP timestamp warping against wall clock.
                 # 3. do-rtsp-keep-alive=True: Periodically sends keep-alives to prevent camera session timeout.
                 # 4. tcp-timeout=30000000: 30s timeout prevents false reconnect loops during camera GOP intervals.
                 # 5. drop-on-latency=False: Over TCP, never discard RTP packets; dropping packets corrupts H.265 GOP reference frames (POC errors).
                 # 6. protocols=4 (GST_RTSP_LOWER_TRANS_TCP): Force interleaved TCP to eliminate UDP packet loss/firewalls.
                 for prop_name, prop_val in [
-                    ("buffer-mode", 2),
+                    ("buffer-mode", 1),
                     ("ntp-sync", False),
                     ("do-rtsp-keep-alive", True),
                     ("tcp-timeout", 30000000),
@@ -364,14 +363,11 @@ def _patch_voyager_stream_input() -> None:
                         c_name = c_factory.get_name() if c_factory else (child.get_name() if hasattr(child, "get_name") else "")
                         elem_name = child.get_name() if hasattr(child, "get_name") else ""
                         if "jitterbuffer" in c_name or "rtpjitterbuffer" in elem_name:
-                            # Mode 2 (GST_RTP_JITTER_BUFFER_MODE_BUFFER) disables calculate_skew/reset_skew completely!
+                            # Mode 1 (GST_RTP_JITTER_BUFFER_MODE_SLAVE) syncs to sender clock without watermark stalling
                             for p_name, p_val in [
-                                ("mode", 2),
+                                ("mode", 1),
                                 ("do-lost", False),
                                 ("drop-on-latency", False),
-                                ("max-dropout-time", 0),
-                                ("max-misorder-time", 0),
-                                ("rfc7273-sync", False),
                             ]:
                                 try:
                                     child.set_property(p_name, p_val)
@@ -405,9 +401,37 @@ def _patch_voyager_stream_input() -> None:
                 except Exception as e:
                     print(f"[VOYAGER HW] Failed to hook rtspsrc new-manager: {e}")
 
-                # Note: Do NOT hook 'select-stream' to reject audio tracks.
-                # Hikvision/EZVIZ cameras stall if audio tracks offered in the SDP are excluded from RTSP SETUP.
-                # Audio/metadata pads are instead cleanly absorbed by patched_on_pad_added (fakesink async=False).
+                def _on_rtspsrc_pad_added(src_elem: Any, new_pad: Any) -> None:
+                    pad_name = new_pad.get_name() if new_pad else ""
+                    caps = new_pad.get_current_caps() or new_pad.query_caps()
+                    caps_str = caps.to_string() if caps else ""
+                    is_video = "media=(string)video" in caps_str or "video/" in caps_str
+                    # If this pad is not video (e.g. media=audio, application/x-rtp with audio, or secondary track 1):
+                    if not is_video and ("audio" in caps_str or "application/x-rtp" in caps_str or "_1_" in pad_name):
+                        try:
+                            import gi
+                            from gi.repository import Gst
+                            pipe = src_elem.get_parent()
+                            while pipe and not isinstance(pipe, Gst.Pipeline):
+                                pipe = pipe.get_parent()
+                            if pipe and isinstance(pipe, Gst.Pipeline):
+                                fsink = Gst.ElementFactory.make("fakesink", None)
+                                if fsink:
+                                    fsink.set_property("sync", False)
+                                    fsink.set_property("async", False)
+                                    pipe.add(fsink)
+                                    fsink.sync_state_with_parent()
+                                    fsink_pad = fsink.get_static_pad("sink")
+                                    if fsink_pad and not fsink_pad.is_linked():
+                                        res = new_pad.link(fsink_pad)
+                                        print(f"[RTSP PAD LINK] Diverted secondary pad {src_elem.get_name()}.{pad_name} ({caps_str[:50]}) to fakesink (result={res})")
+                        except Exception as e:
+                            print(f"[RTSP PAD LINK] Failed to divert secondary pad: {e}")
+
+                try:
+                    elem.connect("pad-added", _on_rtspsrc_pad_added)
+                except Exception as e:
+                    print(f"[VOYAGER HW] Could not connect rtspsrc pad-added: {e}")
 
             elif inst == "queue":
                 # Leaky downstream queue: allows at most 1 buffer between decoder and AIPU.
@@ -531,7 +555,7 @@ def _patch_voyager_stream_input() -> None:
             'drop-on-latency': False,
             'do-rtsp-keep-alive': True,
             'tcp-timeout': 30000000,
-            'buffer-mode': 2,
+            'buffer-mode': 1,
             'ntp-sync': False,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
         }
