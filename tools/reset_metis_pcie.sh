@@ -38,9 +38,15 @@ echo "[3/6] Rescanning PCIe bus..."
 echo 1 | sudo tee /sys/bus/pci/rescan >/dev/null
 sleep 1
 
+# Disable PCIe ASPM on Axelera device to prevent L0s/L1 interrupt drops
+if command -v setpci >/dev/null 2>&1; then
+    sudo setpci -d 1f9d: CAP_EXP+0x10.w=0x0000 2>/dev/null || true
+fi
+
 # 4. Configure persistent modprobe.d options and reload kernel driver module
-echo "[4/6] Reloading driver module (enforcing single_msi=1, dma_poll=1, irq_timeout=30)..."
-echo -e "options metis single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10\noptions axl single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10" | sudo tee /etc/modprobe.d/metis.conf >/dev/null
+DMA_POLL="${DMA_POLL:-0}"
+echo "[4/6] Reloading driver module (enforcing single_msi=1, dma_poll=$DMA_POLL, irq_timeout=30)..."
+echo -e "options metis single_msi=1 dma_poll=$DMA_POLL irq_timeout=30 dma_timeout=10\noptions axl single_msi=1 dma_poll=$DMA_POLL irq_timeout=30 dma_timeout=10" | sudo tee /etc/modprobe.d/metis.conf >/dev/null
 
 sudo rmmod axl 2>/dev/null || sudo rmmod axl_aipu 2>/dev/null || sudo rmmod metis 2>/dev/null || true
 sleep 1
@@ -48,7 +54,7 @@ sleep 1
 # Try loading via modprobe or direct insmod
 MODULE_LOADED=0
 for mod in metis axl; do
-    if sudo modprobe "$mod" single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10; then
+    if sudo modprobe "$mod" single_msi=1 dma_poll="$DMA_POLL" irq_timeout=30 dma_timeout=10; then
         echo "      Successfully loaded $mod module via modprobe"
         MODULE_LOADED=1
         break
@@ -67,7 +73,7 @@ if [ "$MODULE_LOADED" -eq 0 ]; then
 
     if [ -n "$KO_FILE" ] && [ -f "$KO_FILE" ]; then
         echo "      Loading module directly via insmod: $KO_FILE"
-        sudo insmod "$KO_FILE" single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10 || true
+        sudo insmod "$KO_FILE" single_msi=1 dma_poll="$DMA_POLL" irq_timeout=30 dma_timeout=10 || true
     else
         echo "      [WARNING] Could not find metis.ko or axl.ko matching kernel $CURR_KVER in /lib/modules/"
     fi
