@@ -47,6 +47,13 @@ class ActivityDatabase:
 
     def _init_db(self):
         with self._lock, self._conn:
+            # High-performance in-memory cache and WAL settings
+            self._conn.execute("PRAGMA journal_mode = WAL;")
+            self._conn.execute("PRAGMA synchronous = NORMAL;")
+            self._conn.execute("PRAGMA cache_size = -64000;")  # 64 MB RAM cache
+            self._conn.execute("PRAGMA temp_store = MEMORY;")
+            self._conn.execute("PRAGMA mmap_size = 268435456;")  # 256 MB memory map
+
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS activities (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

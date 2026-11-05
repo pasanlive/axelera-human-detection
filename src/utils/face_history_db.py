@@ -29,8 +29,19 @@ class FaceHistoryDatabase:
         self._conn.row_factory = sqlite3.Row
         self._init_db()
 
+        # In-memory active sighting trackers to eliminate redundant per-frame SQLite transactions
+        self._active_sightings: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._active_unidentified: Dict[Tuple[str, int], Dict[str, Any]] = {}
+
     def _init_db(self):
         with self._lock, self._conn:
+            # High-performance in-memory cache and WAL settings
+            self._conn.execute("PRAGMA journal_mode = WAL;")
+            self._conn.execute("PRAGMA synchronous = NORMAL;")
+            self._conn.execute("PRAGMA cache_size = -64000;")  # 64 MB RAM cache
+            self._conn.execute("PRAGMA temp_store = MEMORY;")
+            self._conn.execute("PRAGMA mmap_size = 268435456;")  # 256 MB memory map
+
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS face_sightings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +84,52 @@ class FaceHistoryDatabase:
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_unidentified_status ON unidentified_faces(status)")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_unidentified_ts ON unidentified_faces(last_seen)")
 
+    def _sync_active_to_db(self):
+        """Flushes in-memory dirty active sightings to SQLite."""
+        if not self._conn:
+            return
+        cur = self._conn.cursor()
+        synced = False
+        for act in list(self._active_sightings.values()):
+            if act.get("dirty", False):
+                try:
+                    cur.execute("""
+                        UPDATE face_sightings
+                        SET detection_count = ?, last_seen = ?, similarity = MAX(similarity, ?),
+                            confidence = MAX(confidence, ?), thumbnail = COALESCE(?, thumbnail)
+                        WHERE id = ?
+                    """, (act["detection_count"], act["last_seen"], act["similarity"], act["confidence"], act["thumbnail"], act["id"]))
+                    act["dirty"] = False
+                    act["last_db_sync"] = time.time()
+                    synced = True
+                except Exception:
+                    pass
+        for u_act in list(self._active_unidentified.values()):
+            if u_act.get("dirty", False):
+                try:
+                    cur.execute("""
+                        UPDATE face_sightings
+                        SET detection_count = ?, last_seen = ?, confidence = MAX(confidence, ?),
+                            thumbnail = COALESCE(?, thumbnail)
+                        WHERE id = ?
+                    """, (u_act["detection_count"], u_act["last_seen"], u_act["confidence"], u_act["thumbnail"], u_act["id"]))
+                    if u_act.get("face_id"):
+                        cur.execute("""
+                            UPDATE unidentified_faces
+                            SET detection_count = ?, last_seen = ?, thumbnail = COALESCE(?, thumbnail)
+                            WHERE face_id = ?
+                        """, (u_act["detection_count"], u_act["last_seen"], u_act["thumbnail"], u_act["face_id"]))
+                    u_act["dirty"] = False
+                    u_act["last_db_sync"] = time.time()
+                    synced = True
+                except Exception:
+                    pass
+        if synced:
+            try:
+                self._conn.commit()
+            except Exception:
+                pass
+
     def log_sighting(
         self,
         camera_id: str,
@@ -99,7 +156,25 @@ class FaceHistoryDatabase:
             cur = self._conn.cursor()
 
             if is_identified:
-                # Find recent sighting of this person on this camera within cooldown
+                # 1. Fast in-memory check for active sighting within cooldown
+                key = (camera_id, name)
+                act = self._active_sightings.get(key)
+                if act and (now - act["last_seen"]) <= self.cooldown_s:
+                    act["detection_count"] += 1
+                    act["last_seen"] = now
+                    act["similarity"] = max(act["similarity"], float(similarity))
+                    act["confidence"] = max(act["confidence"], float(confidence))
+                    act["dirty"] = True
+                    if thumbnail and not act.get("thumbnail"):
+                        act["thumbnail"] = thumbnail
+
+                    # Sync to SQLite periodically (at most once every 2s) instead of every frame
+                    if now - act.get("last_db_sync", 0.0) >= 2.0:
+                        self._sync_active_to_db()
+
+                    return False, act["detection_count"], act
+
+                # 2. Check recent sighting from SQLite
                 cur.execute("""
                     SELECT id, detection_count, thumbnail
                     FROM face_sightings
@@ -119,12 +194,16 @@ class FaceHistoryDatabase:
                         WHERE id = ?
                     """, (new_count, now, similarity, confidence, thumb, row_id))
                     self._conn.commit()
-                    return False, new_count, {
+
+                    rec = {
                         "id": row_id, "camera_id": camera_id, "name": name,
                         "is_identified": True, "similarity": similarity, "confidence": confidence,
                         "track_id": track_id, "bbox": bbox, "thumbnail": thumb,
                         "detection_count": new_count, "last_seen": now,
+                        "last_db_sync": now, "dirty": False,
                     }
+                    self._active_sightings[key] = rec
+                    return False, new_count, rec
                 else:
                     cur.execute("""
                         INSERT INTO face_sightings
@@ -134,15 +213,36 @@ class FaceHistoryDatabase:
                     """, (now, camera_id, name, similarity, confidence, track_id, bbox_json, thumbnail, now))
                     new_id = cur.lastrowid
                     self._conn.commit()
-                    return True, 1, {
+
+                    rec = {
                         "id": new_id, "camera_id": camera_id, "name": name,
                         "is_identified": True, "similarity": similarity, "confidence": confidence,
                         "track_id": track_id, "bbox": bbox, "thumbnail": thumbnail,
                         "detection_count": 1, "last_seen": now,
+                        "last_db_sync": now, "dirty": False,
                     }
+                    self._active_sightings[key] = rec
+                    return True, 1, rec
             else:
                 # Unidentified face
-                # Check recent active unidentified sighting by track_id or camera within cooldown
+                # 1. Fast in-memory check by track_id
+                if track_id is not None:
+                    u_key = (camera_id, track_id)
+                    u_act = self._active_unidentified.get(u_key)
+                    if u_act and (now - u_act["last_seen"]) <= self.cooldown_s:
+                        u_act["detection_count"] += 1
+                        u_act["last_seen"] = now
+                        u_act["confidence"] = max(u_act["confidence"], float(confidence))
+                        u_act["dirty"] = True
+                        if thumbnail and not u_act.get("thumbnail"):
+                            u_act["thumbnail"] = thumbnail
+
+                        if now - u_act.get("last_db_sync", 0.0) >= 2.0:
+                            self._sync_active_to_db()
+
+                        return False, u_act["detection_count"], u_act
+
+                # 2. Check SQLite for recent active unidentified sighting
                 row = None
                 if track_id is not None:
                     cur.execute("""
@@ -173,12 +273,16 @@ class FaceHistoryDatabase:
                         """, (new_count, now, thumb, fid))
 
                     self._conn.commit()
-                    return False, new_count, {
+                    rec = {
                         "id": row_id, "face_id": fid, "camera_id": camera_id, "name": "Unidentified",
                         "is_identified": False, "similarity": similarity, "confidence": confidence,
                         "track_id": track_id, "bbox": bbox, "thumbnail": thumb,
                         "detection_count": new_count, "last_seen": now,
+                        "last_db_sync": now, "dirty": False,
                     }
+                    if track_id is not None:
+                        self._active_unidentified[(camera_id, track_id)] = rec
+                    return False, new_count, rec
                 else:
                     fid = "face_" + uuid.uuid4().hex[:10]
                     emb_json = None
@@ -202,12 +306,16 @@ class FaceHistoryDatabase:
 
                     new_id = cur.lastrowid
                     self._conn.commit()
-                    return True, 1, {
+                    rec = {
                         "id": new_id, "face_id": fid, "camera_id": camera_id, "name": "Unidentified",
                         "is_identified": False, "similarity": similarity, "confidence": confidence,
                         "track_id": track_id, "bbox": bbox, "thumbnail": thumbnail,
                         "detection_count": 1, "last_seen": now,
+                        "last_db_sync": now, "dirty": False,
                     }
+                    if track_id is not None:
+                        self._active_unidentified[(camera_id, track_id)] = rec
+                    return True, 1, rec
 
     def get_history(
         self,
@@ -238,6 +346,7 @@ class FaceHistoryDatabase:
         params.append(limit)
 
         with self._lock:
+            self._sync_active_to_db()
             cur = self._conn.cursor()
             cur.execute(query, params)
             rows = cur.fetchall()
@@ -260,6 +369,7 @@ class FaceHistoryDatabase:
         and the recent sighting thumbnails for each group.
         """
         with self._lock:
+            self._sync_active_to_db()
             cur = self._conn.cursor()
             cur.execute("""
                 SELECT
@@ -423,6 +533,8 @@ class FaceHistoryDatabase:
     def clear_history(self) -> None:
         """Clears all sightings and unidentified faces."""
         with self._lock:
+            self._active_sightings.clear()
+            self._active_unidentified.clear()
             cur = self._conn.cursor()
             cur.execute("DELETE FROM face_sightings")
             cur.execute("DELETE FROM unidentified_faces")
@@ -434,6 +546,7 @@ class FaceHistoryDatabase:
         day_ago = now - 86400
 
         with self._lock:
+            self._sync_active_to_db()
             cur = self._conn.cursor()
             cur.execute("SELECT COUNT(*), COALESCE(SUM(detection_count), 0) FROM face_sightings")
             events_count, total_detections = cur.fetchone()
@@ -466,7 +579,47 @@ class FaceHistoryDatabase:
             "top_identities": top_identities,
         }
 
+    def flush(self):
+        """Flushes in-memory active sighting states to SQLite."""
+        with self._lock:
+            if not self._conn:
+                return
+            cur = self._conn.cursor()
+            for act in list(self._active_sightings.values()):
+                try:
+                    cur.execute("""
+                        UPDATE face_sightings
+                        SET detection_count = ?, last_seen = ?, similarity = MAX(similarity, ?),
+                            confidence = MAX(confidence, ?), thumbnail = COALESCE(?, thumbnail)
+                        WHERE id = ?
+                    """, (act["detection_count"], act["last_seen"], act["similarity"], act["confidence"], act["thumbnail"], act["id"]))
+                except Exception:
+                    pass
+            for u_act in list(self._active_unidentified.values()):
+                try:
+                    cur.execute("""
+                        UPDATE face_sightings
+                        SET detection_count = ?, last_seen = ?, confidence = MAX(confidence, ?),
+                            thumbnail = COALESCE(?, thumbnail)
+                        WHERE id = ?
+                    """, (u_act["detection_count"], u_act["last_seen"], u_act["confidence"], u_act["thumbnail"], u_act["id"]))
+                    if u_act.get("face_id"):
+                        cur.execute("""
+                            UPDATE unidentified_faces
+                            SET detection_count = ?, last_seen = ?, thumbnail = COALESCE(?, thumbnail)
+                            WHERE face_id = ?
+                        """, (u_act["detection_count"], u_act["last_seen"], u_act["thumbnail"], u_act["face_id"]))
+                except Exception:
+                    pass
+            try:
+                self._conn.commit()
+            except Exception:
+                pass
+            self._active_sightings.clear()
+            self._active_unidentified.clear()
+
     def close(self):
         with self._lock:
+            self.flush()
             if self._conn:
                 self._conn.close()

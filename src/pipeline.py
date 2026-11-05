@@ -119,6 +119,7 @@ class MultiCameraPipeline:
 
         # ── Analytics ────────────────────────────────────────────────────────
         self.identity = TrackIdentityResolver()
+        self._face_thumb_cache: Dict[Tuple[str, int], Tuple[float, str]] = {}
         self._zone_crossing: Optional[Any] = None
         if self.enabled_models["zone_crossing"]:
             self._ensure_zone_crossing()
@@ -569,11 +570,31 @@ class MultiCameraPipeline:
                 if f["person_index"] is not None and f["person_index"] < len(persons):
                     tid = persons[f["person_index"]]["track_id"]
                 if tid is not None and face_rec_on and is_large_enough:
-                    name, sim = self.identity.update(cam_id, tid, name, sim, now)
+                    name, sim = self.identity.update(
+                        cam_id=cam_id,
+                        track_id=tid,
+                        name=name,
+                        similarity=sim,
+                        now=now,
+                        embedding=f.get("embedding"),
+                        face_db=self.face_db,
+                    )
                     persons[f["person_index"]]["identity"] = name
                     persons[f["person_index"]]["similarity"] = sim
 
-                thumb = _crop_face_thumb(f["bbox"]) if (face_rec_on and is_large_enough) else None
+                # In-memory thumbnail caching per track to eliminate redundant OpenCV resize + base64 encoding
+                thumb = None
+                if face_rec_on and is_large_enough:
+                    f_conf = float(f.get("confidence", 0.0))
+                    cache_key = (cam_id, tid) if tid is not None else None
+                    cached = self._face_thumb_cache.get(cache_key) if cache_key else None
+                    if cached is None or f_conf > cached[0] + 0.1:
+                        thumb = _crop_face_thumb(f["bbox"])
+                        if cache_key and thumb:
+                            self._face_thumb_cache[cache_key] = (f_conf, thumb)
+                    else:
+                        thumb = cached[1]
+
                 faces_out.append({"bbox": f["bbox"], "name": name, "similarity": sim,
                                   "track_id": tid, "confidence": f.get("confidence", 0.0),
                                   "embedding": f.get("embedding"), "thumbnail": thumb})
@@ -677,16 +698,30 @@ class MultiCameraPipeline:
                                 })
 
             self.identity.purge(cam_id, track_ids, now)
+            # In-memory thumbnail cache maintenance
+            for k in list(self._face_thumb_cache):
+                if k[0] == cam_id and k[1] not in track_ids:
+                    self._face_thumb_cache.pop(k, None)
 
-        # Plates → throttled logging
+        # Plates → temporal character fusion & throttled logging
         plates_out = fa.plates if self.is_model_enabled("license_plate_recognizer", cam_id) else []
         for p in plates_out:
-            text = p.get("plate_text", "")
-            if len(text) >= 2:
-                key = (cam_id, text)
+            raw_text = p.get("plate_text", "")
+            if len(raw_text) >= 2:
+                # In-memory temporal character consensus voting
+                fused_text, fused_conf = self.plate_db.fuse_plate(
+                    cam_id=cam_id,
+                    plate_text=raw_text,
+                    confidence=p.get("confidence", 0.0),
+                    now=now,
+                )
+                p["plate_text"] = fused_text
+                p["confidence"] = fused_conf
+
+                key = (cam_id, fused_text)
                 if now - self._plate_last_logged.get(key, 0.0) >= self.plate_log_interval_s:
                     self._plate_last_logged[key] = now
-                    self.plate_db.log_plate(text, cam_id, p.get("confidence", 0.0), 1.0)
+                    self.plate_db.log_plate(fused_text, cam_id, fused_conf, 1.0, now=now)
 
         # Zone crossing on tracked centroids (zones are defined in main-stream pixels)
         zone_on = self.is_model_enabled("zone_crossing", cam_id) and self._zone_crossing is not None
@@ -977,6 +1012,10 @@ class MultiCameraPipeline:
         finally:
             try:
                 self.face_history_db.close()
+            except Exception:
+                pass
+            try:
+                self.plate_db.close()
             except Exception:
                 pass
             try:

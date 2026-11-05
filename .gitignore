@@ -13,7 +13,11 @@ data/face_db.json.tmp
 data/logs/
 *.log
 *.db
+*.db-shm
+*.db-wal
 data/*.db
+data/*.db-shm
+data/*.db-wal
 data/weights/
 weights/
 *.pt
