@@ -316,6 +316,8 @@ def _patch_voyager_stream_input() -> None:
                     ("ntp-sync", False),
                     ("do-rtsp-keep-alive", True),
                     ("tcp-timeout", 30000000),
+                    ("timeout", 15000000),
+                    ("retry", 5),
                     ("drop-on-latency", False),
                     ("latency", 500),
                 ]:
@@ -326,8 +328,8 @@ def _patch_voyager_stream_input() -> None:
 
                 # Configure protocols on rtspsrc:
                 # 4 = TCP only, 1 = UDP only, 5 = TCP with UDP fallback (GST_RTSP_LOWER_TRANS_TCP | GST_RTSP_LOWER_TRANS_UDP)
-                # Defaulting to 5 allows cameras that reject TCP with '461 Unsupported Transport'
-                # to gracefully fall back to UDP unicast without connection aborts.
+                # Defaulting to 4 (TCP) ensures multi-stream NVRs (Dahua, Hikvision, Uniview) and
+                # IP cameras do not exhaust UDP port pairs or drop SDP negotiation during pipeline preroll.
                 loc = element.get("location", "")
                 cam_transport = get_camera_transport(loc)
                 if cam_transport == "udp":
@@ -338,8 +340,21 @@ def _patch_voyager_stream_input() -> None:
                     raw_proto = element.get("protocols")
                     if raw_proto in (1, "udp"):
                         desired_proto = 1
+                    elif raw_proto in (4, "tcp"):
+                        desired_proto = 4
                     else:
-                        desired_proto = 5  # default: TCP with UDP fallback
+                        env_proto = (os.environ.get("AXELERA_RTSP_PROTOCOL") or "tcp").lower()
+                        if env_proto == "udp":
+                            desired_proto = 1
+                        elif env_proto == "tcp":
+                            desired_proto = 4
+                        else:
+                            # NVR channels (/cam/realmonitor, channel=) or multi-camera setups
+                            # require interleaved TCP (4) to prevent UDP port exhaustion.
+                            if "/cam/realmonitor" in loc or "channel=" in loc or "Streaming/Channels" in loc:
+                                desired_proto = 4
+                            else:
+                                desired_proto = 4  # Default to TCP for reliability
 
                 proto_options = [desired_proto]
                 if desired_proto == 5:
@@ -347,7 +362,7 @@ def _patch_voyager_stream_input() -> None:
                 elif desired_proto == 1:
                     proto_options.append("udp")
                 elif desired_proto == 4:
-                    proto_options.append("tcp")
+                    proto_options.extend([4, "tcp"])
 
                 for p_val in proto_options:
                     try:
@@ -558,6 +573,8 @@ def _patch_voyager_stream_input() -> None:
             'drop-on-latency': False,
             'do-rtsp-keep-alive': True,
             'tcp-timeout': 30000000,
+            'timeout': 15000000,
+            'retry': 5,
             'buffer-mode': 1,
             'ntp-sync': False,
             'connections': {'stream_%u': f'rtspcapsfilter{stream_idx}.sink'},
@@ -568,15 +585,16 @@ def _patch_voyager_stream_input() -> None:
         elif cam_transport == "tcp":
             rtsp_props['protocols'] = 4
         else:
-            env_proto = (os.environ.get("AXELERA_RTSP_PROTOCOL") or "auto").lower()
+            env_proto = (os.environ.get("AXELERA_RTSP_PROTOCOL") or "tcp").lower()
             if env_proto == "udp":
                 rtsp_props['protocols'] = 1
             elif env_proto == "tcp":
                 rtsp_props['protocols'] = 4
             else:
-                # 5 = GST_RTSP_LOWER_TRANS_TCP | GST_RTSP_LOWER_TRANS_UDP (TCP with UDP fallback)
-                # Tries TCP first, then falls back to UDP for servers (e.g. RPi/mediamtx) that reject TCP.
-                rtsp_props['protocols'] = 5
+                if "/cam/realmonitor" in loc or "channel=" in loc or "Streaming/Channels" in loc:
+                    rtsp_props['protocols'] = 4
+                else:
+                    rtsp_props['protocols'] = 4
 
         gst.rtspsrc(rtsp_props)
         gst.capsfilter(caps='application/x-rtp,media=video', name=f'rtspcapsfilter{stream_idx}')
@@ -888,6 +906,41 @@ class VoyagerRuntime(BaseRuntime):
                 self._tiling_disabled = True
                 self._strip_tiling(plan)
                 return self._rebuild(plan)
+
+            # Handle transient RTSP connection / NVR preroll errors during startup
+            if any(k in err_str for k in ("Could not open resource", "gst_rtspsrc_retrieve_sdp", "Failed to connect", "unlinked source")):
+                retries = getattr(self, "_rtsp_startup_retries", 0)
+                if retries < 3:
+                    self._rtsp_startup_retries = retries + 1
+                    self.on_event(None, "warning", f"RTSP connection/preroll busy on NVR ({err_str[:90]}...). Retrying in 2.0s (attempt {self._rtsp_startup_retries}/3)...")
+                    time.sleep(2.0)
+                    return self._rebuild(plan)
+                else:
+                    self._rtsp_startup_retries = 0
+
+                    # Identify the failed source to isolate it so healthy cameras can still run
+                    failed_idx = None
+                    import re as _re
+                    m = _re.search(r"rtspsrc(\d+)", err_str)
+                    if m:
+                        failed_idx = int(m.group(1))
+                    elif "location:" in err_str:
+                        for idx, s in enumerate(first.sources):
+                            s_clean = _re.sub(r"://[^@]+@", "://", s)
+                            if s_clean in err_str:
+                                failed_idx = idx
+                                break
+
+                    if failed_idx is not None and failed_idx < len(first.sources) and len(first.sources) > 1:
+                        failed_cam = first.camera_ids[failed_idx]
+                        self.camera_state[failed_cam] = "error"
+                        self.on_event(failed_cam, "error", f"Camera failed during startup; isolating to keep other streams active: {err_str[:90]}")
+                        # Remove failed source from this group
+                        first.sources.pop(failed_idx)
+                        first.camera_ids.pop(failed_idx)
+                        self._schedule_reconnect(failed_cam)
+                        return self._rebuild(plan)
+
             self.last_error = str(e)
             raise
         self._stream = stream
