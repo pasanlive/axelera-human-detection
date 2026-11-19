@@ -108,13 +108,18 @@ class MultiCameraPipeline:
         human_cfg = models_cfg.get("human_detector", {}) or {}
         from src.analytics.human_filter import HumanDetectionFilter
         default_min_frames = 1 if simulate else 4
+        self.person_conf = float(human_cfg.get("conf_threshold", v_thresh.get("person_conf", 0.55)))
         self.human_filter = HumanDetectionFilter(
+            conf_threshold=self.person_conf,
             min_consecutive_frames=int(human_cfg.get("min_consecutive_frames", default_min_frames)),
             min_box_area=float(human_cfg.get("min_box_area", 0.0 if simulate else 1000.0)),
             min_height=float(human_cfg.get("min_height", 0.0 if simulate else 40.0)),
             max_aspect_ratio=float(human_cfg.get("max_aspect_ratio", 1.5)),
             min_aspect_ratio=float(human_cfg.get("min_aspect_ratio", 0.1)),
             exclusion_zones=human_cfg.get("exclusion_zones", {}),
+            motion_gate_enabled=bool(human_cfg.get("motion_gate_enabled", True)),
+            min_motion_ratio=float(human_cfg.get("min_motion_ratio", 0.03)),
+            motion_warmup_frames=int(human_cfg.get("motion_warmup_frames", 0 if simulate else 30)),
             log_rejected_detections=bool(human_cfg.get("log_rejected_detections", False)),
             rejected_dir=human_cfg.get("rejected_dir", "data/rejected_detections"),
         )
@@ -1079,7 +1084,7 @@ class MultiCameraPipeline:
                 "description": "Person boxes from the shared YOLOv8-pose model (INT8 on Metis) + OC-SORT tracking",
                 "enabled": st("human_detector"), "inferencing": running, "backend": backend,
                 "weights": f"{pose_model} (INT8 PTQ .axm)", "input_size": [640, 640], "resolution": res,
-                "conf_threshold": self.config.get("voyager", {}).get("thresholds", {}).get("person_conf", 0.4),
+                "conf_threshold": self.person_conf,
                 "fps_cadence": cadence, "model_profile": self.performance_profile, "capacity": plan.to_dict(),
                 "icon": "user-check", "category": "primary",
             },

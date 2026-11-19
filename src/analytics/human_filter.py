@@ -2,13 +2,19 @@
 Human Detection False Positive Reduction Filter.
 
 Implements:
-1. Geometry & ROI Filtering:
+1. Confidence Threshold Filtering:
+   - Filters out detections below conf_threshold (default: 0.55).
+2. Geometry & ROI Filtering:
    - min_box_area, min_height, max_aspect_ratio (width / height > 1.5 rejected).
    - Configurable polygon exclusion zones per camera stream (bottom-center footpoint test).
-2. Temporal Persistence (Tracker Gating):
+3. Temporal Persistence (Tracker Gating):
    - Confirms detections only after track_id is continuously detected for min_consecutive_frames (default: 4).
    - Built-in lightweight tracker fallback for unassigned track_ids.
-3. Hard-Negative Logging:
+4. Per-Stream MotionGate (MOG2 Background Subtractor):
+   - Suppresses stationary false positives (furniture, cupboards, static background noise).
+   - Confirms a track once motion_ratio >= min_motion_ratio (default: 0.03).
+   - Preserves confirmation even if the person subsequently stands or sits still.
+5. Hard-Negative Logging:
    - Optional toggle (log_rejected_detections: false) to save crops of rejected detections for mining.
 """
 
@@ -21,6 +27,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
+
+from src.analytics.motion_gate import MotionGate
 
 
 def iou_boxes(box_a: np.ndarray, box_b: np.ndarray) -> float:
@@ -39,27 +47,35 @@ def iou_boxes(box_a: np.ndarray, box_b: np.ndarray) -> float:
 class HumanDetectionFilter:
     """
     Filters human detections to reduce false positives from shadows, foliage,
-    reflections, and NPU quantization noise.
+    reflections, NPU quantization noise, and static furniture.
     """
 
     def __init__(
         self,
+        conf_threshold: float = 0.55,
         min_consecutive_frames: int = 4,
         min_box_area: float = 1000.0,
         min_height: float = 40.0,
         max_aspect_ratio: float = 1.5,
         min_aspect_ratio: float = 0.1,
         exclusion_zones: Optional[Dict[str, List[List[List[float]]]]] = None,
+        motion_gate_enabled: bool = True,
+        min_motion_ratio: float = 0.03,
+        motion_warmup_frames: int = 30,
         log_rejected_detections: bool = False,
         rejected_dir: str = "data/rejected_detections",
         track_ttl_s: float = 2.0,
     ):
+        self.conf_threshold = float(conf_threshold)
         self.min_consecutive_frames = int(min_consecutive_frames)
         self.min_box_area = float(min_box_area)
         self.min_height = float(min_height)
         self.max_aspect_ratio = float(max_aspect_ratio)
         self.min_aspect_ratio = float(min_aspect_ratio)
         self.exclusion_zones = exclusion_zones or {}
+        self.motion_gate_enabled = bool(motion_gate_enabled)
+        self.min_motion_ratio = float(min_motion_ratio)
+        self.motion_warmup_frames = int(motion_warmup_frames)
         self.log_rejected_detections = bool(log_rejected_detections)
         self.rejected_dir = rejected_dir
         self.track_ttl_s = float(track_ttl_s)
@@ -69,11 +85,27 @@ class HumanDetectionFilter:
         # (cam_id, track_id) -> last_seen_timestamp
         self._last_seen: Dict[Tuple[str, int], float] = {}
 
+        # Per-stream MotionGate background subtractors
+        self.motion_gates: Dict[str, MotionGate] = {}
+
         # Fallback tracker state: cam_id -> {next_id, tracks: {id: [x1, y1, x2, y2]}}
         self._fallback_trackers: Dict[str, Dict[str, Any]] = {}
 
         if self.log_rejected_detections:
             os.makedirs(self.rejected_dir, exist_ok=True)
+
+    def get_motion_gate(self, cam_id: str) -> MotionGate:
+        """Retrieves or creates a dedicated MotionGate background model for the specified camera stream."""
+        if cam_id not in self.motion_gates:
+            self.motion_gates[cam_id] = MotionGate(
+                history=300,
+                var_threshold=25.0,
+                detect_shadows=False,
+                min_motion_ratio=self.min_motion_ratio,
+                motion_warmup_frames=self.motion_warmup_frames,
+                track_ttl_s=self.track_ttl_s,
+            )
+        return self.motion_gates[cam_id]
 
     def _get_pixel_box(
         self,
@@ -229,7 +261,8 @@ class HumanDetectionFilter:
         get_frame: Optional[Callable[[], Optional[np.ndarray]]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Filters detections against geometry checks, exclusion zones, and tracker gating.
+        Filters detections against confidence threshold, geometry checks,
+        exclusion zones, tracker persistence gating, and per-stream MotionGate.
         Returns only confirmed, valid human detections.
         """
         now = now or time.time()
@@ -238,6 +271,16 @@ class HumanDetectionFilter:
         # 1. Fallback tracking if track_ids are missing
         self._assign_fallback_tracks(cam_id, persons, fw, fh)
 
+        # 2. Update per-stream MotionGate background model if active
+        motion_gate: Optional[MotionGate] = None
+        current_frame: Optional[np.ndarray] = None
+        if self.motion_gate_enabled:
+            motion_gate = self.get_motion_gate(cam_id)
+            if get_frame is not None:
+                current_frame = get_frame()
+                if current_frame is not None:
+                    motion_gate.update(current_frame)
+
         surviving_persons: List[Dict[str, Any]] = []
         active_tids_this_frame = set()
 
@@ -245,28 +288,39 @@ class HumanDetectionFilter:
             b = person.get("bbox", [0, 0, 0, 0])
             pixel_box = self._get_pixel_box(b, fw, fh)
 
-            # Check geometry
+            # Check 1: Confidence threshold check (e.g. >= 0.55)
+            conf = float(person.get("confidence", 1.0))
+            if conf < self.conf_threshold:
+                if self.log_rejected_detections and get_frame is not None:
+                    fr = current_frame if current_frame is not None else get_frame()
+                    if fr is not None:
+                        x1, y1, x2, y2 = map(int, pixel_box)
+                        crop = fr[max(0, y1) : min(fh, y2), max(0, x1) : min(fw, x2)]
+                        self.log_rejected_crop(crop, cam_id, f"conf_{conf:.2f}_lt_{self.conf_threshold:.2f}", now)
+                continue
+
+            # Check 2: Geometry checks
             is_geom_valid, reason = self.check_geometry(pixel_box)
             if not is_geom_valid:
                 if self.log_rejected_detections and get_frame is not None:
-                    fr = get_frame()
+                    fr = current_frame if current_frame is not None else get_frame()
                     if fr is not None:
                         x1, y1, x2, y2 = map(int, pixel_box)
                         crop = fr[max(0, y1) : min(fh, y2), max(0, x1) : min(fw, x2)]
                         self.log_rejected_crop(crop, cam_id, reason or "geom", now)
                 continue
 
-            # Check exclusion zone
+            # Check 3: Exclusion zone check
             if self.is_in_exclusion_zone(cam_id, pixel_box, fw, fh):
                 if self.log_rejected_detections and get_frame is not None:
-                    fr = get_frame()
+                    fr = current_frame if current_frame is not None else get_frame()
                     if fr is not None:
                         x1, y1, x2, y2 = map(int, pixel_box)
                         crop = fr[max(0, y1) : min(fh, y2), max(0, x1) : min(fw, x2)]
                         self.log_rejected_crop(crop, cam_id, "exclusion_zone", now)
                 continue
 
-            # Tracker temporal persistence gating
+            # Check 4: Tracker temporal persistence gating
             tid = person.get("track_id")
             if tid is not None:
                 active_tids_this_frame.add(tid)
@@ -282,23 +336,47 @@ class HumanDetectionFilter:
                 hits = self._consecutive_hits[key]
                 person["consecutive_hits"] = hits
 
-                if hits >= self.min_consecutive_frames:
-                    surviving_persons.append(person)
-                else:
+                if hits < self.min_consecutive_frames:
                     # Unconfirmed single-frame noise / short-lived tentative detection
                     if self.log_rejected_detections and get_frame is not None:
-                        fr = get_frame()
+                        fr = current_frame if current_frame is not None else get_frame()
                         if fr is not None:
                             x1, y1, x2, y2 = map(int, pixel_box)
                             crop = fr[max(0, y1) : min(fh, y2), max(0, x1) : min(fw, x2)]
                             self.log_rejected_crop(crop, cam_id, f"tentative_hits_{hits}", now)
+                    continue
+
+                # Check 5: Per-stream MotionGate evaluation
+                if self.motion_gate_enabled and motion_gate is not None and motion_gate.frame_count > 0:
+                    is_motion_ok = motion_gate.check_track(
+                        track_id=tid,
+                        bbox=pixel_box,
+                        frame_w=fw,
+                        frame_h=fh,
+                        now=now,
+                    )
+                    if not is_motion_ok:
+                        if self.log_rejected_detections and get_frame is not None:
+                            fr = current_frame if current_frame is not None else get_frame()
+                            if fr is not None:
+                                x1, y1, x2, y2 = map(int, pixel_box)
+                                crop = fr[max(0, y1) : min(fh, y2), max(0, x1) : min(fw, x2)]
+                                self.log_rejected_crop(crop, cam_id, "static_object_no_motion", now)
+                        continue
+
+                surviving_persons.append(person)
             else:
-                # If no tracker is present and min_consecutive_frames is 1, let through
+                # If no tracker is present and min_consecutive_frames is 1, check motion if active
                 if self.min_consecutive_frames <= 1:
+                    if self.motion_gate_enabled and motion_gate is not None and motion_gate.frame_count > 0:
+                        if not motion_gate.check_track(None, pixel_box, frame_w=fw, frame_h=fh, now=now):
+                            continue
                     surviving_persons.append(person)
 
         # Cleanup expired tracks from memory
         self.purge_stale_tracks(cam_id, active_tids_this_frame, now)
+        if motion_gate is not None:
+            motion_gate.prune_stale_tracks(active_tids_this_frame, now)
 
         return surviving_persons
 

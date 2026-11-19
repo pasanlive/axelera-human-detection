@@ -36,11 +36,15 @@ plate_db:
 models:
   human_detector:
     enabled: true
+    conf_threshold: 0.55
     min_consecutive_frames: 4
     min_box_area: 1000
     min_height: 40
     max_aspect_ratio: 1.5
     min_aspect_ratio: 0.1
+    motion_gate_enabled: true
+    min_motion_ratio: 0.03
+    motion_warmup_frames: 30
     log_rejected_detections: false
     rejected_dir: data/rejected_detections
     exclusion_zones:
@@ -86,7 +90,7 @@ voyager:
   specified_frame_rate: 0 # 0 prevents videorate duplicate buffer crash (inplace_addstreamid)
   reconnect_interval_s: 5
   thresholds:
-    person_conf: 0.4
+    person_conf: 0.55
     person_nms_iou: 0.45
     face_conf: 0.65 # Increased from 0.5 to suppress false positive background face detections
     max_faces_per_frame: 6

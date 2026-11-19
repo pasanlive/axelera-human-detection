@@ -237,7 +237,7 @@ class NetworkSpec:
 class BuildOptions:
     """Tunables baked into the network YAML (thresholds, ROI limits, calibration)."""
 
-    person_conf: float = 0.40
+    person_conf: float = 0.55
     person_nms_iou: float = 0.45
     face_conf: float = 0.50
     max_faces_per_frame: int = 3
