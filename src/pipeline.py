@@ -122,6 +122,7 @@ class MultiCameraPipeline:
             motion_warmup_frames=int(human_cfg.get("motion_warmup_frames", 0 if simulate else 30)),
             log_rejected_detections=bool(human_cfg.get("log_rejected_detections", False)),
             rejected_dir=human_cfg.get("rejected_dir", "data/rejected_detections"),
+            downscale_width=int(human_cfg.get("motion_gate_downscale_width", 320)),
         )
 
         # ── Face Recognizer Settings ─────────────────────────────────────────
@@ -196,7 +197,7 @@ class MultiCameraPipeline:
         self._replan_lock = threading.Lock()
         self._replan_evt = threading.Event()
         self._replan_thread: Optional[threading.Thread] = None
-        self._result_queue: queue.Queue = queue.Queue(maxsize=4)
+        self._result_queue: queue.Queue = queue.Queue(maxsize=2)
         self._result_worker_thread: Optional[threading.Thread] = None
         self.is_running = False
 

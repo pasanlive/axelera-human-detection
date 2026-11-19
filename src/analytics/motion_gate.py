@@ -37,6 +37,7 @@ class MotionGate:
         min_motion_ratio: float = 0.03,
         motion_warmup_frames: int = 30,
         track_ttl_s: float = 5.0,
+        downscale_width: int = 320,
     ):
         self.history = int(history)
         self.var_threshold = float(var_threshold)
@@ -44,6 +45,7 @@ class MotionGate:
         self.min_motion_ratio = float(min_motion_ratio)
         self.motion_warmup_frames = int(motion_warmup_frames)
         self.track_ttl_s = float(track_ttl_s)
+        self.downscale_width = int(downscale_width)
 
         self.subtractor = cv2.createBackgroundSubtractorMOG2(
             history=self.history,
@@ -58,15 +60,25 @@ class MotionGate:
     def update(self, frame: np.ndarray) -> Optional[np.ndarray]:
         """
         Updates the background model with the current frame and returns the foreground mask.
+        Downscales high-resolution inputs (e.g. 2304x1296) to downscale_width to eliminate
+        CPU bottlenecks (sub-millisecond MOG2 vs 60-120ms at native resolution).
         """
         if frame is None or frame.size == 0:
             return None
 
-        # Convert to gray if BGR to accelerate MOG2 processing
-        if frame.ndim == 3:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        h, w = frame.shape[:2]
+        if self.downscale_width > 0 and w > self.downscale_width:
+            scale = self.downscale_width / float(w)
+            target_h = max(1, int(h * scale))
+            small = cv2.resize(frame, (self.downscale_width, target_h), interpolation=cv2.INTER_NEAREST)
         else:
-            gray = frame
+            small = frame
+
+        # Convert to gray if BGR to accelerate MOG2 processing
+        if small.ndim == 3:
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = small
 
         self.current_fg_mask = self.subtractor.apply(gray)
         self.frame_count += 1
@@ -136,6 +148,12 @@ class MotionGate:
         y1 = max(0, min(h_mask, y1))
         x2 = max(0, min(w_mask, x2))
         y2 = max(0, min(h_mask, y2))
+
+        # Avoid round-down to 0 px for valid bounding boxes
+        if bx2 > bx1 and x2 <= x1 and x1 < w_mask:
+            x2 = x1 + 1
+        if by2 > by1 and y2 <= y1 and y1 < h_mask:
+            y2 = y1 + 1
 
         if x2 <= x1 or y2 <= y1:
             return False

@@ -33,6 +33,9 @@ os.environ.setdefault("AXELERA_USE_CL_DOUBLE_BUFFER", "0")
 os.environ.setdefault("AX_DISABLE_OPENCL", "1")
 os.environ.setdefault("AX_OPENCL_PREFERENCE", "NONE")
 os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "auto")
+os.environ.setdefault("AX_WAIT_TIMEOUT_MS", "60000")
+os.environ.setdefault("ZE_COMMAND_QUEUE_TIMEOUT", "60000")
+os.environ.setdefault("AXELERA_CMD_QUEUE_TIMEOUT_MS", "60000")
 
 import yaml
 

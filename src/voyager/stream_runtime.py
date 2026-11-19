@@ -190,6 +190,9 @@ def _patch_voyager_stream_input() -> None:
     os.environ["AXELERA_USE_DMABUF"] = "0"
     os.environ["AXELERA_USE_CL_DOUBLE_BUFFER"] = "0"
     os.environ.setdefault("AXELERA_RTSP_PROTOCOL", "auto")
+    os.environ.setdefault("AX_WAIT_TIMEOUT_MS", "60000")
+    os.environ.setdefault("ZE_COMMAND_QUEUE_TIMEOUT", "60000")
+    os.environ.setdefault("AXELERA_CMD_QUEUE_TIMEOUT_MS", "60000")
 
     try:
         from axelera.app.pipe import io
@@ -974,36 +977,34 @@ class VoyagerRuntime(BaseRuntime):
                     self.camera_state[cam] = "live"
                     try:
                         analysis = parse_frame_result(result, now)
-                        img = result.image
-
-                        def get_image(_img=img, _res=result, _evt=event):
-                            if _img is None:
-                                return None
+                        img = getattr(result, "image", None)
+                        frame_bgr = None
+                        if img is not None:
                             try:
                                 arr = None
-                                if hasattr(_img, "asarray"):
+                                if hasattr(img, "asarray"):
                                     try:
                                         from axelera import types as _ax_types
-                                        arr = _img.asarray(_ax_types.ColorFormat.BGR)
+                                        arr = img.asarray(_ax_types.ColorFormat.BGR)
                                     except Exception:
                                         try:
-                                            arr = _img.asarray("BGR")
+                                            arr = img.asarray("BGR")
                                         except Exception:
                                             try:
-                                                arr = _img.asarray()
+                                                arr = img.asarray()
                                             except Exception:
                                                 pass
-                                if arr is None and hasattr(_img, "aspil"):
+                                if arr is None and hasattr(img, "aspil"):
                                     try:
-                                        pil_img = _img.aspil()
+                                        pil_img = img.aspil()
                                         if pil_img is not None:
                                             arr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
                                     except Exception:
                                         pass
-                                if arr is None and hasattr(_img, "to_numpy"):
-                                    arr = _img.to_numpy()
-                                if arr is None and isinstance(_img, np.ndarray):
-                                    arr = _img
+                                if arr is None and hasattr(img, "to_numpy"):
+                                    arr = img.to_numpy()
+                                if arr is None and isinstance(img, np.ndarray):
+                                    arr = img
                                 if arr is not None:
                                     if hasattr(arr, "copy"):
                                         arr = arr.copy()
@@ -1020,7 +1021,7 @@ class VoyagerRuntime(BaseRuntime):
                                         if arr.shape[2] == 1:
                                             arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
                                         elif arr.shape[2] == 4:
-                                            cf = getattr(_img, "color_format", None)
+                                            cf = getattr(img, "color_format", None)
                                             cf_name = str(getattr(cf, "name", cf)).upper()
                                             if "RGBA" in cf_name:
                                                 arr = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
@@ -1030,11 +1031,19 @@ class VoyagerRuntime(BaseRuntime):
                                         self._first_frame_preview_logged = True
                                         print(f"[VOYAGER PREVIEW] First frame: shape={arr.shape}, dtype={arr.dtype}, "
                                               f"min={int(arr.min())}, max={int(arr.max())}, mean={float(arr.mean()):.1f}, "
-                                              f"color_fmt={getattr(_img, 'color_format', 'unknown')}")
-                                    return arr
+                                              f"color_fmt={getattr(img, 'color_format', 'unknown')}")
+                                    frame_bgr = arr
                             except Exception as e:
                                 print(f"[PREVIEW ERROR] Failed to extract image from frame: {e}")
-                            return None
+
+                        # Decouple immediately from C++ Axelera result and image references
+                        # so that GStreamer / Level-Zero completion buffers are instantly recycled
+                        # by the Metis driver runtime, preventing wait kernel timeouts (-1301).
+                        img = None
+                        result = None
+
+                        def get_image(_fb=frame_bgr):
+                            return _fb.copy() if _fb is not None else None
 
                         self.on_result(cam, analysis, get_image)
                     except Exception:

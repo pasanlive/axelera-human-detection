@@ -45,6 +45,7 @@ models:
     motion_gate_enabled: true
     min_motion_ratio: 0.03
     motion_warmup_frames: 30
+    motion_gate_downscale_width: 320
     log_rejected_detections: false
     rejected_dir: data/rejected_detections
     exclusion_zones:

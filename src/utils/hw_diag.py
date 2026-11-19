@@ -248,9 +248,9 @@ class HardwareWatchdog:
             # 2. Kill any orphaned axtrace processes so device nodes are not held open
             subprocess.run(["sudo", "-n", "killall", "-9", "axtrace"], capture_output=True, timeout=2)
 
-            # 3. Apply irq_timeout=30, dma_timeout=10 to sysfs directly (preserving user-configured dma_poll)
+            # 3. Apply persistent single_msi=1, dma_poll=1, irq_timeout=30, dma_timeout=10
             for mod in ("metis", "axl"):
-                for param, val in [("irq_timeout", "30"), ("dma_timeout", "10")]:
+                for param, val in [("single_msi", "1"), ("dma_poll", "1"), ("irq_timeout", "30"), ("dma_timeout", "10")]:
                     p = Path(f"/sys/module/{mod}/parameters/{param}")
                     if p.exists():
                         try:
@@ -260,17 +260,46 @@ class HardwareWatchdog:
                             pass
 
             # Ensure modprobe.d metis.conf is preserved for persistent single_msi=1 and dma_poll=1
+            try:
+                mod_conf = Path("/etc/modprobe.d/metis.conf")
+                if mod_conf.parent.exists():
+                    cfg_line = "options metis single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10\\noptions axl single_msi=1 dma_poll=1 irq_timeout=30 dma_timeout=10\\n"
+                    subprocess.run(["sudo", "-n", "sh", "-c", f"printf '{cfg_line}' > /etc/modprobe.d/metis.conf 2>/dev/null"],
+                                   capture_output=True, timeout=1)
+            except Exception:
+                pass
 
             # 4. Check device nodes in /dev and PCIe driver binding
             metis_devs = sorted(glob.glob("/dev/metis*") + glob.glob("/dev/axl*"))
             bound_pci = list(Path("/sys/bus/pci/drivers/metis").glob("0000:*")) + list(Path("/sys/bus/pci/drivers/axl").glob("0000:*"))
             dev_missing = (len(metis_devs) == 0) or (len(bound_pci) == 0)
 
-            # If device node or driver binding is missing, trigger PCIe bus rescan
+            # If device node or driver binding is missing, trigger safe PCIe endpoint remove and rescan
             if dev_missing:
-                print("[METIS HW] Device node (/dev/metis*) or driver binding missing; triggering PCIe bus rescan...")
-                subprocess.run(["sudo", "-n", "sh", "-c", "echo 1 > /sys/bus/pci/rescan 2>/dev/null"], capture_output=True, timeout=10)
-                time.sleep(1.0)
+                print("[METIS HW] Device node (/dev/metis*) or driver binding missing; recovering PCIe endpoint...")
+                # 4a. Safely remove wedged Axelera endpoint from sysfs BEFORE rescanning
+                # This prevents the kernel PCIe rescan from hanging (>10s timeout) on unresponsive hardware registers
+                for pci_dev in Path("/sys/bus/pci/devices").glob("0000:*"):
+                    v_file = pci_dev / "vendor"
+                    if v_file.exists():
+                        try:
+                            if "0x1f9d" in v_file.read_text().strip().lower():
+                                rm_file = pci_dev / "remove"
+                                if rm_file.exists():
+                                    subprocess.run(["sudo", "-n", "sh", "-c", f"echo 1 > {rm_file} 2>/dev/null"],
+                                                   capture_output=True, timeout=2)
+                        except Exception:
+                            pass
+                time.sleep(0.5)
+
+                # 4b. Rescan PCIe root complex
+                subprocess.run(["sudo", "-n", "sh", "-c", "echo 1 > /sys/bus/pci/rescan 2>/dev/null"], capture_output=True, timeout=5)
+                time.sleep(0.5)
+
+                # 4c. Immediately disable ASPM on discovered Axelera endpoint
+                subprocess.run(["sudo", "-n", "setpci", "-d", "1f9d:", "CAP_EXP+0x10.w=0x0000"],
+                               capture_output=True, text=True, timeout=2)
+
                 # Re-check device nodes and driver binding
                 metis_devs = sorted(glob.glob("/dev/metis*") + glob.glob("/dev/axl*"))
                 bound_pci = list(Path("/sys/bus/pci/drivers/metis").glob("0000:*")) + list(Path("/sys/bus/pci/drivers/axl").glob("0000:*"))

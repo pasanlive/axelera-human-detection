@@ -165,6 +165,33 @@ class TestMotionGate(unittest.TestCase):
         self.assertIn(10, gate1.confirmed_tracks)
         self.assertNotIn(10, gate2.confirmed_tracks)
 
+    def test_motion_gate_downscale_high_resolution(self):
+        """Verify MotionGate downscales 2304x1296 frames and accurately gates high-res coordinates."""
+        gate = MotionGate(
+            min_motion_ratio=0.03,
+            motion_warmup_frames=2,
+            downscale_width=320,
+        )
+        # 2304x1296 high-res frame
+        f_base = np.zeros((1296, 2304, 3), dtype=np.uint8)
+        gate.update(f_base)
+        gate.update(f_base)
+
+        # Ensure mask is downscaled to 320px
+        self.assertIsNotNone(gate.current_fg_mask)
+        self.assertEqual(gate.current_fg_mask.shape[1], 320)
+        self.assertEqual(gate.current_fg_mask.shape[0], 180)
+
+        # Move inside 2304x1296 pixel bounding box [500, 400, 1000, 900]
+        f_move = f_base.copy()
+        f_move[450:850, 550:950] = 255
+        gate.update(f_move)
+
+        high_res_bbox = (500, 400, 1000, 900)
+        ok = gate.check_track(55, high_res_bbox, 2304, 1296, now=10.0)
+        self.assertTrue(ok)
+        self.assertIn(55, gate.confirmed_tracks)
+
 
 if __name__ == "__main__":
     unittest.main()

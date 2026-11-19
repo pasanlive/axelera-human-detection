@@ -65,6 +65,7 @@ class HumanDetectionFilter:
         log_rejected_detections: bool = False,
         rejected_dir: str = "data/rejected_detections",
         track_ttl_s: float = 2.0,
+        downscale_width: int = 320,
     ):
         self.conf_threshold = float(conf_threshold)
         self.min_consecutive_frames = int(min_consecutive_frames)
@@ -79,6 +80,7 @@ class HumanDetectionFilter:
         self.log_rejected_detections = bool(log_rejected_detections)
         self.rejected_dir = rejected_dir
         self.track_ttl_s = float(track_ttl_s)
+        self.downscale_width = int(downscale_width)
 
         # (cam_id, track_id) -> hit_count
         self._consecutive_hits: Dict[Tuple[str, int], int] = {}
@@ -104,6 +106,7 @@ class HumanDetectionFilter:
                 min_motion_ratio=self.min_motion_ratio,
                 motion_warmup_frames=self.motion_warmup_frames,
                 track_ttl_s=self.track_ttl_s,
+                downscale_width=self.downscale_width,
             )
         return self.motion_gates[cam_id]
 
