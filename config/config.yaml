@@ -80,7 +80,7 @@ voyager:
   calibration_dir: data/calibration
   num_calibration_images: 400
   aipu_cores: 4
-  hardware_decode: false # software decode (avdec_h264) prevents Rockchip MPP (rkvdec2) driver crashes
+  hardware_decode: true # Rockchip MPP hardware decode (mppvideodec) offloads video decoding to RK3588 VPU
   rtsp_transport: tcp # 'tcp' ensures lossless RTSP transmission (prevents UDP packet drops / missing POC frames)
   rtsp_latency_ms: 500 # 500ms jitter buffer for smooth LAN streaming without packet drops
   disable_tracers: true # Disables background axtrace processes to eliminate concurrent /dev/metis* PCIe access
