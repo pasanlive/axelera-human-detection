@@ -104,6 +104,39 @@ class MultiCameraPipeline:
         self.keypoint_guided = bool(models_cfg.get("face_recognizer", {}).get("keypoint_guided", True))
         self.plate_log_interval_s = float(models_cfg.get("license_plate_recognizer", {}).get("log_interval_s", 10.0))
 
+        # ── Human Detector Filters ───────────────────────────────────────────
+        human_cfg = models_cfg.get("human_detector", {}) or {}
+        from src.analytics.human_filter import HumanDetectionFilter
+        default_min_frames = 1 if simulate else 4
+        self.human_filter = HumanDetectionFilter(
+            min_consecutive_frames=int(human_cfg.get("min_consecutive_frames", default_min_frames)),
+            min_box_area=float(human_cfg.get("min_box_area", 0.0 if simulate else 1000.0)),
+            min_height=float(human_cfg.get("min_height", 0.0 if simulate else 40.0)),
+            max_aspect_ratio=float(human_cfg.get("max_aspect_ratio", 1.5)),
+            min_aspect_ratio=float(human_cfg.get("min_aspect_ratio", 0.1)),
+            exclusion_zones=human_cfg.get("exclusion_zones", {}),
+            log_rejected_detections=bool(human_cfg.get("log_rejected_detections", False)),
+            rejected_dir=human_cfg.get("rejected_dir", "data/rejected_detections"),
+        )
+
+        # ── Face Recognizer Settings ─────────────────────────────────────────
+        face_cfg = models_cfg.get("face_recognizer", {}) or {}
+        self.face_rec_min_size = int(face_cfg.get("min_face_size", 48 if simulate else 64))
+        self.face_rec_min_blur = float(face_cfg.get("min_blur_score", 0.0 if simulate else 50.0))
+        self.face_rec_ema_alpha = float(face_cfg.get("ema_alpha", 0.3))
+        self.face_rec_match_high = float(face_cfg.get("match_high_thresh", 0.55))
+        self.face_rec_match_low = float(face_cfg.get("match_low_thresh", 0.45))
+        self.face_align_5point = bool(face_cfg.get("align_5point", True))
+
+        # ── License Plate Recognizer Settings ────────────────────────────────
+        plate_cfg = models_cfg.get("license_plate_recognizer", {}) or {}
+        self.sri_lanka_dmt = bool(plate_cfg.get("sri_lanka_dmt", True))
+        self.two_line_aspect_thresh = float(plate_cfg.get("two_line_aspect_thresh", 2.0))
+        self.plate_deskew_enabled = bool(plate_cfg.get("deskew_enabled", True))
+        self.min_consensus_votes = int(plate_cfg.get("min_consensus_votes", 3))
+        self.plate_window_s = float(plate_cfg.get("window_s", 2.0))
+        self.reject_invalid_dmt = bool(plate_cfg.get("reject_invalid_dmt", True))
+
         # ── Databases ────────────────────────────────────────────────────────
         self.face_db = FaceDatabase(
             db_path=config.get("face_db", {}).get("path", "data/face_db.json"),
@@ -119,7 +152,17 @@ class MultiCameraPipeline:
         )
 
         # ── Analytics ────────────────────────────────────────────────────────
-        self.identity = TrackIdentityResolver()
+        self.identity = TrackIdentityResolver(
+            decay=0.85,
+            min_votes=1.0,
+            switch_margin=1.4,
+            ttl_s=10.0,
+            hold_sec=3.0,
+            max_bank_size=10,
+            ema_alpha=self.face_rec_ema_alpha,
+            match_high_thresh=self.face_rec_match_high,
+            match_low_thresh=self.face_rec_match_low,
+        )
         self._face_thumb_cache: Dict[Tuple[str, int], Tuple[float, str]] = {}
         self._zone_crossing: Optional[Any] = None
         if self.enabled_models["zone_crossing"]:
@@ -500,13 +543,6 @@ class MultiCameraPipeline:
 
     def _process_frame_result(self, cam_id: str, fa: FrameAnalysis, get_image: Callable[[], Optional[np.ndarray]]):
         now = fa.timestamp
-        persons = fa.persons
-        track_ids = [p["track_id"] for p in persons if p["track_id"] is not None]
-
-        # Faces → identities (vectorised gallery match + per-track voting)
-        faces_out: List[Dict[str, Any]] = []
-        face_det_on = self.is_model_enabled("face_detector", cam_id) or self.is_model_enabled("face_recognizer", cam_id)
-        face_rec_on = self.is_model_enabled("face_recognizer", cam_id)
 
         cached_frame: Optional[np.ndarray] = None
 
@@ -515,6 +551,23 @@ class MultiCameraPipeline:
             if cached_frame is None:
                 cached_frame = get_image()
             return cached_frame
+
+        persons = fa.persons
+        if self.is_model_enabled("human_detector", cam_id):
+            persons = self.human_filter.filter_persons(
+                cam_id=cam_id,
+                persons=persons,
+                frame_size=fa.frame_size,
+                now=now,
+                get_frame=_get_frame,
+            )
+            fa.persons = persons
+        track_ids = [p["track_id"] for p in persons if p["track_id"] is not None]
+
+        # Faces → identities (vectorised gallery match + per-track voting)
+        faces_out: List[Dict[str, Any]] = []
+        face_det_on = self.is_model_enabled("face_detector", cam_id) or self.is_model_enabled("face_recognizer", cam_id)
+        face_rec_on = self.is_model_enabled("face_recognizer", cam_id)
 
         def _crop_face_thumb(b):
             fr = _get_frame()
@@ -538,7 +591,7 @@ class MultiCameraPipeline:
             return None
 
         if fa.faces and face_det_on:
-            min_face_px = self.min_face_px
+            min_face_px = max(self.min_face_px, self.face_rec_min_size)
             face_conf_thresh = self.face_conf
 
             # Filter faces to eliminate false positives:
@@ -565,6 +618,7 @@ class MultiCameraPipeline:
             fa.faces = valid_faces
 
             if face_rec_on:
+                from src.analytics.face_align import align_face_5point, check_face_quality
                 for f in fa.faces:
                     w_f = f["bbox"][2] - f["bbox"][0]
                     h_f = f["bbox"][3] - f["bbox"][1]
@@ -579,6 +633,19 @@ class MultiCameraPipeline:
                             x2, y2 = min(fw, x2), min(fh, y2)
                             if x2 > x1 and y2 > y1:
                                 crop = fr[y1:y2, x1:x2]
+                                passes_quality, _, _ = check_face_quality(
+                                    crop,
+                                    min_face_size=self.face_rec_min_size,
+                                    min_blur_score=self.face_rec_min_blur,
+                                )
+                                if not passes_quality:
+                                    continue
+
+                                # 5-point landmark alignment if keypoints present
+                                lms = f.get("landmarks") or f.get("keypoints")
+                                if self.face_align_5point and lms is not None and len(lms) >= 5:
+                                    crop = align_face_5point(crop, lms, output_size=(112, 112))
+
                                 try:
                                     from src.utils.face_embedder_cpu import get_cpu_face_embedder
                                     net_dir = getattr(self.runtime, "networks_dir", None)
@@ -744,23 +811,46 @@ class MultiCameraPipeline:
 
         # Plates → temporal character fusion & throttled logging
         plates_out = fa.plates if self.is_model_enabled("license_plate_recognizer", cam_id) else []
+        confirmed_plates = []
         for p in plates_out:
             raw_text = p.get("plate_text", "")
             if len(raw_text) >= 2:
-                # In-memory temporal character consensus voting
+                # In-memory temporal character consensus voting with Sri Lankan DMT support
                 fused_text, fused_conf = self.plate_db.fuse_plate(
                     cam_id=cam_id,
                     plate_text=raw_text,
                     confidence=p.get("confidence", 0.0),
                     now=now,
+                    window_s=self.plate_window_s,
+                    vehicle_id=p.get("track_id"),
+                    sri_lanka_dmt=self.sri_lanka_dmt,
+                    min_consensus_votes=self.min_consensus_votes,
                 )
                 p["plate_text"] = fused_text
                 p["confidence"] = fused_conf
 
-                key = (cam_id, fused_text)
-                if now - self._plate_last_logged.get(key, 0.0) >= self.plate_log_interval_s:
-                    self._plate_last_logged[key] = now
-                    self.plate_db.log_plate(fused_text, cam_id, fused_conf, 1.0, now=now)
+                vote_count = self.plate_db.get_vote_count(cam_id, p.get("track_id"))
+                p["vote_count"] = vote_count
+
+                if self.sri_lanka_dmt and self.reject_invalid_dmt:
+                    from src.analytics.plate_dmt import DMT_PLATE_REGEX
+                    if not DMT_PLATE_REGEX.match(fused_text):
+                        continue
+
+                # Confirm and log once consensus vote threshold is reached
+                if vote_count >= self.min_consensus_votes:
+                    p["confirmed"] = True
+                    confirmed_plates.append(p)
+                    key = (cam_id, fused_text)
+                    if now - self._plate_last_logged.get(key, 0.0) >= self.plate_log_interval_s:
+                        self._plate_last_logged[key] = now
+                        self.plate_db.log_plate(fused_text, cam_id, fused_conf, 1.0, now=now)
+                else:
+                    p["confirmed"] = False
+                    confirmed_plates.append(p)
+            else:
+                confirmed_plates.append(p)
+        plates_out = confirmed_plates
 
         # Zone crossing on tracked centroids (zones are defined in main-stream pixels)
         zone_on = self.is_model_enabled("zone_crossing", cam_id) and self._zone_crossing is not None

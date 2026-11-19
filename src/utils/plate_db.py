@@ -90,9 +90,12 @@ class PlateDatabase:
         confidence: float,
         now: Optional[float] = None,
         window_s: float = 1.8,
+        vehicle_id: Optional[Union[str, int]] = None,
+        sri_lanka_dmt: bool = False,
+        min_consensus_votes: int = 1,
     ) -> Tuple[str, float]:
         """
-        Temporal character-level voting in RAM.
+        Temporal character-level voting in RAM with optional Sri Lankan DMT correction.
         Aggregates successive noisy OCR reads of the same vehicle/camera within a short window,
         resolving character flicker (e.g. '0' vs 'O', '8' vs 'B') using confidence-weighted voting.
         """
@@ -101,28 +104,36 @@ class PlateDatabase:
 
         now = now or time.time()
         plate_text = plate_text.strip().upper()
+        cluster_key = f"{cam_id}_{vehicle_id}" if vehicle_id is not None else cam_id
 
         with self._lock:
-            reads = self._temporal_reads[cam_id]
+            reads = self._temporal_reads[cluster_key]
             # Prune stale observations older than window_s
             cutoff = now - window_s
             reads = [r for r in reads if r[0] >= cutoff]
             reads.append((now, plate_text, max(0.1, float(confidence))))
-            self._temporal_reads[cam_id] = reads
+            self._temporal_reads[cluster_key] = reads
 
-            if len(reads) == 1:
+            if len(reads) == 1 and not sri_lanka_dmt:
                 return plate_text, confidence
 
             # 1. Determine most probable string length by weighted voting
             len_votes: Dict[int, float] = collections.defaultdict(float)
             for _, text, conf in reads:
-                len_votes[len(text)] += conf
+                clean_t = "".join(c for c in text if c.isalnum()) if sri_lanka_dmt else text
+                len_votes[len(clean_t)] += conf
             target_len = max(len_votes.items(), key=lambda kv: kv[1])[0]
 
             # 2. Filter reads matching target length
-            matching_reads = [(t, c) for _, t, c in reads if len(t) == target_len]
+            matching_reads = []
+            for _, text, conf in reads:
+                clean_t = "".join(c for c in text if c.isalnum()) if sri_lanka_dmt else text
+                if len(clean_t) == target_len:
+                    matching_reads.append((clean_t, conf))
+
             if not matching_reads:
-                return plate_text, confidence
+                matching_reads = [(plate_text, max(0.1, float(confidence)))]
+                target_len = len(plate_text)
 
             # 3. Positional character consensus
             fused_chars = []
@@ -140,7 +151,27 @@ class PlateDatabase:
 
             fused_text = "".join(fused_chars)
             fused_conf = round(float(sum(char_confs) / max(1, len(char_confs))), 4)
+
+            # 4. Sri Lankan DMT validation & correction
+            if sri_lanka_dmt:
+                from src.analytics.plate_dmt import clean_and_correct_dmt_plate
+                dmt_result = clean_and_correct_dmt_plate(fused_text)
+                if dmt_result is not None:
+                    fused_text, conf_mult = dmt_result
+                    fused_conf = round(float(fused_conf * conf_mult), 4)
+                else:
+                    raw_result = clean_and_correct_dmt_plate(plate_text)
+                    if raw_result is not None:
+                        fused_text, conf_mult = raw_result
+                        fused_conf = round(float(confidence * conf_mult), 4)
+
             return fused_text, fused_conf
+
+    def get_vote_count(self, cam_id: str, vehicle_id: Optional[Union[str, int]] = None) -> int:
+        """Returns the number of active observations in the current temporal window."""
+        cluster_key = f"{cam_id}_{vehicle_id}" if vehicle_id is not None else cam_id
+        with self._lock:
+            return len(self._temporal_reads.get(cluster_key, []))
 
     def log_plate(
         self,

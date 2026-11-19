@@ -36,6 +36,16 @@ plate_db:
 models:
   human_detector:
     enabled: true
+    min_consecutive_frames: 4
+    min_box_area: 1000
+    min_height: 40
+    max_aspect_ratio: 1.5
+    min_aspect_ratio: 0.1
+    log_rejected_detections: false
+    rejected_dir: data/rejected_detections
+    exclusion_zones:
+      cam_01: []
+      cam_02: []
   pose_estimator:
     enabled: true
   face_recognizer:
@@ -43,9 +53,21 @@ models:
     match_threshold: 0.52
     ambiguity_margin: 0.03
     keypoint_guided: true
+    min_face_size: 64
+    min_blur_score: 50.0
+    ema_alpha: 0.3
+    match_high_thresh: 0.55
+    match_low_thresh: 0.45
+    align_5point: true
   license_plate_recognizer:
     enabled: false
     log_interval_s: 10
+    sri_lanka_dmt: true
+    two_line_aspect_thresh: 2.0
+    deskew_enabled: true
+    min_consensus_votes: 3
+    window_s: 2.0
+    reject_invalid_dmt: true
 voyager:
   sdk_path: ~/voyager-sdk
   build_root: null

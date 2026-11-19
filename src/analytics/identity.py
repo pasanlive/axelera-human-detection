@@ -1,12 +1,13 @@
 """
-Per-track identity smoothing & temporal feature bank fusion.
+Per-track identity smoothing & temporal feature bank fusion with EMA and Hysteresis.
 
-Face matches are noisy frame-to-frame (pose, blur, occlusion). Instead of
-re-labelling a person every frame, each (camera, track):
-1. Accumulates similarity-weighted votes with exponential decay.
-2. Maintains an in-memory Feature Bank of the highest quality face embeddings (512-d).
-3. Evaluates temporal similarity fusion against the enrolled face gallery to prevent
-   false rejections or momentary identity dropouts during head turns or lighting shifts.
+Implements:
+1. Track-level Exponential Moving Average (EMA, alpha: 0.3) of L2-normalized embeddings.
+2. Dual-threshold hysteresis state transitions:
+   - match_high_thresh (0.55): required to lock/assign a new identity.
+   - match_low_thresh (0.45): required to maintain an already-locked identity.
+3. In-memory temporal feature bank of highest quality embeddings.
+4. Auto-purge of stale tracks on track expiration.
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ UNKNOWN = "Unknown"
 
 class TrackIdentityResolver:
     """
-    Multi-frame identity resolver with exponential voting decay and
-    in-memory temporal face embedding feature bank.
+    Multi-frame identity resolver with exponential voting decay, EMA embedding
+    vector smoothing, and dual-threshold hysteresis.
     """
 
     def __init__(
@@ -34,6 +35,9 @@ class TrackIdentityResolver:
         ttl_s: float = 10.0,
         hold_sec: float = 3.0,
         max_bank_size: int = 10,
+        ema_alpha: float = 0.3,
+        match_high_thresh: float = 0.55,
+        match_low_thresh: float = 0.45,
     ):
         self.decay = decay
         self.min_votes = min_votes
@@ -41,15 +45,11 @@ class TrackIdentityResolver:
         self.ttl_s = ttl_s
         self.hold_sec = hold_sec
         self.max_bank_size = max_bank_size
+        self.ema_alpha = float(ema_alpha)
+        self.match_high_thresh = float(match_high_thresh)
+        self.match_low_thresh = float(match_low_thresh)
 
-        # (cam, track) -> {
-        #   "votes": {name: score},
-        #   "name": str,
-        #   "sim": float,
-        #   "seen": ts,
-        #   "last_known_ts": ts,
-        #   "feature_bank": List[Tuple[float, np.ndarray]],  # (quality/sim, 512-d unit vector)
-        # }
+        # (cam, track) -> state dict
         self._state: Dict[Tuple[str, int], Dict[str, Any]] = {}
 
     def update(
@@ -63,7 +63,8 @@ class TrackIdentityResolver:
         face_db: Optional[Any] = None,
     ) -> Tuple[str, float]:
         """
-        Updates track identity with single-frame match and temporal feature bank fusion.
+        Updates track identity with EMA embedding smoothing, temporal feature bank
+        fusion, and dual-threshold hysteresis.
         """
         now = now or time.time()
         st = self._state.setdefault((cam_id, track_id), {
@@ -73,76 +74,124 @@ class TrackIdentityResolver:
             "seen": now,
             "last_known_ts": 0.0,
             "feature_bank": [],
+            "smoothed_embedding": None,
         })
 
-        # ── 1. Update Feature Bank in RAM ────────────────────────────────────
+        # ── 1. Update EMA Embedding & Feature Bank in RAM ────────────────────
         if embedding is not None and isinstance(embedding, np.ndarray) and embedding.size > 0:
             norm = np.linalg.norm(embedding)
             if norm > 0:
                 unit_emb = (embedding / norm).astype(np.float32)
+
+                # EMA embedding smoothing: (1 - alpha) * prev + alpha * curr
+                prev_ema = st["smoothed_embedding"]
+                if prev_ema is None:
+                    st["smoothed_embedding"] = unit_emb.copy()
+                else:
+                    ema_vec = (1.0 - self.ema_alpha) * prev_ema + self.ema_alpha * unit_emb
+                    ema_norm = np.linalg.norm(ema_vec)
+                    if ema_norm > 0:
+                        st["smoothed_embedding"] = (ema_vec / ema_norm).astype(np.float32)
+
+                # Maintain feature bank of top quality embeddings
                 quality_score = max(0.1, float(similarity))
                 bank: List[Tuple[float, np.ndarray]] = st["feature_bank"]
                 bank.append((quality_score, unit_emb))
-                # Keep top N highest quality embeddings in memory
                 if len(bank) > self.max_bank_size:
                     bank.sort(key=lambda item: item[0], reverse=True)
                     st["feature_bank"] = bank[: self.max_bank_size]
 
-        # ── 2. Temporal Feature Fusion across gallery ────────────────────────
-        # If single-frame result is uncertain or Unknown, check temporal feature bank
-        if (name == UNKNOWN or similarity < 0.55) and face_db is not None and st["feature_bank"]:
+        # ── 2. Temporal Feature Bank & EMA Gallery Matching ──────────────────
+        if face_db is not None and (st["smoothed_embedding"] is not None or st["feature_bank"]):
             try:
                 gallery = getattr(face_db, "_matrix", None)
                 names = getattr(face_db, "_template_names", None)
                 if gallery is not None and names and len(gallery) > 0:
-                    # Multi-sample cosine similarity: (B, D) @ (D, G) -> (B, G)
-                    bank_mat = np.stack([vec for _, vec in st["feature_bank"]])
-                    sim_mat = np.dot(bank_mat, gallery.T)
-                    # Max similarity per gallery template across all banked frames
-                    max_sims = np.max(sim_mat, axis=0)
-                    best_idx = int(np.argmax(max_sims))
-                    best_sim = float(max_sims[best_idx])
-                    best_name = names[best_idx]
-                    match_thresh = getattr(face_db, "match_threshold", 0.52)
-                    if best_sim >= match_thresh:
-                        name = best_name
+                    # Cosine sim with EMA smoothed embedding
+                    ema_sim = -1.0
+                    ema_name = UNKNOWN
+                    if st["smoothed_embedding"] is not None:
+                        sims = np.dot(gallery, st["smoothed_embedding"])
+                        best_idx = int(np.argmax(sims))
+                        ema_sim = float(sims[best_idx])
+                        ema_name = names[best_idx]
+
+                    # Multi-sample cosine similarity across banked frames
+                    bank_sim = -1.0
+                    bank_name = UNKNOWN
+                    if st["feature_bank"]:
+                        bank_mat = np.stack([vec for _, vec in st["feature_bank"]])
+                        sim_mat = np.dot(bank_mat, gallery.T)
+                        max_sims = np.max(sim_mat, axis=0)
+                        b_idx = int(np.argmax(max_sims))
+                        bank_sim = float(max_sims[b_idx])
+                        bank_name = names[b_idx]
+
+                    best_sim = max(ema_sim, bank_sim)
+                    best_cand = ema_name if ema_sim >= bank_sim else bank_name
+
+                    # If fused match passes low threshold or rescues unknown, apply
+                    if (name == UNKNOWN or similarity < self.match_high_thresh) and best_sim >= self.match_low_thresh:
+                        name = best_cand
                         similarity = max(similarity, best_sim)
             except Exception:
                 pass
 
-        # ── 3. Vote Decay & Accumulation ─────────────────────────────────────
+        # ── 3. Vote Decay & Hysteresis State Updates ─────────────────────────
         votes = st["votes"]
         for k in list(votes):
             votes[k] *= self.decay
 
-        if name != UNKNOWN:
-            votes[name] += max(0.1, float(similarity))
-            st["last_known_ts"] = now
-        else:
-            # Low vote for Unknown so momentary blurs/turns don't immediately wipe out a recognized person
-            votes[name] += 0.15
-
-        st["seen"] = now
-
-        best = max(votes.items(), key=lambda kv: kv[1])
         current = st["name"]
 
-        # Only promote to or switch identity if vote threshold is met
-        if best[0] != current:
-            if best[0] != UNKNOWN and best[1] >= self.min_votes:
-                if current == UNKNOWN or best[1] >= self.switch_margin * votes.get(current, 0.0):
-                    st["name"] = best[0]
-            elif best[0] == UNKNOWN:
-                # Revert to Unknown only if no positive match has occurred within hold_sec
-                if now - st.get("last_known_ts", 0.0) > self.hold_sec:
+        if current == UNKNOWN:
+            # High threshold to establish a NEW locked identity
+            if name != UNKNOWN and similarity >= self.match_high_thresh:
+                votes[name] += max(0.1, float(similarity))
+                if votes[name] >= self.min_votes:
+                    st["name"] = name
+                    st["sim"] = float(similarity)
+                    st["last_known_ts"] = now
+            else:
+                votes[UNKNOWN] += 0.15
+                st["sim"] = float(similarity)
+        else:
+            # Already locked to `current` identity
+            if name == current:
+                # Lower threshold is sufficient to maintain locked identity
+                if similarity >= self.match_low_thresh:
+                    votes[name] += max(0.1, float(similarity))
+                    st["sim"] = float(similarity)
+                    st["last_known_ts"] = now
+                else:
+                    # Below low threshold: check hold time before reverting
+                    if now - st.get("last_known_ts", 0.0) <= self.hold_sec:
+                        st["sim"] = max(0.0, st["sim"] * 0.95)
+                    else:
+                        votes[UNKNOWN] += 0.2
+                        if votes.get(UNKNOWN, 0.0) > votes.get(current, 0.0):
+                            st["name"] = UNKNOWN
+                            st["sim"] = float(similarity)
+            elif name != UNKNOWN:
+                # Challenging candidate: require high threshold AND switch margin
+                if similarity >= self.match_high_thresh:
+                    votes[name] += max(0.1, float(similarity))
+                    if votes[name] >= self.switch_margin * votes.get(current, 0.0) and votes[name] >= self.min_votes:
+                        st["name"] = name
+                        st["sim"] = float(similarity)
+                        st["last_known_ts"] = now
+                else:
+                    votes[name] += 0.05
+            else:
+                # Unknown observation: rely on hold period
+                votes[UNKNOWN] += 0.15
+                if now - st.get("last_known_ts", 0.0) <= self.hold_sec:
+                    st["sim"] = max(0.0, st["sim"] * 0.95)
+                else:
                     st["name"] = UNKNOWN
+                    st["sim"] = 0.0
 
-        if st["name"] == name:
-            st["sim"] = float(similarity)
-        elif st["name"] != UNKNOWN and (now - st.get("last_known_ts", 0.0) <= self.hold_sec):
-            # Smoothly decay the reported similarity during hold period
-            st["sim"] = max(0.0, st["sim"] * 0.95)
-
+        st["seen"] = now
         return st["name"], st["sim"]
 
     def get(self, cam_id: str, track_id: int) -> Optional[Tuple[str, float]]:
@@ -150,6 +199,7 @@ class TrackIdentityResolver:
         return (st["name"], st["sim"]) if st else None
 
     def purge(self, cam_id: str, active_tracks: Iterable[int], now: Optional[float] = None) -> None:
+        """Purges stale track states when tracks expire."""
         now = now or time.time()
         active = set(active_tracks)
         for key in [k for k in self._state if k[0] == cam_id]:
